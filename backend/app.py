@@ -1,8 +1,9 @@
-from fastapi import FastAPI, UploadFile, Form
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import FileResponse
 import os
+from typing import Literal
 
-from ..backend.scripts.process import run_karaoke_inference
+from backend.scripts.process import run_karaoke_inference
 
 app = FastAPI()
 
@@ -11,13 +12,16 @@ def root():
     return {"status": "ok", "message": "inference server is running"}
 
 @app.post("/inference")
-async def run_inference(file: UploadFile, model_name: str = Form("bs-roformer")):
+async def run_inference(
+    file: UploadFile = File(...),
+    model_name: Literal["bs-roformer", "decrowd"] = Form("bs-roformer")
+):
     input_path = f"/tmp/{file.filename}"
 
     with open(input_path, "wb") as f:
         f.write(await file.read())
 
-    output_dir = "/tmp/output"
+    output_dir = "/tmp/outputs"
     os.makedirs(output_dir, exist_ok=True)
 
     run_karaoke_inference(
@@ -28,12 +32,14 @@ async def run_inference(file: UploadFile, model_name: str = Form("bs-roformer"))
 
     if model_name == "bs-roformer":
         return {
+            "status": "done",
             "model": model_name,
             "vocals": "/download/vocals.mp3",
             "instrumental": "/download/instrumental.mp3"
         }
     elif model_name == "decrowd":
         return {
+            "status": "done",
             "model": model_name,
             "crowd": "/download/crowd.mp3",
             "instrumental_(decrowd)": "/download/instrumental_(decrowd).mp3"
