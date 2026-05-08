@@ -9,6 +9,7 @@ import typing
 from ml_collections import ConfigDict
 import argparse
 
+from huggingface_hub import hf_hub_download
 from ..models.BSRoformer import BSRoformer
 from ..models.MelBandRoformer import MelBandRoformer
 from ..models.utils.model_utils import bigshifts_wrapper
@@ -92,16 +93,29 @@ def run_karaoke_inference(model_name: str, audio_path: str, output_path: str = "
     - "decrowd": MelBand-RoFormer model for decrowding separation 
     '''
     models = {
-        "bs-roformer": ("./backend/models/BS-RoFormer/bs_roformer_karaoke_frazer_becruily.ckpt", "./backend/models/BS-RoFormer/config_karaoke_frazer_becruily.yaml"),
-        "decrowd": ("./backend/models/MelBand-RoFormer-DeCrowd/mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt", "./backend/models/MelBand-RoFormer-DeCrowd/model_mel_band_roformer_crowd.yaml")
+        "bs-roformer": ("./backend/models/BS-RoFormer/bs_roformer_karaoke.ckpt", "./backend/models/BS-RoFormer/bs_roformer_config_karaoke.yaml"),
+        "decrowd": ("./backend/models/MelBand-RoFormer-DeCrowd/mel_band_roformer_decrowd.ckpt", "./backend/models/MelBand-RoFormer-DeCrowd/model_mel_band_roformer_decrowd.yaml")
     }
 
     if model_name not in models:
         raise ValueError(f"Model '{model_name}' is not supported. Supported models are: {list(models.keys())}")
     
-    ckpt = torch.load(models[model_name][0], map_location="cpu")
+    # download models from hugging face repo
+    ckpt = torch.load(
+        #models[model_name][0], 
+        hf_hub_download(
+            repo_id="kseto06/benzaiten",
+            filename="bs_roformer_karaoke.ckpt"
+        ),
+        map_location="cpu"
+    )
     
-    with open(models[model_name][1], "r") as f:
+    with open(
+        hf_hub_download(
+            repo_id="kseto06/benzaiten",
+            filename="bs_roformer_config_karaoke.yaml"
+        ), 
+    "r") as f:
         cfg = yaml.load(f, Loader=yaml.FullLoader)
 
     model_cfg = cfg["model"]
@@ -156,16 +170,6 @@ def run_karaoke_inference(model_name: str, audio_path: str, output_path: str = "
 
         if missing or unexpected:
             raise ValueError(f"State dict keys mismatch. Missing keys: {missing}, Unexpected keys: {unexpected}")
-        
-        # inference and extract vocals + instrumental
-        # with torch.no_grad():
-        #     audio, waveform = audio_to_tensor(audio_path=audio_path)
-        #     output = model(audio)
-        #     vocals = vocals.squeeze(0)
-        #     instrumental = waveform[..., :vocals.shape[-1]] - vocals
-
-        # torchaudio.save("vocals.wav", vocals.cpu(), 44100)
-        # torchaudio.save("instrumental.wav", instrumental.cpu(), 44100)
 
         # init of audio and configs
         device = torch.device(
@@ -176,7 +180,8 @@ def run_karaoke_inference(model_name: str, audio_path: str, output_path: str = "
 
         config = dict_to_configdict(cfg)
 
-        # locally-ran configs, due to high memory allocation
+        # locally-ran configs, due to high memory allocation.
+        # might be able to delete if cloud inference can be setup
         config.audio.chunk_size = 44100 * 5
         config.inference.batch_size = 1
         config.inference.num_overlap = 2
