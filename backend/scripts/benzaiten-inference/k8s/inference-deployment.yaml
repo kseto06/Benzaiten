@@ -1,0 +1,40 @@
+# do a k8 inference deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: benzaiten-inference-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: benzaiten-inference
+  template:
+    metadata:
+      labels:
+        app: benzaiten-inference
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: gpu-pool #cpu-inference-pool
+
+      tolerations:
+      - key: "nvidia.com/gpu"
+        operator: "Equal"
+        value: "present"
+        effect: "NoSchedule"
+
+      containers:
+      - name: benzaiten-inference-container
+        image: northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest
+        imagePullPolicy: Always
+
+        ports:
+        - containerPort: 8080
+
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "2"
+          limits:
+            nvidia.com/gpu: 1
+            memory: "16Gi"
+            cpu: "4"
