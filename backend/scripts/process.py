@@ -13,34 +13,6 @@ from ..models.BSRoformer import BSRoformer
 from ..models.MelBandRoformer import MelBandRoformer
 from ..models.utils.model_utils import bigshifts_wrapper
 
-def extract_audio(video_path: str, output_path: str) -> None:
-    """
-    Extracts audio from a video file and saves it to the specified output path.
-
-    Args:
-        video_path (str): The path to the input video file.
-        output_path (str): The path where the extracted audio will be saved.
-
-    Returns:
-        None
-    """
-    import subprocess
-
-    # Use ffmpeg to extract audio from the video
-    command = [
-        'ffmpeg',
-        '-i', video_path,
-        '-vn',
-        '-acodec', 'copy',
-        output_path
-    ]
-
-    try:
-        subprocess.run(command, check=True)
-        print(f"Audio extracted successfully and saved to {output_path}")
-    except subprocess.CalledProcessError as e:
-        print(f"An error occurred while extracting audio: {e}")
-
 def dict_to_configdict(d: dict):
     """
     Convert a dictionary to a ConfigDict (nested dictionaries).
@@ -316,5 +288,5 @@ def run_karaoke_inference(model_name: str, audio_path: str, output_path: str = "
     
 if __name__ == "__main__":
     # extract_audio("input_video.mp4", "output_audio.mp3")
-    # run_karaoke_inference(model_name="bs-roformer", audio_path="./backend/tests/audio_files/i_miss_you.mp3")
-    run_karaoke_inference(model_name="decrowd", audio_path="./backend/tests/audio_files/instrumental.wav")
+    run_karaoke_inference(model_name="bs-roformer", audio_path="./backend/tests/audio_files/i_miss_you.mp3")
+    # run_karaoke_inference(model_name="decrowd", audio_path="./backend/tests/audio_files/instrumental.wav")
