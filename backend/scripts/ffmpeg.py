@@ -90,7 +90,7 @@ def build_video(video_path: str, audio_path: str, srt_path: str, output_path: st
 
         "-disposition:s:0", "default",
 
-        "-shortest",
+        #"-shortest",
         str(output_path),
     ]
 

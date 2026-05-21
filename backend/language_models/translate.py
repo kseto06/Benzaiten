@@ -21,10 +21,10 @@ def init(translate_language_code: str, target_language_code: str = "en") -> None
         return
 
     tokenizer = MarianTokenizer.from_pretrained(model_name)
-    model = MarianMTModel.from_pretrained(model_name, device_map="auto")
+    model = MarianMTModel.from_pretrained(model_name).to("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
 
-    current_model = model
+    current_model = model_name
 
 # translate
 def translate(text: str) -> str:

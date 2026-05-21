@@ -8,8 +8,6 @@ from typing import Literal, Tuple, Dict, Union
 from pathlib import Path
 
 from backend.scripts.ffmpeg import split_sources, build_video, convert_srt_to_vtt
-from backend.scripts.process import run_karaoke_inference
-from backend.language_models.transcribe import run_srt_inference
 from backend.gcp_utils.gcs_bucket import upload_file_to_gcs, download_file_from_gcs, remove_file_from_gcs
 
 app = FastAPI()
@@ -28,6 +26,8 @@ async def run_inference(
     '''
     Endpoint running inference of music source separation
     '''
+    from backend.scripts.process import run_karaoke_inference
+
     job_id = str(uuid.uuid4())
 
     input_dir = Path(f"/tmp/{job_id}")
@@ -163,6 +163,8 @@ async def run_transcription(
     '''
     Run transcription on a vocals file given the job id, returning the srt file which is saved to GCS bucket
     '''
+    from backend.language_models.transcribe import run_srt_inference
+
     input_dir = Path(f"/tmp/{job_id}")
     input_dir.mkdir(parents=True, exist_ok=True)
     input_path = input_dir / filename
@@ -211,12 +213,14 @@ async def run_transcription(
 async def run_full_inference(
     file: UploadFile = File(...),
     should_decrowd: bool = Form(False),
-    language: str = None,
+    language: Union[str, None] = Form(None),
 ) -> Dict:
     '''
     Runs the full inference pipeline: source separation -> transcription -> translation -> romanization -> remove (temp) GCS files -> construct video with subtitles
     Automate all GCS uploads and downloads in the process.
     '''
+    print("full_inference language:", language, flush=True)
+    
     video_name = Path(file.filename).stem
     final_video_link = None
     output_dict, job_id = await run_inference(file=file, should_decrowd=should_decrowd)

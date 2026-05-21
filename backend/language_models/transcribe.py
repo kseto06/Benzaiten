@@ -65,7 +65,7 @@ def transcribe(
     if device == "cuda":
         compute_type = "float16"
     else:
-        compute_type = "float32"
+        compute_type = "float32" #float32 > int8 for cpu, because want more accurate transcription
 
     model = WhisperModel(model_size, device=device, compute_type=compute_type)
     # batched_model = BatchedInferencePipeline(model=model)
@@ -119,7 +119,7 @@ def run_srt_inference(audio_path: str, language: str, output_path: str = "./back
     
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    segments = transcribe(audio_path=audio_path, model_size="large-v3", language=language)
+    segments = transcribe(audio_path=audio_path, model_size="large-v3-turbo", language=language)
 
     with open(output_path, 'w', encoding='utf-8') as f:
         for i, segment in enumerate(segments, start=1):
