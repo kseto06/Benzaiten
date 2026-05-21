@@ -1,0 +1,14 @@
+venv/
+frontend/node_modules/
+node_modules/
+__pycache__/
+*.pyc
+.git/
+.DS_Store
+/tmp/
+*.mp4
+*.mp3
+*.wav
+*.srt
+*.vtt
+backend/scripts/restart_deployment.sh
