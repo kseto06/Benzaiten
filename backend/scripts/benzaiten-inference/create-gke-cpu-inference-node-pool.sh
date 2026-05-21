@@ -1,16 +1,20 @@
 #!/bin/bash
 set -e
 
-ZONE=northamerica-northeast2-a
-CLUSTER=benzaiten-inference-cluster
+ZONE=northamerica-northeast2-b
+CLUSTER=benzaiten-inference-cluster-b
+NEW_POOL=cpu-inference-pool
 
-# create the CPU node pool for inference
-gcloud container node-pools create cpu-inference-pool \
+gcloud container node-pools create "${NEW_POOL}" \
     --cluster "${CLUSTER}" \
     --zone "${ZONE}" \
-    --machine-type e2-standard-4 \
+    --machine-type e2-highmem-8 \
     --num-nodes 1 \
-    --disk-type pd-standard \
-    --disk-size 30
+    --disk-type pd-balanced \
+    --disk-size 100 \
+    --scopes=https://www.googleapis.com/auth/cloud-platform \
+    --enable-autoscaling \
+    --min-nodes 1 \
+    --max-nodes 2
 
-kubectl get nodes
+kubectl get nodes -L cloud.google.com/gke-nodepool

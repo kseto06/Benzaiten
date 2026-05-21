@@ -5,6 +5,8 @@ metadata:
   name: benzaiten-inference-deployment
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: benzaiten-inference
@@ -14,7 +16,8 @@ spec:
         app: benzaiten-inference
     spec:
       nodeSelector:
-        cloud.google.com/gke-nodepool: gpu-pool #cpu-inference-pool
+        cloud.google.com/gke-nodepool: cpu-inference-pool
+        # cloud.google.com/gke-nodepool: gpu-pool
 
       tolerations:
       - key: "nvidia.com/gpu"
@@ -31,10 +34,20 @@ spec:
         - containerPort: 8080
 
         resources:
+        #gpu-pool:
+          # requests:
+          #   memory: "8Gi"
+          #   cpu: "2"
+          # limits:
+          #   nvidia.com/gpu: 1
+          #   memory: "16Gi"
+          #   cpu: "4"
+
+        #cpu-inference-pool:
+        resources:
           requests:
-            memory: "8Gi"
-            cpu: "2"
-          limits:
-            nvidia.com/gpu: 1
-            memory: "16Gi"
             cpu: "4"
+            memory: "12Gi"
+          limits:
+            cpu: "6"
+            memory: "24Gi"
