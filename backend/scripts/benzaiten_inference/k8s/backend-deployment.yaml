@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: benzaiten-inference-deployment
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: benzaiten-inference
+  template:
+    metadata:
+      labels:
+        app: benzaiten-inference
+    spec:
+      nodeSelector:
+        # we use default pool for hosting the webapi backend (cheaper)
+        cloud.google.com/gke-nodepool: default-pool
+
+      serviceAccountName: benzaiten-backend-sa
+
+      containers:
+        - name: benzaiten-inference-container
+          image: northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 8080
+
+          env:
+            - name: GCS_BUCKET
+              value: "benzaiten-outputs"
+            - name: IMAGE
+              value: "northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest"
+            - name: K8S_NAMESPACE
+              value: "default"
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+              ephemeral-storage: "4Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+              ephemeral-storage: "8Gi"

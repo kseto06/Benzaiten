@@ -3,7 +3,7 @@
     "origin": [
       "http://localhost:5173",
       "http://127.0.0.1:5173",
-      "http://benzaiten.github.io"
+      "http://kseto06.github.io"
     ],
     "method": ["GET", "HEAD"],
     "responseHeader": [

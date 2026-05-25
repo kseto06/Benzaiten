@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: benzaiten-inference-job
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+
+      nodeSelector:
+        cloud.google.com/gke-nodepool: cpu-inference-pool
+
+      tolerations:
+        - key: "inference"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+
+      containers:
+      - name: benzaiten-inference-container
+        image: northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest
+        imagePullPolicy: Always
+        command: ["python", "-m", "backend.scripts.run_inference_job"]
+        env:
+          - name: JOB_ID
+            value: "job-id-placeholder"
+
+          - name: GCS_BUCKET
+            value: "benzaiten-outputs"
+
+          - name: INPUT_BLOB_NAME
+            value: "inputs/job-id-placeholder/placeholder.mp4"
+
+          - name: FILENAME
+            value: "placeholder.mp4"
+
+          - name: SHOULD_DECROWD
+            value: "true"
+
+          - name: LANGUAGE
+            value: "mul"
+
+          - name: CONTENT_TYPE
+            value: "video/mp4"
