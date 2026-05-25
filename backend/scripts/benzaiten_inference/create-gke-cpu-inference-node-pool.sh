@@ -14,7 +14,7 @@ gcloud container node-pools create "${NEW_POOL}" \
     --disk-size 100 \
     --scopes=https://www.googleapis.com/auth/cloud-platform \
     --enable-autoscaling \
-    --min-nodes 1 \
+    --min-nodes 0 \
     --max-nodes 2
 
 kubectl get nodes -L cloud.google.com/gke-nodepool

@@ -113,3 +113,9 @@ urllib3==2.6.3
 uvicorn==0.46.0
 wrapt==2.1.2
 yarl==1.23.0
+kubernetes==36.0.0
+oauthlib==3.3.1
+six==1.17.0
+websocket-client==1.9.0
+requests-oauthlib==2.0.0
+python-dateutil==2.9.0.post0
