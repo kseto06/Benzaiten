@@ -14,7 +14,7 @@ gcloud container clusters update "${CLUSTER}" \
     --zone "${ZONE}" \
     --enable-autoscaling \
     --node-pool "${NODE_POOL}" \
-    --min-nodes 1 \
+    --min-nodes 0 \
     --max-nodes 3
 
 # HPA for pod autoscaling (dynamically add/remove replicas of the fastapi pod)

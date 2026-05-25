@@ -1,5 +1,7 @@
 from pathlib import Path
 from google.cloud import storage
+from fastapi import UploadFile
+from typing import Tuple
 
 def upload_file_to_gcs(local_path: str, bucket_name: str, destination_blob_name: str) -> str:
     '''
@@ -66,3 +68,32 @@ def remove_file_from_gcs(bucket_name: str, blob_name: str) -> bool:
 
     blob.delete()
     return True
+
+async def upload_input_file_to_gcs(file: UploadFile, job_id: str) -> Tuple[str, str, str]:
+    '''
+    Async function to upload an input file from FastAPI endpoint to GCS
+    Saves uploaded file to /tmp -> uploads to GCS - > returns GCS path, blob name, original filename
+
+    Args:
+        file: The UploadFile object received from the FastAPI endpoint.
+        job_id: unique job id for the inference job
+    '''
+    GCS_BUCKET = "benzaiten-outputs"
+
+    filename = file.filename
+    input_dir = Path(f"/tmp/{job_id}")
+    input_dir.mkdir(parents=True, exist_ok=True)
+
+    local_input_path = input_dir / filename
+    with open(local_input_path, "wb") as f:
+        f.write(await file.read())
+
+    destination_blob_name = f"inputs/{job_id}/{filename}"
+
+    input_gcs_path = upload_file_to_gcs(
+        local_path=str(local_input_path),
+        bucket_name=GCS_BUCKET,
+        destination_blob_name=destination_blob_name
+    )
+
+    return input_gcs_path, destination_blob_name, filename

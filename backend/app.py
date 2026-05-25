@@ -4,18 +4,29 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import os
 import uuid
-from typing import Literal, Tuple, Dict, Union
+from typing import Tuple, Dict, Union
 from pathlib import Path
 
 from backend.scripts.ffmpeg import split_sources, build_video, convert_srt_to_vtt
-from backend.gcp_utils.gcs_bucket import upload_file_to_gcs, download_file_from_gcs, remove_file_from_gcs
+from backend.gcp_utils.gcs_bucket import upload_file_to_gcs, download_file_from_gcs, remove_file_from_gcs, upload_input_file_to_gcs
+from backend.scripts.benzaiten_inference.k8s.kubernetes_utils import get_k8s_api_client, create_k8s_inference_job
 
 app = FastAPI()
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "benzaiten-outputs")
+IMAGE = os.environ.get("IMAGE", "northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest")
+K8S_NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
 
 @app.get("/")
 def root():
     return {"status": "ok", "message": "inference server is running"}
+
+def create_job_id() -> str:
+    '''
+    Function to create a unique job id for each inference job, used for tracking and file management in GCS bucket
+    Returns:
+        job_id string
+    '''
+    return str(uuid.uuid4())
 
 @app.post("/inference")
 async def run_inference(
@@ -28,7 +39,7 @@ async def run_inference(
     '''
     from backend.scripts.process import run_karaoke_inference
 
-    job_id = str(uuid.uuid4())
+    job_id = create_job_id()
 
     input_dir = Path(f"/tmp/{job_id}")
     input_dir.mkdir(parents=True, exist_ok=True)
@@ -218,9 +229,16 @@ async def run_full_inference(
     '''
     Runs the full inference pipeline: source separation -> transcription -> translation -> romanization -> remove (temp) GCS files -> construct video with subtitles
     Automate all GCS uploads and downloads in the process.
+
+    Args:
+        file: the input file from the user, either video or audio, uploaded through the FastAPI endpoint
+        should_decrowd: whether to run the decrowding model after source separation
+        language: input file audio language
+    Returns: 
+        dict containing job_id and status message
     '''
     print("full_inference language:", language, flush=True)
-    
+
     video_name = Path(file.filename).stem
     final_video_link = None
     output_dict, job_id = await run_inference(file=file, should_decrowd=should_decrowd)
@@ -341,13 +359,119 @@ def convert_to_vtt(job_id: str) -> dict:
         "vtt_url": f"https://storage.googleapis.com/benzaiten-outputs/outputs/{job_id}/vocals.vtt"
     }
 
+@app.post("/jobs")
+async def create_inference_job(
+    file: UploadFile = File(...),
+    should_decrowd: bool = Form(False),
+    language: Union[str, None] = Form(None)
+) -> Dict:
+    '''
+    Adapted function from run_full_inference to support K8 job creation to run inference on GKE per request, versus keeping the pod open in an always "on-deployment" state.
+    Here, a k8s job is created for full inference initialization but now we pass the actual inference to the k8s job instead of running it in the fastapi app
+    Args:
+        file: the input file from the user, either video or audio, uploaded through the FastAPI endpoint
+        should_decrowd: whether to run the decrowding model after source separation
+        language: input file audio language
+    Returns: 
+        dict containing job_id and status message
+    '''
+    job_id = create_job_id()
+
+    try: 
+        input_gcs_path, input_blob_name, filename = await upload_input_file_to_gcs(
+            file=file, 
+            job_id=job_id
+        )
+
+        job_name = create_k8s_inference_job(
+            job_id=job_id,
+            input_gcs_path=input_gcs_path,
+            input_blob_name=input_blob_name,
+            filename=filename,
+            should_decrowd=should_decrowd,
+            language=language,
+            content_type=file.content_type
+        )
+
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "k8s_job_name": job_name,
+            "input_gcs_path": input_gcs_path
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"k8s job creation failed: {str(e)}")
+    
+@app.get("/jobs/{job_id}")
+def get_inference_job_status(job_id: str) -> Dict[str, str]:
+    '''
+    Endpoint to get the status of an inference job given the job id.
+    Used for polling the status of the job from the frontend.
+    Returns four possible statuses of the job: "queued", "running", "failed", "completed".
+
+    Args:
+        job_id: the unique identifier for the inference job, generated in the create_inference_job endpoint
+    Returns:
+        dict containing job_id and status message
+    '''
+    from kubernetes import client, config
+    from kubernetes.config.config_exception import ConfigException
+
+    try:         
+        api_client = get_k8s_api_client()
+        batch_v1 = client.BatchV1Api(api_client=api_client)
+        job_name = f"benzaiten-inference-{job_id}"
+
+        job = batch_v1.read_namespaced_job_status(name=job_name, namespace=K8S_NAMESPACE)
+        status = job.status
+
+        if status.succeeded and status.succeeded >= 1:
+            res_path = Path(f"/tmp/{job_id}_result.json")
+
+            download_file_from_gcs(
+                bucket_name=GCS_BUCKET,
+                source_blob_name=f"outputs/{job_id}/result.json",
+                local_path=str(res_path)
+            )
+
+            with open(res_path, "r") as f:
+                import json
+                result = json.load(f)
+            
+            return {
+                "job_id": job_id,
+                "status": "completed",
+                "video_url": result["video_url"],
+                "subtitle_url": result["subtitle_url"]
+            }
+
+        if status.active and status.active >= 1:
+            return {
+                "job_id": job_id,
+                "status": "running"
+            }
+
+        if status.failed and status.failed >= 1:
+            return {
+                "job_id": job_id,
+                "status": "failed"
+            }
+
+        return {
+            "job_id": job_id,
+            "status": "queued"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"failed to get k8s job status: {str(e)}")
+
 # add CORS middleware to allow requests from the frontend (served on a different origin)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "http://benzaiten.github.io" #putting for now
+        "http://kseto06.github.io" #putting for now
     ],
     allow_credentials=True,
     allow_methods=["*"],

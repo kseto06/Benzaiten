@@ -2,3 +2,6 @@ venv
 __pycache__
 .DS_Store
 tests/
+backend/models/BS-RoFormer/bs_roformer_karaoke.ckpt
+backend/models/MelBand-RoFormer-DeCrowd/mel_band_roformer_decrowd.ckpt
+backend/scripts/restart_deployment.sh

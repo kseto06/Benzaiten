@@ -15,8 +15,8 @@ gcloud container clusters create "${CLUSTER}" \
     --release-channel regular \
     --machine-type e2-standard-2 \
     --num-nodes 1 \
-    --disk-type pd-standard \
-    --disk-size 30 \
+    --disk-type pd-balanced \
+    --disk-size 50 \
     --enable-ip-alias
 
 # credentials
