@@ -1,0 +1,30 @@
+<h2>Run Full Inference</h2>
+
+<input id="fileInput" type="file" accept="video/*,audio/*" />
+<br>
+<label>
+    Audio language:
+    <input id="languageInput" type="text" placeholder="e.g. en, ja, etc." />
+</label>
+<br>
+<label>
+    Should decrowd instrumentals? (good for live versions with audience noise)
+    <input id="shouldDecrowdInput" type="checkbox" />
+</label>
+<br><br>
+<button id="runInferenceButton">Run Full Inference</button>
+
+<hr />
+
+<h2>Load Existing Job</h2>
+
+<input id="jobIdInput" placeholder="job_id" style="width: 400px;" />
+<input id="videoNameInput" placeholder="video name without .mp4" style="width: 500px;" />
+<button id="loadButton">Load Existing Video</button>
+
+<br><br>
+
+<p id="statusText"></p>
+<video id="videoPlayer" controls width="800" crossorigin="anonymous"></video>
+
+<script type="module" src="/src/main.ts"></script>
