@@ -89,11 +89,12 @@ def clean_gcs_bucket(
     deleted_count = 0
 
     for blob in bucket.list_blobs():
-        if blob.name in preserved:
-            continue
+        should_delete_inputs_blob = blob.name.startswith("inputs/")
+        should_delete_unpreserved_blob = blob.name not in preserved
 
-        blob.delete()
-        deleted_count += 1
+        if should_delete_inputs_blob or should_delete_unpreserved_blob:
+            blob.delete()
+            deleted_count += 1
 
     return deleted_count
 
