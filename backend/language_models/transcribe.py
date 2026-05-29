@@ -3,7 +3,7 @@ This file contains the models and inference code for transcribing audio into tex
 '''
 
 # for transcription, using faster whisper implementation library
-from faster_whisper import WhisperModel, BatchedInferencePipeline
+from faster_whisper import WhisperModel
 import torch
 
 import os
