@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import os
 import uuid
+import warnings
 from typing import Tuple, Dict, Union
 from pathlib import Path
 
@@ -18,6 +19,9 @@ K8S_NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
 
 @app.get("/")
 def root():
+    '''
+    Note: this is basically only here for testing if the server is running successfully with curl
+    '''
     return {"status": "ok", "message": "inference server is running"}
 
 def create_job_id() -> str:
@@ -37,6 +41,9 @@ async def run_inference(
     '''
     Endpoint running inference of music source separation
     '''
+    # emit deprecation warning
+    warnings.warn("run_inference endpoint is deprecated with the new k8s job pipeline. Keep only for the old pipeline.")
+
     from backend.scripts.process import run_karaoke_inference
 
     job_id = create_job_id()
@@ -401,6 +408,19 @@ async def create_inference_job(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"k8s job creation failed: {str(e)}")
+    
+async def create_orchestration_inference_pipeline():
+    '''
+    Idea of the orchestration pipeline is:
+
+    audio --> vocal/instrumental source separation
+            |--> decrowding job if chosen
+            |--> transcription/translation job
+          --> combine both job outputs to build the final video
+
+    This attempts to make the pipeline more modular and efficient via parallelizing k8 jobs
+    '''
+    return NotImplementedError("Orchestration inference pipeline creation not implemented yet")
     
 @app.get("/jobs/{job_id}")
 def get_inference_job_status(job_id: str) -> Dict[str, str]:

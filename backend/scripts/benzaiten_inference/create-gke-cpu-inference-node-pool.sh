@@ -13,6 +13,7 @@ gcloud container node-pools create "${NEW_POOL}" \
     --disk-type pd-balanced \
     --disk-size 100 \
     --scopes=https://www.googleapis.com/auth/cloud-platform \
+    --node-taints=inference=true:NoSchedule \
     --enable-autoscaling \
     --min-nodes 0 \
     --max-nodes 2

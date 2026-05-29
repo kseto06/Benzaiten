@@ -1,7 +1,7 @@
 from pathlib import Path
 from google.cloud import storage
 from fastapi import UploadFile
-from typing import Tuple
+from typing import Tuple, Optional, Iterable, Set
 
 def upload_file_to_gcs(local_path: str, bucket_name: str, destination_blob_name: str) -> str:
     '''
@@ -69,6 +69,34 @@ def remove_file_from_gcs(bucket_name: str, blob_name: str) -> bool:
     blob.delete()
     return True
 
+def clean_gcs_bucket(
+    bucket_name: str,
+    keep_blob_names: Optional[Iterable[str]] = None,
+) -> int:
+    '''
+    Remove every blob from a GCS bucket except for an explicit allowlist.
+
+    Args:
+        bucket_name: The name of the GCS bucket to clean.
+        keep_blob_names: Blob names that should remain in the bucket.
+
+    Returns:
+        The number of blobs deleted from the bucket.
+    '''
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    preserved: Set[str] = set(keep_blob_names or [])
+    deleted_count = 0
+
+    for blob in bucket.list_blobs():
+        if blob.name in preserved:
+            continue
+
+        blob.delete()
+        deleted_count += 1
+
+    return deleted_count
+
 async def upload_input_file_to_gcs(file: UploadFile, job_id: str) -> Tuple[str, str, str]:
     '''
     Async function to upload an input file from FastAPI endpoint to GCS
@@ -97,3 +125,4 @@ async def upload_input_file_to_gcs(file: UploadFile, job_id: str) -> Tuple[str, 
     )
 
     return input_gcs_path, destination_blob_name, filename
+

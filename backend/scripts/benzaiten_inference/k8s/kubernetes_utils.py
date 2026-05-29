@@ -164,3 +164,60 @@ def create_k8s_inference_job(
     )
 
     return job_name
+
+# ------------------------
+#  Split pipeline orchestration integration for jobs
+
+def create_k8s_source_separation_inference_job(
+    job_id: str,
+    input_gcs_path: str,
+    input_blob_name: str,
+    filename: str
+) -> str:
+    '''
+    do a vocal/instrumental source separation and write those to GCS bucket
+    '''
+    return NotImplementedError("Source separation job creation not implemented yet")
+
+def create_k8s_decrowd_inference_job(
+    job_id: str,
+    filename: str
+) -> str:
+    '''
+    do a decrowding operation on the input audio and write the decrowded instrumentals to GCS bucket
+
+    Args:
+        job_id: Unique identifier for the job, used as part of the K8s job name; generated in fastapi app
+    '''
+    return NotImplementedError("Decrowding job creation not implemented yet")
+
+def create_k8s_transcription_inference_job(
+    job_id: str,
+    filename: str,
+    language: Union[str, None] = "mul",
+) -> str:
+    '''
+    do a transcription operation on the input audio and write the transcriptions and translations as the srt/vtt to GCS bucket
+
+    Args:
+        job_id: Unique identifier for the job, used as part of the K8s job name; generated in fastapi app
+    '''
+    return NotImplementedError("Transcription job creation not implemented yet")
+
+def create_k8s_build_video_job(
+    job_id: str,
+    filename: str,
+    video_gcs_path: Union[str, None],
+    audio_gcs_path: Union[str, None],
+    srt_gcs_path: Union[str, None]
+) -> str:
+    '''
+    do a build video operation that takes in the separated/decrowded audio, original video, and generated subtitles to create the final output video and write it to GCS bucket
+
+    Args:
+        job_id: Unique identifier for the job, used as part of the K8s job name; generated in fastapi app
+    '''
+    return NotImplementedError("Build video job creation not implemented yet")
+
+def wait_for_jobs():
+    raise NotImplementedError("function to wait for the completion of multiple k8s jobs to ensure outputs are computed before moving to next stages (in the split pipeline orchestration integration)")

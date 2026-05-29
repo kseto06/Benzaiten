@@ -1,0 +1,136 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: benzaiten-source-separation-job
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+
+      nodeSelector:
+        cloud.google.com/gke-nodepool: cpu-inference-pool
+
+      tolerations:
+        - key: "inference"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+
+      containers:
+      - name: benzaiten-source-separation-container
+        image: northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest
+        imagePullPolicy: Always
+        command: ["python", "-m", "backend.scripts.orchestration_jobs.run_source_separation_job"]
+        env:
+          - name: JOB_ID
+            value: "job-id-placeholder"
+          - name: GCS_BUCKET
+            value: "benzaiten-outputs"
+          - name: INPUT_BLOB_NAME
+            value: "inputs/job-id-placeholder/placeholder.mp4"
+          - name: FILENAME
+            value: "placeholder.mp4"
+          - name: CONTENT_TYPE
+            value: "video/mp4"
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: benzaiten-decrowd-job
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+
+      nodeSelector:
+        cloud.google.com/gke-nodepool: cpu-inference-pool
+
+      tolerations:
+        - key: "inference"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+
+      containers:
+      - name: benzaiten-decrowd-container
+        image: northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest
+        imagePullPolicy: Always
+        command: ["python", "-m", "backend.scripts.orchestration_jobs.run_decrowd_job"]
+        env:
+          - name: JOB_ID
+            value: "job-id-placeholder"
+          - name: GCS_BUCKET
+            value: "benzaiten-outputs"
+          - name: SHOULD_DECROWD
+            value: "true"
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: benzaiten-transcription-job
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+
+      nodeSelector:
+        cloud.google.com/gke-nodepool: cpu-inference-pool
+
+      tolerations:
+        - key: "inference"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+
+      containers:
+      - name: benzaiten-transcription-container
+        image: northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest
+        imagePullPolicy: Always
+        command: ["python", "-m", "backend.scripts.orchestration_jobs.run_transcription_job"]
+        env:
+          - name: JOB_ID
+            value: "job-id-placeholder"
+          - name: GCS_BUCKET
+            value: "benzaiten-outputs"
+          - name: LANGUAGE
+            value: "mul"
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: benzaiten-build-video-job
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+
+      nodeSelector:
+        cloud.google.com/gke-nodepool: cpu-inference-pool
+
+      tolerations:
+        - key: "inference"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+
+      containers:
+      - name: benzaiten-build-video-container
+        image: northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest
+        imagePullPolicy: Always
+        command: ["python", "-m", "backend.scripts.orchestration_jobs.run_build_video_job"]
+        env:
+          - name: JOB_ID
+            value: "job-id-placeholder"
+          - name: GCS_BUCKET
+            value: "benzaiten-outputs"
