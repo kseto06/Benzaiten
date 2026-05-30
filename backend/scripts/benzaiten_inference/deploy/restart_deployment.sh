@@ -6,5 +6,5 @@ NAMESPACE="${NAMESPACE:-default}"
 
 kubectl rollout restart deployment "${DEPLOYMENT}" --namespace "${NAMESPACE}"
 kubectl rollout status deployment "${DEPLOYMENT}" --namespace "${NAMESPACE}"
-# kubectl logs -f deployment/benzaiten-inference-deployment
+# kubectl logs -f deployment/"${DEPLOYMENT}" --namespace "${NAMESPACE}"
 kubectl get pods -o wide --namespace "${NAMESPACE}"
