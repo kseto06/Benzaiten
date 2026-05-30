@@ -19,7 +19,7 @@ jobs:
           run: |
             docker buildx build \
                 --platform linux/amd64 \
-                --f Dockerfile \
-                --t benzaiten-inference:test \
+                --file Dockerfile \
+                --tag benzaiten-inference:test \
                 .
         
