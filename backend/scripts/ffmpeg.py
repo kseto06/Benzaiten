@@ -2,6 +2,7 @@ import subprocess
 from pathlib import Path
 from typing import Tuple
 
+
 def split_sources(video_path: str, output_dir: str) -> Tuple[Path, Path]:
     """
     Splits audio and video sources from a video file and saves it to the specified output path.
@@ -26,9 +27,11 @@ def split_sources(video_path: str, output_dir: str) -> Tuple[Path, Path]:
     video_command = [
         "ffmpeg",
         "-y",
-        "-i", str(video_path),
+        "-i",
+        str(video_path),
         "-an",
-        "-c:v", "copy",
+        "-c:v",
+        "copy",
         str(video_output_path),
     ]
 
@@ -36,11 +39,15 @@ def split_sources(video_path: str, output_dir: str) -> Tuple[Path, Path]:
     audio_command = [
         "ffmpeg",
         "-y",
-        "-i", str(video_path),
+        "-i",
+        str(video_path),
         "-vn",
-        "-acodec", "libmp3lame",
-        "-ar", "44100",
-        "-ac", "2",
+        "-acodec",
+        "libmp3lame",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
         str(audio_output_path),
     ]
 
@@ -52,7 +59,10 @@ def split_sources(video_path: str, output_dir: str) -> Tuple[Path, Path]:
 
     return video_output_path, audio_output_path
 
-def build_video(video_path: str, audio_path: str, srt_path: str, output_path: str) -> Path:
+
+def build_video(
+    video_path: str, audio_path: str, srt_path: str, output_path: str
+) -> Path:
     """
     Combines video and audio sources into a single video file with subtitles.
 
@@ -75,22 +85,27 @@ def build_video(video_path: str, audio_path: str, srt_path: str, output_path: st
     command = [
         "ffmpeg",
         "-y",
-
-        "-i", str(video_path),
-        "-i", str(audio_path),
-        "-i", str(srt_path),
-
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-        "-map", "2:s:0",
-
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-c:s", "mov_text",
-
-        "-disposition:s:0", "default",
-
-        #"-shortest",
+        "-i",
+        str(video_path),
+        "-i",
+        str(audio_path),
+        "-i",
+        str(srt_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-map",
+        "2:s:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-c:s",
+        "mov_text",
+        "-disposition:s:0",
+        "default",
+        # "-shortest",
         str(output_path),
     ]
 
@@ -98,8 +113,9 @@ def build_video(video_path: str, audio_path: str, srt_path: str, output_path: st
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"ffmpeg video building failed: {e}")
-    
+
     return output_path
+
 
 def convert_srt_to_vtt(srt_path: str, vtt_path: str) -> Path:
     vtt_path = Path(vtt_path)
@@ -108,7 +124,8 @@ def convert_srt_to_vtt(srt_path: str, vtt_path: str) -> Path:
     command = [
         "ffmpeg",
         "-y",
-        "-i", str(srt_path),
+        "-i",
+        str(srt_path),
         str(vtt_path),
     ]
 

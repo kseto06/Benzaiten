@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-PROJECT_ID=$(gcloud config get-value project)
 ZONE=${ZONE:-northamerica-northeast2-b} #a,b,c
 CLUSTER=${CLUSTER:-benzaiten-inference-cluster-b} #a,b,c
 
