@@ -32,7 +32,7 @@ if gcloud container node-pools describe "${CPU_POOL}" \
   echo "CPU inference node pool already exists, skipping create."
 else
   echo "Creating CPU inference node pool..."
-  NEW_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/create-gke-cpu-inference-node-pool.sh"
+  NODE_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/create-gke-cpu-inference-node-pool.sh"
 fi
 
 echo "Configuring CPU inference node pool autoscaling..."
