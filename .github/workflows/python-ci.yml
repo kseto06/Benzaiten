@@ -1,10 +1,7 @@
 name: Python CI Backend Check
 
 on:
-    pull_request:
-        branches: [ "main", "model-orchestration" ]
-    push:
-        branches: [ "main", "model-orchestration" ]
+  workflow_call:
 
 jobs:
     python-ci:
