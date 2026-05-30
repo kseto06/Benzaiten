@@ -2,10 +2,10 @@
 name: Automated Test CI
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    push:
+        branches: [ "main" ]
+    pull_request:
+        branches: [ "main", "model-orchestration" ]
 
 jobs:
     python-ci:

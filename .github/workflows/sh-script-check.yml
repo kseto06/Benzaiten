@@ -2,6 +2,7 @@ name: Shell Script Check
 
 on:
     pull_request:
+        branches: [ "main", "model-orchestration" ]
         paths:
         - "**/*.sh"
         - ".github/workflows/shellcheck.yml"
