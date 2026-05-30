@@ -10,11 +10,15 @@ if [ ! -d "${K8S_DIR}" ]; then
   exit 1
 fi
 
-for manifest in backend-rbac.yaml backend-deployment.yaml service.yaml; do
+MANIFESTS=(backend-rbac.yaml backend-deployment.yaml service.yaml)
+
+for manifest in "${MANIFESTS[@]}"; do
   if [ ! -f "${K8S_DIR}/${manifest}" ]; then
     echo "Missing manifest: ${K8S_DIR}/${manifest}" >&2
     exit 1
   fi
+done
 
+for manifest in "${MANIFESTS[@]}"; do
   kubectl apply -f "${K8S_DIR}/${manifest}" --namespace "${NAMESPACE}"
 done
