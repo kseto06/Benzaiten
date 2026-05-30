@@ -16,6 +16,7 @@ jobs:
 
         - name: Validate Kubernetes manifests client-side
           run: |
+            shopt -s nullglob
             kubectl apply \
                 --dry-run=client \
-                -f backend/scripts/benzaiten_inference/k8s/
+                -f backend/scripts/benzaiten_inference/k8s/*.yaml
