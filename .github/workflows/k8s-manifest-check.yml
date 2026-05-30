@@ -5,7 +5,7 @@ on:
         branches: [ "main", "model-orchestration" ]
         paths:
         - "backend/scripts/benzaiten_inference/k8s/**"
-        - ".github/workflows/k8s-check.yml"
+        - ".github/workflows/k8s-manifest-check.yml"
 
 jobs:
     k8s-check:
