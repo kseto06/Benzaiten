@@ -2,6 +2,7 @@ name: Docker Build Check CI
 
 on:
     pull_request:
+        branches: [ "main", "model-orchestration" ]
         paths:
             - "Dockerfile"
             - ".dockerignore"
