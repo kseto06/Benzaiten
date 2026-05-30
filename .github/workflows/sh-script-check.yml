@@ -5,7 +5,7 @@ on:
         branches: [ "main", "model-orchestration" ]
         paths:
         - "**/*.sh"
-        - ".github/workflows/shellcheck.yml"
+        - ".github/workflows/sh-script-check.yml"
 
 jobs:
     shellcheck:
