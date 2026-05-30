@@ -27,9 +27,6 @@ jobs:
     python-ci:
         uses: ./.github/workflows/python-ci.yml
     
-    docker-image:
-        uses: ./.github/workflows/docker-image.yml
-
     docker-build:
         uses: ./.github/workflows/docker-build.yml
 
