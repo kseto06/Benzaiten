@@ -82,10 +82,11 @@ jobs:
           --project "${{ env.PROJECT_ID }}"
 
     - name: Apply K8s manifests
+      env:
+        K8S_DIR: backend/scripts/benzaiten_inference/k8s
+        NAMESPACE: ${{ env.NAMESPACE }}
       run: |
-        kubectl apply -f backend/scripts/benzaiten_inference/k8s/backend-rbac.yaml
-        kubectl apply -f backend/scripts/benzaiten_inference/k8s/backend-deployment.yaml
-        kubectl apply -f backend/scripts/benzaiten_inference/k8s/service.yaml
+        bash backend/scripts/benzaiten_inference/deploy/deploy-inference-job.sh
       
     - name: Update backend deployment image + inference job image env
       run: |
