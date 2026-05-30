@@ -2,9 +2,9 @@ name: Python CI Backend Check
 
 on:
     pull_request:
-        branches: [ "main" ]
+        branches: [ "main", "model-orchestration" ]
     push:
-        branches: [ "main" ]
+        branches: [ "main", "model-orchestration" ]
 
 jobs:
     python-ci:
