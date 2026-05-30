@@ -3,6 +3,7 @@ set -e
 
 ZONE="${ZONE:-northamerica-northeast2-b}" #a,b,c
 CLUSTER="${CLUSTER:-benzaiten-inference-cluster-b}" #a,b,c
+NODE_POOL="${NODE_POOL:-gpu-pool}"
 
 # cluster credentials init so kubectl points to the right cluster
 gcloud container clusters get-credentials "${CLUSTER}" --zone "${ZONE}"
@@ -12,7 +13,7 @@ gcloud container clusters get-credentials "${CLUSTER}" --zone "${ZONE}"
 gcloud container clusters update "${CLUSTER}" \
     --zone "${ZONE}" \
     --enable-autoscaling \
-    --node-pool gpu-pool \
+    --node-pool "${NODE_POOL}" \
     --min-nodes 0 \
     --max-nodes 2
 

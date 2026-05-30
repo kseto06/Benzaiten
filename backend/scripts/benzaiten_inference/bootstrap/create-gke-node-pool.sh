@@ -3,9 +3,10 @@ set -e
 
 ZONE="${ZONE:-northamerica-northeast2-b}" #a,b,c
 CLUSTER="${CLUSTER:-benzaiten-inference-cluster-b}" #a,b,c
+NODE_POOL="${NODE_POOL:-gpu-pool}"
 
 # create the GPU node pool. NOTE: need quotas for this
-gcloud container node-pools create gpu-pool \
+gcloud container node-pools create "${NODE_POOL}" \
     --cluster "${CLUSTER}" \
     --zone "${ZONE}" \
     --machine-type g2-standard-8 \

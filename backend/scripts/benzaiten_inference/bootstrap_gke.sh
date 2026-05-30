@@ -32,11 +32,11 @@ if gcloud container node-pools describe "${CPU_POOL}" \
   echo "CPU inference node pool already exists, skipping create."
 else
   echo "Creating CPU inference node pool..."
-  bash "${BOOTSTRAP_DIR}/create-gke-cpu-inference-node-pool.sh"
+  NEW_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/create-gke-cpu-inference-node-pool.sh"
 fi
 
 echo "Configuring CPU inference node pool autoscaling..."
-bash "${BOOTSTRAP_DIR}/autoscale_cpu_inference_cluster.sh"
+NODE_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/autoscale_cpu_inference_cluster.sh"
 
 # optional gpu setup
 if [ "${ENABLE_GPU:-false}" = "true" ]; then
@@ -47,11 +47,11 @@ if [ "${ENABLE_GPU:-false}" = "true" ]; then
     echo "GPU inference node pool already exists, skipping create."
   else
     echo "Creating GPU inference node pool..."
-    bash "${BOOTSTRAP_DIR}/create-gke-node-pool.sh"
+    NODE_POOL="${GPU_POOL}" bash "${BOOTSTRAP_DIR}/create-gke-node-pool.sh"
   fi
 
   echo "Configuring GPU inference node pool autoscaling..."
-  bash "${BOOTSTRAP_DIR}/autoscale_gpu_pool.sh"
+  NODE_POOL="${GPU_POOL}" bash "${BOOTSTRAP_DIR}/autoscale_gpu_pool.sh"
 else
   echo "Skipping GPU node pool setup."
 fi

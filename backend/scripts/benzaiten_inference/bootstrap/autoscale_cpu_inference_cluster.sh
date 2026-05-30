@@ -3,7 +3,7 @@ set -e
 
 ZONE="${ZONE:-northamerica-northeast2-b}" #a,b,c
 CLUSTER="${CLUSTER:-benzaiten-inference-cluster-b}" #a,b,c
-NODE_POOL="${NODE_POOL:-cpu-node-pool}"
+NODE_POOL="${NODE_POOL:-cpu-inference-pool}"
 DEPLOYMENT="${DEPLOYMENT:-benzaiten-inference-deployment}"
 
 # cluster credentials init so kubectl points to the right cluster
