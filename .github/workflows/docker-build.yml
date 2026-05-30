@@ -1,0 +1,19 @@
+name: Docker Build Check CI
+
+on:
+    workflow_call:
+
+jobs:
+    docker-build:
+        runs-on: ubuntu-latest
+        steps:
+        - uses: actions/checkout@v4
+            
+        - name: Build Docker image
+          run: |
+            docker buildx build \
+                --platform linux/amd64 \
+                --file Dockerfile \
+                --tag benzaiten-inference:test \
+                .
+        
