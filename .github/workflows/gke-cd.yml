@@ -83,6 +83,7 @@ jobs:
 
     - name: Apply K8s manifests
       env:
+        K8S_DIR: backend/scripts/benzaiten_inference/k8s
         NAMESPACE: ${{ env.NAMESPACE }}
       run: |
         bash backend/scripts/benzaiten_inference/deploy/deploy-inference-job.sh
