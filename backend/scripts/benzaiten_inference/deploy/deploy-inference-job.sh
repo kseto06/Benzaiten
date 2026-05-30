@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
-kubectl apply -f backend-rbac.yaml
-kubectl apply -f backend-deployment.yaml
-kubectl apply -f service.yaml
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+K8S_DIR="${K8S_DIR:-${SCRIPT_DIR}/../k8s}"
+NAMESPACE="${NAMESPACE:-default}"
+
+kubectl apply -f "${K8S_DIR}/backend-rbac.yaml" --namespace "${NAMESPACE}"
+kubectl apply -f "${K8S_DIR}/backend-deployment.yaml" --namespace "${NAMESPACE}"
+kubectl apply -f "${K8S_DIR}/service.yaml" --namespace "${NAMESPACE}"
