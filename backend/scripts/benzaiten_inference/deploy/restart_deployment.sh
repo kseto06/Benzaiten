@@ -1,7 +1,10 @@
 #!/bin/bash
 set -e
 
-kubectl rollout restart deployment benzaiten-inference-deployment
-kubectl rollout status deployment benzaiten-inference-deployment
+DEPLOYMENT="${DEPLOYMENT:-benzaiten-inference-deployment}"
+NAMESPACE="${NAMESPACE:-default}"
+
+kubectl rollout restart deployment "${DEPLOYMENT}" --namespace "${NAMESPACE}"
+kubectl rollout status deployment "${DEPLOYMENT}" --namespace "${NAMESPACE}"
 # kubectl logs -f deployment/benzaiten-inference-deployment
-kubectl get pods -o wide
+kubectl get pods -o wide --namespace "${NAMESPACE}"
