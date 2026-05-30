@@ -3,7 +3,7 @@ set -e
 
 ZONE="${ZONE:-northamerica-northeast2-b}" #a,b,c
 CLUSTER="${CLUSTER:-benzaiten-inference-cluster-b}" #a,b,c
-NODE_POOL="${NODE_POOL:-${NEW_POOL:-cpu-inference-pool}}"
+NODE_POOL="${NODE_POOL:-cpu-inference-pool}"
 
 gcloud container node-pools create "${NODE_POOL}" \
     --cluster "${CLUSTER}" \
