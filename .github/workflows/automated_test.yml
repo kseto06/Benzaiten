@@ -1,5 +1,5 @@
-# this file serves as the full automated test workflow CI combining all elementary CIs
-name: Automated Test CI
+# this file serves as the full automated test workflow CI combining all elementary CIs for QA + validation
+name: QA & Validation Automated Test CI
 
 on:
     push:
