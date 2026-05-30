@@ -1,0 +1,20 @@
+name: Kubernetes Manifest Check
+
+on:
+    pull_request:
+        paths:
+        - "backend/scripts/benzaiten_inference/k8s/**"
+        - ".github/workflows/k8s-check.yml"
+
+jobs:
+    k8s-check:
+        runs-on: ubuntu-latest
+
+        steps:
+        - uses: actions/checkout@v4
+
+        - name: Validate Kubernetes manifests client-side
+          run: |
+            kubectl apply \
+                --dry-run=client \
+                -f backend/scripts/benzaiten_inference/k8s/

@@ -1,0 +1,24 @@
+# this file serves as the full automated test workflow CI combining all elementary CIs
+name: Automated Test CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+    python-ci:
+        uses: ./.github/workflows/python-ci.yml
+    
+    docker-image:
+        uses: ./.github/workflows/docker-image.yml
+
+    docker-build:
+        uses: ./.github/workflows/docker-build.yml
+
+    k8s-manifest-check:
+        uses: ./.github/workflows/k8s-manifest-check.yml
+    
+    sh-script-check:
+        uses: ./.github/workflows/sh-script-check.yml

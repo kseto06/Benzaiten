@@ -1,0 +1,28 @@
+name: Python CI Backend Check
+
+on:
+    pull_request:
+        branches: [ "main" ]
+    push:
+        branches: [ "main" ]
+
+jobs:
+    python-ci:
+        runs-on: ubuntu-latest
+
+        steps:
+        - uses: actions/checkout@v5
+
+        - name: Set up Python 3.14.3
+          uses: actions/setup-python@v5
+          with:
+            python-version: 3.14.3
+
+        - name: Install dependencies
+          run: |
+            pip install -r requirements.txt
+            pip install ruff
+        
+        - name: Run linter
+          run: |
+            ruff check backend
