@@ -12,6 +12,7 @@ jobs:
 
         - name: Validate Kubernetes manifests client-side
           run: |
-            kubectl create --dry-run=client --validate=false -f backend/scripts/benzaiten_inference/k8s/backend-rbac.yaml
-            kubectl create --dry-run=client --validate=false -f backend/scripts/benzaiten_inference/k8s/backend-deployment.yaml
-            kubectl create --dry-run=client --validate=false -f backend/scripts/benzaiten_inference/k8s/service.yaml
+            KUBECONFIG=/dev/null kubectl apply --dry-run=client --validate=false \
+              -f backend/scripts/benzaiten_inference/k8s/backend-rbac.yaml \
+              -f backend/scripts/benzaiten_inference/k8s/backend-deployment.yaml \
+              -f backend/scripts/benzaiten_inference/k8s/service.yaml
