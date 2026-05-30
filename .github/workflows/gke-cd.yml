@@ -1,0 +1,107 @@
+name: Deploy Backend to GKE
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Docker image tag to build and deploy (e.g. a git sha, defaults to 'latest')"
+        required: false
+        default: "latest"
+      push_latest:
+        description: "Whether to also push the 'latest' tag in addition to the specified tag (for tag != 'latest')"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      no_cache:
+        description: "Build Docker image without cache"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+    
+    env:
+      PROJECT_ID: project-0c6e9a84-c914-4d2f-ace
+      REGION: northamerica-northeast2
+      ZONE: northamerica-northeast2-b
+      CLUSTER: benzaiten-inference-cluster-b
+      REPOSITORY: benzaiten
+      IMAGE_NAME: benzaiten-inference
+      DEPLOYMENT_NAME: benzaiten-inference-deployment
+      CONTAINER_NAME: benzaiten-inference-container
+      NAMESPACE: default
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authentication to GCP
+      uses: google-github-actions/auth@v3
+      with:
+        project_id: ${{ env.PROJECT_ID }}
+        workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+        service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+    
+    - name: Set up gcloud CLI
+      uses: google-github-actions/setup-gcloud@v3
+      with:
+        project_id: ${{ env.PROJECT_ID }}
+        version: 'latest'
+
+    - name: Configure Docker auth on gcloud
+      run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+    - name: Build and push image to Artifact Registry
+      env:
+        TAG: ${{ inputs.tag }}
+        PROJECT_ID: ${{ env.PROJECT_ID }}
+        REGION: ${{ env.REGION }}
+        REPO: ${{ env.REPOSITORY }}
+        IMAGE: ${{ env.IMAGE_NAME }}
+        PUSH_LATEST: ${{ inputs.push_latest }}
+        NO_CACHE: ${{ inputs.no_cache }}
+      run: |
+        bash backend/scripts/benzaiten_inference/push-image.sh
+      
+    - name: Get GKE credentials
+      run: |
+        gcloud container clusters get-credentials "${{ env.CLUSTER }}" \
+          --zone "${{ env.ZONE }}" \
+          --project "${{ env.PROJECT_ID }}"
+
+    - name: Apply K8s manifests
+      run: |
+        kubectl apply -f backend/scripts/benzaiten_inference/k8s/backend-rbac.yaml
+        kubectl apply -f backend/scripts/benzaiten_inference/k8s/backend-deployment.yaml
+        kubectl apply -f backend/scripts/benzaiten_inference/k8s/service.yaml
+      
+    - name: Update backend deployment image + inference job image env
+      run: |
+        IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ inputs.tag }}"
+
+        kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
+          ${{ env.CONTAINER_NAME }}="$IMAGE_URI" \
+          --namespace "${{ env.NAMESPACE }}"
+
+        kubectl set env deployment/${{ env.DEPLOYMENT_NAME }} \
+          IMAGE="$IMAGE_URI" \
+          --namespace "${{ env.NAMESPACE }}"
+    
+    - name: Restart backend deployment
+      env:
+        DEPLOYMENT: ${{ env.DEPLOYMENT_NAME }}
+        NAMESPACE: ${{ env.NAMESPACE }}
+      run: |
+        bash backend/scripts/benzaiten_inference/deploy/restart_deployment.sh

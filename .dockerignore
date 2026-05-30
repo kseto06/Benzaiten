@@ -11,4 +11,3 @@ __pycache__/
 *.wav
 *.srt
 *.vtt
-backend/scripts/restart_deployment.sh
