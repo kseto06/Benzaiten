@@ -2,8 +2,8 @@
 set -e
 
 PROJECT_ID=$(gcloud config get-value project)
-ZONE=northamerica-northeast2-b #a,b,c
-CLUSTER=benzaiten-inference-cluster-b #a,b,c
+ZONE=${ZONE:-northamerica-northeast2-b} #a,b,c
+CLUSTER=${CLUSTER:-benzaiten-inference-cluster-b} #a,b,c
 
 # enable apis
 gcloud services enable container.googleapis.com
