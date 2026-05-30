@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-ZONE=northamerica-northeast2-b #a,b,c
-CLUSTER=benzaiten-inference-cluster-b #a,b,c
+ZONE="${ZONE:-northamerica-northeast2-b}" #a,b,c
+CLUSTER="${CLUSTER:-benzaiten-inference-cluster-b}" #a,b,c
 
 # cluster credentials init so kubectl points to the right cluster
 gcloud container clusters get-credentials "${CLUSTER}" --zone "${ZONE}"
