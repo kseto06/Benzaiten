@@ -22,6 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from backend.scripts.process import run_karaoke_inference
 from backend.scripts.ffmpeg import split_sources
 
 
@@ -63,8 +64,21 @@ video_output_path, audio_output_path = split_sources(
 require_file(video_output_path)
 require_file(audio_output_path)
 
+run_karaoke_inference(
+    model_name="bs-roformer",
+    audio_path=str(audio_output_path),
+    output_path=str(output_dir),
+)
+
+vocals_path = output_dir / "vocals.mp3"
+instrumental_path = output_dir / "instrumental.mp3"
+require_file(vocals_path)
+require_file(instrumental_path)
+
 video_duration = probe_duration(video_output_path)
 audio_duration = probe_duration(audio_output_path)
+vocals_duration = probe_duration(vocals_path)
+instrumental_duration = probe_duration(instrumental_path)
 
 if video_duration <= 0:
     raise RuntimeError(f"Expected a non-zero split video duration, got {video_duration}")
@@ -72,7 +86,17 @@ if video_duration <= 0:
 if audio_duration <= 0:
     raise RuntimeError(f"Expected a non-zero split audio duration, got {audio_duration}")
 
+if vocals_duration <= 0:
+    raise RuntimeError(f"Expected a non-zero vocals duration, got {vocals_duration}")
+
+if instrumental_duration <= 0:
+    raise RuntimeError(
+        f"Expected a non-zero instrumental duration, got {instrumental_duration}"
+    )
+
 print("Source separation stage outputs verified successfully")
 print(f"video_output={video_output_path}")
 print(f"audio_output={audio_output_path}")
+print(f"vocals_output={vocals_path}")
+print(f"instrumental_output={instrumental_path}")
 PY
