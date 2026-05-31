@@ -1,4 +1,4 @@
-# This workflow runs automated tests for the model inference pipeline, verifying outputs at each inference step
+# this workflow runs automated tests for the model inference pipeline, verifying outputs at each inference step
 name: Inference Pipeline Automated Test Run CI
 
 on:
@@ -16,6 +16,10 @@ on:
         options:
           - "true"
           - "false"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/benzaiten-inference
 
 jobs:
   lint-and-compile:
@@ -49,11 +53,22 @@ jobs:
     timeout-minutes: 60
     needs: lint-and-compile
 
+    permissions:
+      contents: read
+      packages: write
+
     steps:
       - name: Checkout selected ref
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Docker image
         run: |
@@ -62,29 +77,24 @@ jobs:
             CACHE_FLAG="--no-cache"
           fi
 
+          IMAGE_REF="$(echo "${REGISTRY}/${IMAGE_NAME}:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" | tr '[:upper:]' '[:lower:]')"
+
           docker buildx build \
             ${CACHE_FLAG} \
             --platform linux/amd64 \
             -f Dockerfile \
-            -t benzaiten-inference:test \
-            --load \
+            -t "${IMAGE_REF}" \
+            --push \
             .
-
-      - name: Save Docker image
-        run: |
-          docker save benzaiten-inference:test -o benzaiten-inference-test.tar
-
-      - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: benzaiten-inference-test-image
-          path: benzaiten-inference-test.tar
-          retention-days: 1
 
   source-separation-pipeline-test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: build-docker-image
+
+    permissions:
+      contents: read
+      packages: read
 
     steps:
       - name: Checkout selected ref
@@ -92,13 +102,18 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v5
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          name: benzaiten-inference-test-image
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Load Docker image
-        run: docker load -i benzaiten-inference-test.tar
+      - name: Pull Docker image
+        run: |
+          IMAGE_REF="$(echo "${REGISTRY}/${IMAGE_NAME}:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" | tr '[:upper:]' '[:lower:]')"
+          docker pull "${IMAGE_REF}"
+          docker tag "${IMAGE_REF}" benzaiten-inference:test
 
       - name: Prepare test output directory
         run: |
@@ -124,19 +139,28 @@ jobs:
     timeout-minutes: 30
     needs: source-separation-pipeline-test
 
+    permissions:
+      contents: read
+      packages: read
+
     steps:
       - name: Checkout selected ref
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v5
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          name: benzaiten-inference-test-image
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Load Docker image
-        run: docker load -i benzaiten-inference-test.tar
+      - name: Pull Docker image
+        run: |
+          IMAGE_REF="$(echo "${REGISTRY}/${IMAGE_NAME}:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" | tr '[:upper:]' '[:lower:]')"
+          docker pull "${IMAGE_REF}"
+          docker tag "${IMAGE_REF}" benzaiten-inference:test
 
       - name: Download source separation outputs
         uses: actions/download-artifact@v5
@@ -163,19 +187,28 @@ jobs:
     timeout-minutes: 30
     needs: source-separation-pipeline-test
 
+    permissions:
+      contents: read
+      packages: read
+
     steps:
       - name: Checkout selected ref
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v5
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          name: benzaiten-inference-test-image
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Load Docker image
-        run: docker load -i benzaiten-inference-test.tar
+      - name: Pull Docker image
+        run: |
+          IMAGE_REF="$(echo "${REGISTRY}/${IMAGE_NAME}:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" | tr '[:upper:]' '[:lower:]')"
+          docker pull "${IMAGE_REF}"
+          docker tag "${IMAGE_REF}" benzaiten-inference:test
 
       - name: Download source separation outputs
         uses: actions/download-artifact@v5
@@ -204,19 +237,28 @@ jobs:
       - decrowd-pipeline-test
       - transcription-pipeline-test
 
+    permissions:
+      contents: read
+      packages: read
+
     steps:
       - name: Checkout selected ref
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v5
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          name: benzaiten-inference-test-image
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Load Docker image
-        run: docker load -i benzaiten-inference-test.tar
+      - name: Pull Docker image
+        run: |
+          IMAGE_REF="$(echo "${REGISTRY}/${IMAGE_NAME}:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" | tr '[:upper:]' '[:lower:]')"
+          docker pull "${IMAGE_REF}"
+          docker tag "${IMAGE_REF}" benzaiten-inference:test
 
       - name: Download decrowd outputs
         uses: actions/download-artifact@v5
@@ -243,4 +285,4 @@ jobs:
         with:
           name: final-pipeline-test-outputs
           path: test_outputs/
-          retention-days: 3
+          retention-days: 1
