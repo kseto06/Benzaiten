@@ -98,9 +98,9 @@ class Attention(Module):
 
         self.rotary_embed = rotary_embed
         self.pope_embed = pope_embed
-        assert not (
-            self.rotary_embed is not None and self.pope_embed is not None
-        ), "cannot have both rotary and pope embeddings"
+        assert not (self.rotary_embed is not None and self.pope_embed is not None), (
+            "cannot have both rotary and pope embeddings"
+        )
 
         self.attend = Attend(flash=flash, dropout=dropout)
 
@@ -496,9 +496,9 @@ class BSRoformer(Module):
         ).shape[1]
 
         assert len(freqs_per_bands) > 1
-        assert (
-            sum(freqs_per_bands) == freqs
-        ), f"the number of freqs in the bands must equal {freqs} based on the STFT settings, but got {sum(freqs_per_bands)}"
+        assert sum(freqs_per_bands) == freqs, (
+            f"the number of freqs in the bands must equal {freqs} based on the STFT settings, but got {sum(freqs_per_bands)}"
+        )
 
         freqs_per_bands_with_complex = tuple(
             2 * f * self.audio_channels for f in freqs_per_bands
