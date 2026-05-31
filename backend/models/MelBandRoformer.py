@@ -108,9 +108,9 @@ class Attention(Module):
 
         self.rotary_embed = rotary_embed
         self.pope_embed = pope_embed
-        assert not (
-            self.rotary_embed is not None and self.pope_embed is not None
-        ), "cannot have both rotary and pope embeddings"
+        assert not (self.rotary_embed is not None and self.pope_embed is not None), (
+            "cannot have both rotary and pope embeddings"
+        )
 
         self.attend = Attend(flash=flash, dropout=dropout)
 
@@ -455,9 +455,9 @@ class MelBandRoformer(Module):
 
         # binary as in paper (then estimated masks are averaged for overlapping regions)
         freqs_per_band = mel_filter_bank > 0
-        assert freqs_per_band.any(
-            dim=0
-        ).all(), "all frequencies need to be covered by all bands for now"
+        assert freqs_per_band.any(dim=0).all(), (
+            "all frequencies need to be covered by all bands for now"
+        )
 
         repeated_freq_indices = repeat(torch.arange(freqs), "f -> b f", b=num_bands)
         freq_indices = repeated_freq_indices[freqs_per_band]
@@ -534,9 +534,9 @@ class MelBandRoformer(Module):
 
         istft_length = raw_audio_length if self.match_input_audio_length else None
 
-        assert (
-            (not self.stereo and channels == 1) or (self.stereo and channels == 2)
-        ), "stereo needs to be set to True if passing in audio signal that is stereo (channel dimension of 2). also need to be False if mono (channel dimension of 1)"
+        assert (not self.stereo and channels == 1) or (self.stereo and channels == 2), (
+            "stereo needs to be set to True if passing in audio signal that is stereo (channel dimension of 2). also need to be False if mono (channel dimension of 1)"
+        )
 
         # to stft
 
