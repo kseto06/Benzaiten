@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)
 OUTPUT_ROOT="${BENZAITEN_SMOKE_OUTPUT_DIR:-$ROOT_DIR/test_outputs/local_pipeline_smoke}"
-INPUT_AUDIO="$OUTPUT_ROOT/source_separation/i_miss_you_cut_test_audio.mp3"
+INPUT_AUDIO="$OUTPUT_ROOT/source_separation/instrumental.mp3"
 OUTPUT_DIR="$OUTPUT_ROOT/decrowd"
 
 if [[ ! -f "$INPUT_AUDIO" ]]; then
