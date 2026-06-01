@@ -18,12 +18,16 @@ mkdir -p "$OUTPUT_DIR"
 cd "$ROOT_DIR"
 
 python - "$INPUT_VIDEO" "$OUTPUT_DIR" <<'PY'
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from backend.scripts.process import run_karaoke_inference
 from backend.scripts.ffmpeg import split_sources
+from backend.scripts.process import run_karaoke_inference
+
+
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg"}
 
 
 def require_file(path: Path) -> None:
@@ -54,49 +58,114 @@ def probe_duration(path: Path) -> float:
     return float(result.stdout.strip())
 
 
+def convert_audio_to_mp3(source: Path, destination: Path) -> None:
+    if source.resolve() == destination.resolve():
+        return
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            "192k",
+            str(destination),
+        ],
+        check=True,
+    )
+
+
+def copy_video(source: Path, destination: Path) -> None:
+    if source.resolve() == destination.resolve():
+        return
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+
+def find_audio_output(output_dir: Path, keyword: str) -> Path:
+    candidates = [
+        path
+        for path in output_dir.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in AUDIO_EXTENSIONS
+        and keyword.lower() in path.stem.lower()
+    ]
+
+    if not candidates:
+        all_audio = sorted(
+            str(path.relative_to(output_dir))
+            for path in output_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS
+        )
+        raise FileNotFoundError(
+            f"Could not find an audio output containing '{keyword}' in {output_dir}. "
+            f"Audio files found: {all_audio}"
+        )
+
+    candidates.sort(key=lambda path: path.stat().st_size, reverse=True)
+    return candidates[0]
+
+
 input_video = Path(sys.argv[1]).resolve()
 output_dir = Path(sys.argv[2]).resolve()
 
 video_output_path, audio_output_path = split_sources(
-    video_path=str(input_video), output_dir=str(output_dir)
+    video_path=str(input_video),
+    output_dir=str(output_dir),
 )
+
+video_output_path = Path(video_output_path).resolve()
+audio_output_path = Path(audio_output_path).resolve()
 
 require_file(video_output_path)
 require_file(audio_output_path)
 
+canonical_video_path = output_dir / "input_video.mp4"
+canonical_audio_path = output_dir / "input_audio.mp3"
+
+copy_video(video_output_path, canonical_video_path)
+convert_audio_to_mp3(audio_output_path, canonical_audio_path)
+
+require_file(canonical_video_path)
+require_file(canonical_audio_path)
+
 run_karaoke_inference(
     model_name="bs-roformer",
-    audio_path=str(audio_output_path),
+    audio_path=str(canonical_audio_path),
     output_path=str(output_dir),
 )
 
-vocals_path = output_dir / "vocals.mp3"
-instrumental_path = output_dir / "instrumental.mp3"
-require_file(vocals_path)
-require_file(instrumental_path)
+raw_vocals_path = find_audio_output(output_dir, "vocal")
+raw_instrumental_path = find_audio_output(output_dir, "instrumental")
 
-video_duration = probe_duration(video_output_path)
-audio_duration = probe_duration(audio_output_path)
-vocals_duration = probe_duration(vocals_path)
-instrumental_duration = probe_duration(instrumental_path)
+canonical_vocals_path = output_dir / "vocals.mp3"
+canonical_instrumental_path = output_dir / "instrumental.mp3"
 
-if video_duration <= 0:
-    raise RuntimeError(f"Expected a non-zero split video duration, got {video_duration}")
+convert_audio_to_mp3(raw_vocals_path, canonical_vocals_path)
+convert_audio_to_mp3(raw_instrumental_path, canonical_instrumental_path)
 
-if audio_duration <= 0:
-    raise RuntimeError(f"Expected a non-zero split audio duration, got {audio_duration}")
-
-if vocals_duration <= 0:
-    raise RuntimeError(f"Expected a non-zero vocals duration, got {vocals_duration}")
-
-if instrumental_duration <= 0:
-    raise RuntimeError(
-        f"Expected a non-zero instrumental duration, got {instrumental_duration}"
-    )
+for path in [
+    canonical_video_path,
+    canonical_audio_path,
+    canonical_vocals_path,
+    canonical_instrumental_path,
+]:
+    require_file(path)
+    duration = probe_duration(path)
+    if duration <= 0:
+        raise RuntimeError(f"Expected a non-zero duration for {path}, got {duration}")
 
 print("Source separation stage outputs verified successfully")
-print(f"video_output={video_output_path}")
-print(f"audio_output={audio_output_path}")
-print(f"vocals_output={vocals_path}")
-print(f"instrumental_output={instrumental_path}")
+print(f"input_video={input_video}")
+print(f"canonical_video={canonical_video_path}")
+print(f"canonical_audio={canonical_audio_path}")
+print(f"raw_vocals={raw_vocals_path}")
+print(f"raw_instrumental={raw_instrumental_path}")
+print(f"canonical_vocals={canonical_vocals_path}")
+print(f"canonical_instrumental={canonical_instrumental_path}")
 PY
