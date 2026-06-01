@@ -199,7 +199,7 @@ jobs:
     if: ${{ inputs.run_decrowd == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: source-separation-pipeline-test
+    needs: [build-docker-image, source-separation-pipeline-test]
 
     permissions:
       contents: read
