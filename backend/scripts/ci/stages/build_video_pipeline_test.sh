@@ -3,10 +3,20 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)
 OUTPUT_ROOT="${BENZAITEN_SMOKE_OUTPUT_DIR:-$ROOT_DIR/test_outputs/local_pipeline_smoke}"
+RUN_DECROWD="${BENZAITEN_RUN_DECROWD:-true}"
+
 VIDEO_INPUT="$OUTPUT_ROOT/source_separation/input_video.mp4"
-AUDIO_INPUT="$OUTPUT_ROOT/decrowd/instrumental_decrowd.mp3"
 SRT_INPUT="$OUTPUT_ROOT/transcription/i_miss_you_cut_test.srt"
 OUTPUT_DIR="$OUTPUT_ROOT/build_video"
+
+if [[ "$RUN_DECROWD" == "true" ]]; then
+  AUDIO_INPUT="$OUTPUT_ROOT/decrowd/instrumental_decrowd.mp3"
+elif [[ "$RUN_DECROWD" == "false" ]]; then
+  AUDIO_INPUT="$OUTPUT_ROOT/source_separation/instrumental.mp3"
+else
+  echo "Invalid BENZAITEN_RUN_DECROWD value: $RUN_DECROWD. Expected 'true' or 'false'." >&2
+  exit 1
+fi
 
 for input_path in "$VIDEO_INPUT" "$AUDIO_INPUT" "$SRT_INPUT"; do
   if [[ ! -f "$input_path" ]]; then
@@ -81,6 +91,7 @@ if final_duration <= 0:
     raise RuntimeError(f"Expected a non-zero video duration, got {final_duration}")
 
 print("Build video stage outputs verified successfully")
+print(f"run_decrowd={sys.argv[5] if len(sys.argv) > 5 else 'unknown'}")
 print(f"video_input={video_input}")
 print(f"audio_input={audio_input}")
 print(f"srt_input={srt_input}")
