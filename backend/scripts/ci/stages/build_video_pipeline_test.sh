@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)
 OUTPUT_ROOT="${BENZAITEN_SMOKE_OUTPUT_DIR:-$ROOT_DIR/test_outputs/local_pipeline_smoke}"
-VIDEO_INPUT="$OUTPUT_ROOT/source_separation/i_miss_you_cut_test_video.mp4"
-AUDIO_INPUT="$OUTPUT_ROOT/decrowd/instrumental_(decrowd).mp3"
+VIDEO_INPUT="$OUTPUT_ROOT/source_separation/input_video.mp4"
+AUDIO_INPUT="$OUTPUT_ROOT/decrowd/instrumental_decrowd.mp3"
 SRT_INPUT="$OUTPUT_ROOT/transcription/i_miss_you_cut_test.srt"
 OUTPUT_DIR="$OUTPUT_ROOT/build_video"
 
@@ -62,7 +62,11 @@ audio_input = Path(sys.argv[2]).resolve()
 srt_input = Path(sys.argv[3]).resolve()
 output_dir = Path(sys.argv[4]).resolve()
 
+for path in [video_input, audio_input, srt_input]:
+    require_file(path)
+
 final_video = output_dir / "final_video.mp4"
+
 build_video(
     video_path=str(video_input),
     audio_path=str(audio_input),
@@ -77,6 +81,9 @@ if final_duration <= 0:
     raise RuntimeError(f"Expected a non-zero video duration, got {final_duration}")
 
 print("Build video stage outputs verified successfully")
+print(f"video_input={video_input}")
+print(f"audio_input={audio_input}")
+print(f"srt_input={srt_input}")
 print(f"final_video={final_video}")
 print(f"final_video_duration_seconds={final_duration:.3f}")
 PY

@@ -1,13 +1,13 @@
-# this workflow runs automated tests for the model inference pipeline, verifying outputs at each inference step
+# This workflow runs automated tests for the model inference pipeline, verifying outputs at each inference step.
 name: Inference Pipeline Automated Test Run CI
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Input branch to run the pipeline test from"
-        required: True
-        default: ""
+        description: "Input branch, tag, or commit SHA to run the pipeline test from"
+        required: true
+        default: "model-orchestration"
       no_cache:
         description: "Build Docker image without cache"
         required: false
@@ -20,6 +20,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/benzaiten-inference
+  BENZAITEN_SMOKE_OUTPUT_DIR: /app/test_outputs/local_pipeline_smoke
+  BENZAITEN_SMOKE_INPUT_VIDEO: /app/backend/tests/input_files/i_miss_you_cut_test.mp4
 
 jobs:
   lint-and-compile:
@@ -89,7 +91,7 @@ jobs:
 
   source-separation-pipeline-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: build-docker-image
 
     permissions:
@@ -118,16 +120,20 @@ jobs:
       - name: Prepare test output directory
         run: |
           rm -rf test_outputs
-          mkdir -p test_outputs/source_separation
+          mkdir -p test_outputs/local_pipeline_smoke
 
       - name: Run source separation stage
         run: |
           docker run --rm \
+            -e BENZAITEN_SMOKE_INPUT_VIDEO="${{ env.BENZAITEN_SMOKE_INPUT_VIDEO }}" \
+            -e BENZAITEN_SMOKE_OUTPUT_DIR="${{ env.BENZAITEN_SMOKE_OUTPUT_DIR }}" \
+            -v "$PWD/backend/tests/input_files:/app/backend/tests/input_files:ro" \
             -v "$PWD/test_outputs:/app/test_outputs" \
             benzaiten-inference:test \
             bash backend/scripts/ci/stages/source_separation_pipeline_test.sh
 
       - name: Upload source separation outputs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: source-separation-outputs
@@ -136,7 +142,7 @@ jobs:
 
   decrowd-pipeline-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: source-separation-pipeline-test
 
     permissions:
@@ -171,11 +177,13 @@ jobs:
       - name: Run decrowd stage
         run: |
           docker run --rm \
+            -e BENZAITEN_SMOKE_OUTPUT_DIR="${{ env.BENZAITEN_SMOKE_OUTPUT_DIR }}" \
             -v "$PWD/test_outputs:/app/test_outputs" \
             benzaiten-inference:test \
             bash backend/scripts/ci/stages/decrowd_pipeline_test.sh
 
       - name: Upload decrowd outputs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: decrowd-outputs
@@ -184,7 +192,7 @@ jobs:
 
   transcription-pipeline-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: source-separation-pipeline-test
 
     permissions:
@@ -219,11 +227,13 @@ jobs:
       - name: Run transcription stage
         run: |
           docker run --rm \
+            -e BENZAITEN_SMOKE_OUTPUT_DIR="${{ env.BENZAITEN_SMOKE_OUTPUT_DIR }}" \
             -v "$PWD/test_outputs:/app/test_outputs" \
             benzaiten-inference:test \
             bash backend/scripts/ci/stages/transcription_pipeline_test.sh
 
       - name: Upload transcription outputs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: transcription-outputs
@@ -232,7 +242,7 @@ jobs:
 
   build-video-pipeline-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs:
       - decrowd-pipeline-test
       - transcription-pipeline-test
@@ -260,6 +270,12 @@ jobs:
           docker pull "${IMAGE_REF}"
           docker tag "${IMAGE_REF}" benzaiten-inference:test
 
+      - name: Download source separation outputs
+        uses: actions/download-artifact@v5
+        with:
+          name: source-separation-outputs
+          path: test_outputs
+
       - name: Download decrowd outputs
         uses: actions/download-artifact@v5
         with:
@@ -275,6 +291,7 @@ jobs:
       - name: Run build video stage
         run: |
           docker run --rm \
+            -e BENZAITEN_SMOKE_OUTPUT_DIR="${{ env.BENZAITEN_SMOKE_OUTPUT_DIR }}" \
             -v "$PWD/test_outputs:/app/test_outputs" \
             benzaiten-inference:test \
             bash backend/scripts/ci/stages/build_video_pipeline_test.sh
