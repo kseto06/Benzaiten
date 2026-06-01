@@ -17,7 +17,7 @@ mkdir -p "$OUTPUT_DIR"
 
 cd "$ROOT_DIR"
 
-python - "$INPUT_VIDEO" "$OUTPUT_DIR" <<'PY'
+python -u - "$INPUT_VIDEO" "$OUTPUT_DIR" <<'PY'
 import shutil
 import subprocess
 import sys
@@ -113,6 +113,7 @@ def find_audio_output(output_dir: Path, keyword: str) -> Path:
 
 input_video = Path(sys.argv[1]).resolve()
 output_dir = Path(sys.argv[2]).resolve()
+bs_output_dir = output_dir / "bs_roformer"
 
 video_output_path, audio_output_path = split_sources(
     video_path=str(input_video),
@@ -125,6 +126,8 @@ audio_output_path = Path(audio_output_path).resolve()
 require_file(video_output_path)
 require_file(audio_output_path)
 
+bs_output_dir.mkdir(parents=True, exist_ok=True)
+
 canonical_video_path = output_dir / "input_video.mp4"
 canonical_audio_path = output_dir / "input_audio.mp3"
 
@@ -134,14 +137,16 @@ convert_audio_to_mp3(audio_output_path, canonical_audio_path)
 require_file(canonical_video_path)
 require_file(canonical_audio_path)
 
+print("Running bs-roformer source separation", flush=True)
 run_karaoke_inference(
     model_name="bs-roformer",
     audio_path=str(canonical_audio_path),
-    output_path=str(output_dir),
+    output_path=str(bs_output_dir),
 )
+print("Finished bs-roformer source separation", flush=True)
 
-raw_vocals_path = find_audio_output(output_dir, "vocal")
-raw_instrumental_path = find_audio_output(output_dir, "instrumental")
+raw_vocals_path = find_audio_output(bs_output_dir, "vocal")
+raw_instrumental_path = find_audio_output(bs_output_dir, "instrumental")
 
 canonical_vocals_path = output_dir / "vocals.mp3"
 canonical_instrumental_path = output_dir / "instrumental.mp3"
