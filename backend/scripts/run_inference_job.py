@@ -590,6 +590,8 @@ def run_build_video_job():
         "model": "build video",
         "gcs_links": {},
     }
+    output_dir = Path(f"/tmp/outputs/{job_id}")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     if is_video:
         # get the video path from gcs and construct the final video path
@@ -600,7 +602,6 @@ def run_build_video_job():
                 local_path=f"/tmp/{job_id}/{filename}",
             )
         )
-        output_dir = Path(f"/tmp/outputs/{job_id}")
         output_dict["video"] = Path(video_path).name
         final_video_path = output_dir / "final_video.mp4"
 
