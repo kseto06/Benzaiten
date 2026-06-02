@@ -12,7 +12,9 @@ jobs:
 
         - name: Validate Kubernetes manifests client-side
           run: |
-            shopt -s nullglob
-            kubectl apply \
-                --dry-run=client \
-                -f backend/scripts/benzaiten_inference/k8s/*.yaml
+            curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+              | tar xz -C /usr/local/bin
+            kubeconform -strict -summary \
+              backend/scripts/benzaiten_inference/k8s/backend-rbac.yaml \
+              backend/scripts/benzaiten_inference/k8s/backend-deployment.yaml \
+              backend/scripts/benzaiten_inference/k8s/service.yaml
