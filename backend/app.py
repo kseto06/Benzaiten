@@ -475,7 +475,7 @@ async def create_orchestration_inference_pipeline():
 
     This attempts to make the pipeline more modular and efficient via parallelizing k8 jobs
     """
-    return NotImplementedError(
+    raise NotImplementedError(
         "Orchestration inference pipeline creation not implemented yet"
     )
 
