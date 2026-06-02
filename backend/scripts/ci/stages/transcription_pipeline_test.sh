@@ -18,7 +18,7 @@ mkdir -p "$OUTPUT_DIR"
 
 cd "$ROOT_DIR"
 
-python - "$INPUT_AUDIO" "$OUTPUT_DIR" "$OUTPUT_FILE" <<'PY'
+python - "$INPUT_AUDIO" "$OUTPUT_FILE" <<'PY'
 import sys
 from pathlib import Path
 
@@ -35,17 +35,20 @@ def require_file(path: Path) -> None:
 
 
 input_audio = Path(sys.argv[1]).resolve()
-output_dir = Path(sys.argv[2]).resolve()
-output_file = Path(sys.argv[3]).resolve()
+output_file = Path(sys.argv[2]).resolve()
+
+require_file(input_audio)
+output_file.parent.mkdir(parents=True, exist_ok=True)
 
 srt_output = Path(
     run_srt_inference(
         audio_path=str(input_audio),
-        language=None,
-        model_size="base",
+        language="ko",
+        model_size="large-v3-turbo",
         output_path=str(output_file),
     )
 )
+
 require_file(srt_output)
 
 vtt_output = output_file.with_suffix(".vtt")
@@ -53,6 +56,7 @@ convert_srt_to_vtt(srt_path=str(srt_output), vtt_path=str(vtt_output))
 require_file(vtt_output)
 
 print("Transcription stage outputs verified successfully")
+print(f"input_audio={input_audio}")
 print(f"srt_output={srt_output}")
 print(f"vtt_output={vtt_output}")
 PY
