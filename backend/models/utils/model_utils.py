@@ -7,6 +7,7 @@ from tqdm.auto import tqdm
 
 from typing import List, Dict, Union
 
+
 def bigshifts_wrapper(
     config: ConfigDict,
     model: torch.nn.Module,
@@ -14,9 +15,9 @@ def bigshifts_wrapper(
     device: torch.device,
     model_type: str,
     pbar: bool = False,
-    bigshifts: int = 1
+    bigshifts: int = 1,
 ) -> Union[Dict[str, np.ndarray], np.ndarray]:
-    '''
+    """
     BigShifts wrapper for inference-time demixing.
 
     Args:
@@ -30,7 +31,7 @@ def bigshifts_wrapper(
 
     Returns:
         Union[Dict[str, np.ndarray], np.ndarray]: The separated sources as a dictionary of numpy arrays (if the model outputs a dict) or a single numpy array (if the model outputs a tensor).
-    '''
+    """
 
     should_print = not dist.is_initialized() or dist.get_rank() == 0
 
@@ -60,7 +61,9 @@ def bigshifts_wrapper(
             }
             results.append(unshifted)
         elif isinstance(sources, np.ndarray):
-            unshifted = np.concatenate((sources[..., shift:], sources[..., :shift]), axis=-1)
+            unshifted = np.concatenate(
+                (sources[..., shift:], sources[..., :shift]), axis=-1
+            )
             results.append(unshifted)
         else:
             raise ValueError("Unsupported return type from demix")
@@ -72,13 +75,14 @@ def bigshifts_wrapper(
         return avg_result
     return np.mean(results, axis=0)
 
+
 def demix(
     config: ConfigDict,
     model: torch.nn.Module,
     mix: torch.Tensor,
     device: torch.device,
     model_type: str,
-    pbar: bool = False
+    pbar: bool = False,
 ) -> Union[Dict[str, np.ndarray], np.ndarray]:
     """
     Perform audio source separation with a given model.
@@ -110,18 +114,18 @@ def demix(
 
     mix = torch.tensor(mix, dtype=torch.float32)
 
-    if model_type == 'htdemucs':
-        mode = 'demucs'
+    if model_type == "htdemucs":
+        mode = "demucs"
     else:
-        mode = 'generic'
+        mode = "generic"
     # Define processing parameters based on the mode
-    if mode == 'demucs':
+    if mode == "demucs":
         chunk_size = config.training.samplerate * config.training.segment
         num_instruments = len(config.training.instruments)
         num_overlap = config.inference.num_overlap
         step = chunk_size // num_overlap
     else:
-        if 'chunk_size' in config.inference:
+        if "chunk_size" in config.inference:
             chunk_size = config.inference.chunk_size
         else:
             chunk_size = config.audio.chunk_size
@@ -139,7 +143,7 @@ def demix(
 
     batch_size = config.inference.batch_size
 
-    use_amp = getattr(config.training, 'use_amp', True)
+    use_amp = getattr(config.training, "use_amp", True)
 
     with torch.cuda.amp.autocast(enabled=use_amp):
         with torch.inference_mode():
@@ -160,13 +164,15 @@ def demix(
 
             while i < mix.shape[1]:
                 # Extract chunk and apply padding if necessary
-                part = mix[:, i:i + chunk_size].to(device)
+                part = mix[:, i : i + chunk_size].to(device)
                 chunk_len = part.shape[-1]
                 if mode == "generic" and chunk_len > chunk_size // 2:
                     pad_mode = "reflect"
                 else:
                     pad_mode = "constant"
-                part = nn.functional.pad(part, (0, chunk_size - chunk_len), mode=pad_mode, value=0)
+                part = nn.functional.pad(
+                    part, (0, chunk_size - chunk_len), mode=pad_mode, value=0
+                )
 
                 batch_data.append(part)
                 batch_locations.append((i, chunk_len))
@@ -178,7 +184,7 @@ def demix(
                     x = model(arr)
 
                     if mode == "generic":
-                        window = windowing_array.clone() # using clone() fixes the clicks at chunk edges when using batch_size=1
+                        window = windowing_array.clone()  # using clone() fixes the clicks at chunk edges when using batch_size=1
                         if i - step == 0:  # First audio chunk, no fadein
                             window[:fade_size] = 1
                         elif i >= mix.shape[1]:  # Last audio chunk, no fadeout
@@ -186,11 +192,17 @@ def demix(
 
                     for j, (start, seg_len) in enumerate(batch_locations):
                         if mode == "generic":
-                            result[..., start:start + seg_len] += x[j, ..., :seg_len].cpu() * window[..., :seg_len]
-                            counter[..., start:start + seg_len] += window[..., :seg_len]
+                            result[..., start : start + seg_len] += (
+                                x[j, ..., :seg_len].cpu() * window[..., :seg_len]
+                            )
+                            counter[..., start : start + seg_len] += window[
+                                ..., :seg_len
+                            ]
                         else:
-                            result[..., start:start + seg_len] += x[j, ..., :seg_len].cpu()
-                            counter[..., start:start + seg_len] += 1.0
+                            result[..., start : start + seg_len] += x[
+                                j, ..., :seg_len
+                            ].cpu()
+                            counter[..., start : start + seg_len] += 1.0
 
                     batch_data.clear()
                     batch_locations.clear()
@@ -223,7 +235,8 @@ def demix(
         return estimated_sources
     else:
         return ret_data
-    
+
+
 def _getWindowingArray(window_size: int, fade_size: int) -> torch.Tensor:
     """
     Generate a windowing array with a linear fade-in at the beginning and a fade-out at the end.
@@ -258,6 +271,7 @@ def _getWindowingArray(window_size: int, fade_size: int) -> torch.Tensor:
     window[:fade_size] = fadein
     return window
 
+
 def prefer_target_instrument(config: ConfigDict) -> List[str]:
     """
     Return the list of target instruments based on the configuration.
@@ -273,8 +287,8 @@ def prefer_target_instrument(config: ConfigDict) -> List[str]:
     -------
     List[str]
         A list of target instruments.
-        """
-    if getattr(config.training, 'target_instrument', None):
+    """
+    if getattr(config.training, "target_instrument", None):
         return [config.training.target_instrument]
     else:
         return config.training.instruments

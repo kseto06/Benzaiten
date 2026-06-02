@@ -1,5 +1,5 @@
-# this file serves as the full automated test workflow CI combining all elementary CIs
-name: Automated Test CI
+# this file serves as the full automated test workflow CI combining all elementary CIs for QA + validation
+name: QA & Validation Automated Test CI
 
 on:
     push:
@@ -27,11 +27,14 @@ jobs:
     python-ci:
         uses: ./.github/workflows/python-ci.yml
     
-    docker-build:
-        uses: ./.github/workflows/docker-build.yml
-
     k8s-manifest-check:
+        needs: python-ci
         uses: ./.github/workflows/k8s-manifest-check.yml
     
     sh-script-check:
+        needs: k8s-manifest-check
         uses: ./.github/workflows/sh-script-check.yml
+
+    docker-build:
+        needs: sh-script-check
+        uses: ./.github/workflows/docker-build.yml
