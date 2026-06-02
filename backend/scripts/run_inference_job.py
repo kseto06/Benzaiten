@@ -441,17 +441,13 @@ def run_decrowding_job():
 
         output_dict = {
             "status": "decrowding done",
-            "model": "decrowd",
+            "model": "bs-roformer+decrowd",
+            "crowd": "crowd.mp3",
             "instrumental_(decrowd)": "instrumental_(decrowd).mp3",
-            "gcs_links": {},
+            "gcs_links": {
+                "instrumental_(decrowd)": f"https://storage.googleapis.com/{GCS_BUCKET}/{decrowd_blob}"
+            },
         }
-
-        output_dict["model"] = "bs-roformer+decrowd"
-        output_dict["crowd"] = "crowd.mp3"
-        output_dict["instrumental_(decrowd)"] = "instrumental_(decrowd).mp3"
-        output_dict["gcs_links"]["instrumental_(decrowd)"] = (
-            f"https://storage.googleapis.com/{GCS_BUCKET}/{decrowd_blob}"
-        )
 
         # write final_audio_path to GCS as JSON blob
         final_audio_path = decrowd_instrumental_path
@@ -583,6 +579,9 @@ def run_build_video_job():
     is_video = os.environ.get("IS_VIDEO", "false").lower() == "true"
     gcs_bucket = os.environ.get("GCS_BUCKET", GCS_BUCKET)
 
+    output_dir = Path(f"/tmp/outputs/{job_id}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     # building the final video
     video_path, final_video_path, final_video_blob = None, None, None
     input_blob_name = os.environ["INPUT_BLOB_NAME"]
@@ -609,6 +608,7 @@ def run_build_video_job():
                 local_path=f"/tmp/{job_id}/{filename}",
             )
         )
+
         output_dict["video"] = Path(video_path).name
         final_video_path = output_dir / "final_video.mp4"
 

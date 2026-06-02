@@ -79,6 +79,7 @@ def remove_file_from_gcs(bucket_name: str, blob_name: str) -> bool:
 
 def clean_gcs_bucket(
     bucket_name: str,
+    job_id: str,
     keep_blob_names: Optional[Iterable[str]] = None,
 ) -> int:
     """
@@ -97,10 +98,11 @@ def clean_gcs_bucket(
     deleted_count = 0
 
     for blob in bucket.list_blobs():
-        should_delete_inputs_blob = blob.name.startswith("inputs/")
-        should_delete_unpreserved_blob = blob.name not in preserved
+        is_input_blob = blob.name.startswith("inputs/")
+        is_current_job_output = blob.name.startswith(f"outputs/{job_id}/")
+        is_unpreserved = blob.name not in preserved
 
-        if should_delete_inputs_blob or should_delete_unpreserved_blob:
+        if is_input_blob or (is_current_job_output and is_unpreserved):
             blob.delete()
             deleted_count += 1
 

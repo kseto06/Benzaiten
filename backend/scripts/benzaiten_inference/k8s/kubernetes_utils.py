@@ -170,7 +170,7 @@ def create_k8s_source_separation_inference_job(
     """
     do a vocal/instrumental source separation and write those to GCS bucket
     """
-    return NotImplementedError("Source separation job creation not implemented yet")
+    raise NotImplementedError("Source separation job creation not implemented yet")
 
 
 def create_k8s_decrowd_inference_job(job_id: str, filename: str) -> str:
@@ -180,7 +180,7 @@ def create_k8s_decrowd_inference_job(job_id: str, filename: str) -> str:
     Args:
         job_id: Unique identifier for the job, used as part of the K8s job name; generated in fastapi app
     """
-    return NotImplementedError("Decrowding job creation not implemented yet")
+    raise NotImplementedError("Decrowding job creation not implemented yet")
 
 
 def create_k8s_transcription_inference_job(
@@ -194,7 +194,7 @@ def create_k8s_transcription_inference_job(
     Args:
         job_id: Unique identifier for the job, used as part of the K8s job name; generated in fastapi app
     """
-    return NotImplementedError("Transcription job creation not implemented yet")
+    raise NotImplementedError("Transcription job creation not implemented yet")
 
 
 def create_k8s_build_video_job(
@@ -210,7 +210,7 @@ def create_k8s_build_video_job(
     Args:
         job_id: Unique identifier for the job, used as part of the K8s job name; generated in fastapi app
     """
-    return NotImplementedError("Build video job creation not implemented yet")
+    raise NotImplementedError("Build video job creation not implemented yet")
 
 
 def wait_for_jobs():
