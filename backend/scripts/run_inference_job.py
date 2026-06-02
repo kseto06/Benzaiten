@@ -462,7 +462,14 @@ def run_decrowding_job():
         return output_dict
 
     else:
-        instrumental_path = Path(f"/tmp/{job_id}/instrumental.mp3")
+        instrumental_blob = f"outputs/{job_id}/instrumental.mp3"
+        instrumental_path = Path(
+            download_file_from_gcs(
+                bucket_name=GCS_BUCKET,
+                source_blob_name=instrumental_blob,
+                local_path=f"/tmp/{job_id}/instrumental.mp3",
+            )
+        )
         final_audio_path = instrumental_path
         final_audio_gcs_link = write_json_to_gcs_blob(
             job_id=job_id, final_audio_path=final_audio_path
