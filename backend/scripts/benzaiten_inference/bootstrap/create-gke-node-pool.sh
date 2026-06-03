@@ -12,7 +12,12 @@ gcloud container node-pools create "${NODE_POOL}" \
     --machine-type g2-standard-8 \
     --accelerator type=nvidia-l4,count=1,gpu-driver-version=latest \
     --num-nodes 1 \
-    --disk-type pd-standard \
-    --disk-size 50
+    --disk-type pd-balanced \
+    --disk-size 100 \
+    --scopes=https://www.googleapis.com/auth/cloud-platform \
+    --node-taints=inference=true:NoSchedule \
+    --enable-autoscaling \
+    --min-nodes 0 \
+    --max-nodes 2
 
-kubectl get nodes
+kubectl get nodes -L cloud.google.com/gke-nodepool

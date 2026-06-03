@@ -17,15 +17,6 @@ gcloud container clusters update "${CLUSTER}" \
     --min-nodes 0 \
     --max-nodes 2
 
-# scales pods by CPU usage (though not GPU usage)
-# max=2 because each pod requests 1 GPU and pool max is 2 GPU nodes.
-kubectl autoscale deployment benzaiten-inference-deployment \
-    --cpu-percent=70 \
-    --min=1 \
-    --max=2 \
-    --dry-run=client -o yaml | kubectl apply -f -
-
 # check results
-kubectl get hpa
-kubectl get nodes
+kubectl get nodes -L cloud.google.com/gke-nodepool
 kubectl get pods -o wide
