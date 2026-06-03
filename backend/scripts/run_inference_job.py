@@ -24,6 +24,10 @@ from backend.language_models.transcribe import run_srt_inference
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "benzaiten-outputs")
 
 
+def _stage_blob(job_id: str, stage: str, filename: str) -> str:
+    return f"outputs/{job_id}/{stage}/{filename}"
+
+
 def run_inference_job() -> Dict:
     """
     Function to run the full inference pipeline: source separation -> transcription -> translation -> romanization -> remove (temp) GCS files -> construct video with subtitles
@@ -325,8 +329,14 @@ def run_source_separation_job() -> Dict:
     }
 
     # upload separated sources to gcs
-    vocals_blob = f"outputs/{job_id}/vocals.mp3"
-    instrumental_blob = f"outputs/{job_id}/instrumental.mp3"
+    vocals_blob = os.environ.get(
+        "OUTPUT_VOCALS_BLOB_NAME",
+        _stage_blob(job_id, "source_separation", "vocals.mp3"),
+    )
+    instrumental_blob = os.environ.get(
+        "OUTPUT_INSTRUMENTAL_BLOB_NAME",
+        _stage_blob(job_id, "source_separation", "instrumental.mp3"),
+    )
 
     vocals_link = upload_file_to_gcs(
         local_path=str(vocals_path),
@@ -342,6 +352,18 @@ def run_source_separation_job() -> Dict:
 
     output_dict["gcs_links"]["vocals"] = vocals_link
     output_dict["gcs_links"]["instrumental"] = instrumental_link
+
+    if is_video and video_path is not None:
+        input_video_blob = os.environ.get(
+            "OUTPUT_VIDEO_BLOB_NAME",
+            _stage_blob(job_id, "source_separation", "input_video.mp4"),
+        )
+        video_link = upload_file_to_gcs(
+            local_path=str(video_path),
+            bucket_name=GCS_BUCKET,
+            destination_blob_name=input_video_blob,
+        )
+        output_dict["gcs_links"]["input_video"] = video_link
 
     return output_dict
 
@@ -400,8 +422,11 @@ def run_decrowding_job():
     # decrowding pipeline (if selected)
     if should_decrowd:
         model_name = "decrowd"
-        # get decrowding input from gcs bucket's instrumental.mp3
-        instrumental_blob = f"outputs/{job_id}/instrumental.mp3"
+        # get decrowding input from the source-separation stage output
+        instrumental_blob = os.environ.get(
+            "INPUT_AUDIO_BLOB_NAME",
+            _stage_blob(job_id, "source_separation", "instrumental.mp3"),
+        )
         decrowd_input_path = Path(
             download_file_from_gcs(
                 bucket_name=GCS_BUCKET,
@@ -417,6 +442,7 @@ def run_decrowding_job():
 
         # construct output dir and run decrowding inference
         output_dir = Path(f"/tmp/outputs/{job_id}")
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         run_karaoke_inference(
             model_name=model_name,
@@ -432,7 +458,10 @@ def run_decrowding_job():
             )
 
         # write new decrowded instrumental path to output_dict and GCS
-        decrowd_blob = f"outputs/{job_id}/instrumental_(decrowd).mp3"
+        decrowd_blob = os.environ.get(
+            "OUTPUT_AUDIO_BLOB_NAME",
+            _stage_blob(job_id, "decrowd", "instrumental_(decrowd).mp3"),
+        )
         upload_file_to_gcs(
             local_path=str(decrowd_instrumental_path),
             bucket_name=GCS_BUCKET,
@@ -450,34 +479,38 @@ def run_decrowding_job():
         }
 
         # write final_audio_path to GCS as JSON blob
-        final_audio_path = decrowd_instrumental_path
-        final_audio_gcs_link = write_json_to_gcs_blob(
-            job_id=job_id, final_audio_path=final_audio_path
-        )
-        output_dict["gcs_links"]["final_audio_json"] = final_audio_gcs_link
+        # final_audio_path = decrowd_instrumental_path
+        # final_audio_gcs_link = write_json_to_gcs_blob(
+        #     job_id=job_id, final_audio_path=final_audio_path
+        # )
+        # output_dict["gcs_links"]["final_audio_json"] = final_audio_gcs_link
+
         return output_dict
 
     else:
-        instrumental_blob = f"outputs/{job_id}/instrumental.mp3"
-        instrumental_path = Path(
-            download_file_from_gcs(
-                bucket_name=GCS_BUCKET,
-                source_blob_name=instrumental_blob,
-                local_path=f"/tmp/{job_id}/instrumental.mp3",
-            )
+        instrumental_blob = os.environ.get(
+            "INPUT_AUDIO_BLOB_NAME",
+            _stage_blob(job_id, "source_separation", "instrumental.mp3"),
         )
-        final_audio_path = instrumental_path
-        final_audio_gcs_link = write_json_to_gcs_blob(
-            job_id=job_id, final_audio_path=final_audio_path
-        )
+        # instrumental_path = Path(
+        #     download_file_from_gcs(
+        #         bucket_name=GCS_BUCKET,
+        #         source_blob_name=instrumental_blob,
+        #         local_path=f"/tmp/{job_id}/instrumental.mp3",
+        #     )
+        # )
+        # final_audio_path = instrumental_path
+        # final_audio_gcs_link = write_json_to_gcs_blob(
+        #     job_id=job_id, final_audio_path=final_audio_path
+        # )
 
         return {
             "status": "decrowding skipped",
             "model": "bs-roformer",
             "instrumental": "instrumental.mp3",
             "gcs_links": {
-                "instrumental": f"https://storage.googleapis.com/{GCS_BUCKET}/outputs/{job_id}/instrumental.mp3",
-                "final_audio_json": final_audio_gcs_link,
+                "instrumental": f"https://storage.googleapis.com/{GCS_BUCKET}/{instrumental_blob}",
+                # "final_audio_json": final_audio_gcs_link,
             },
         }
 
@@ -496,7 +529,10 @@ def run_transcription_job():
     output_dir = Path(f"/tmp/outputs/{job_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    vocals_blob = f"outputs/{job_id}/vocals.mp3"
+    vocals_blob = os.environ.get(
+        "INPUT_AUDIO_BLOB_NAME",
+        _stage_blob(job_id, "source_separation", "vocals.mp3"),
+    )
     vocals_path = Path(
         download_file_from_gcs(
             bucket_name=gcs_bucket,
@@ -532,8 +568,14 @@ def run_transcription_job():
             f"expected output file from srt to vtt conversion missing: {vtt_path}"
         )
 
-    srt_blob = f"outputs/{job_id}/vocals.srt"
-    vtt_blob = f"outputs/{job_id}/vocals.vtt"
+    srt_blob = os.environ.get(
+        "OUTPUT_SRT_BLOB_NAME",
+        _stage_blob(job_id, "transcription", "vocals.srt"),
+    )
+    vtt_blob = os.environ.get(
+        "OUTPUT_VTT_BLOB_NAME",
+        _stage_blob(job_id, "transcription", "vocals.vtt"),
+    )
 
     srt_link = upload_file_to_gcs(
         local_path=str(srt_output_path),
@@ -584,10 +626,21 @@ def run_build_video_job():
 
     # building the final video
     video_path, final_video_path, final_video_blob = None, None, None
-    input_blob_name = os.environ["INPUT_BLOB_NAME"]
     filename = os.environ["FILENAME"]
-    srt_blob = f"outputs/{job_id}/vocals.srt"
-    vtt_blob = f"outputs/{job_id}/vocals.vtt"
+    video_blob = os.environ.get("VIDEO_BLOB_NAME") or os.environ.get("INPUT_BLOB_NAME")
+    audio_blob = os.environ.get("AUDIO_BLOB_NAME")
+    srt_blob = os.environ.get(
+        "SRT_BLOB_NAME",
+        _stage_blob(job_id, "transcription", "vocals.srt"),
+    )
+    vtt_blob = os.environ.get(
+        "VTT_BLOB_NAME",
+        _stage_blob(job_id, "transcription", "vocals.vtt"),
+    )
+    output_video_blob = os.environ.get(
+        "OUTPUT_VIDEO_BLOB_NAME",
+        _stage_blob(job_id, "final_output", f"{Path(filename).stem}.mp4"),
+    )
 
     # construct the video build output dict
     output_dict = {
@@ -600,37 +653,41 @@ def run_build_video_job():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if is_video:
+        if not video_blob:
+            raise RuntimeError(
+                "VIDEO_BLOB_NAME or INPUT_BLOB_NAME must be set for video builds"
+            )
+
         # get the video path from gcs and construct the final video path
         video_path = Path(
             download_file_from_gcs(
                 bucket_name=GCS_BUCKET,
-                source_blob_name=input_blob_name,
+                source_blob_name=video_blob,
                 local_path=f"/tmp/{job_id}/{filename}",
             )
         )
 
         output_dict["video"] = Path(video_path).name
-        final_video_path = output_dir / "final_video.mp4"
+        final_video_path = output_dir / Path(output_video_blob).name
 
-        # get the final audio path from gcs json blob written by decrowding job
-        final_audio_json_blob = f"outputs/{job_id}/final_audio_path.json"
-        final_audio_json_local = Path(f"/tmp/{job_id}/final_audio_path.json")
-        final_audio_json_local.parent.mkdir(parents=True, exist_ok=True)
-        final_audio_json_local = Path(
-            download_file_from_gcs(
-                bucket_name=gcs_bucket,
-                source_blob_name=final_audio_json_blob,
-                local_path=str(final_audio_json_local),
-            )
-        )
-
-        # parse JSON to get the audio blob name and download the audio file
-        with open(final_audio_json_local, "r") as jf:
-            data = json.load(jf)
-
-        audio_blob = data.get("audio_blob")
         if not audio_blob:
-            raise RuntimeError("final_audio JSON missing 'audio_blob' field")
+            final_audio_json_blob = f"outputs/{job_id}/final_audio_path.json"
+            final_audio_json_local = Path(f"/tmp/{job_id}/final_audio_path.json")
+            final_audio_json_local.parent.mkdir(parents=True, exist_ok=True)
+            final_audio_json_local = Path(
+                download_file_from_gcs(
+                    bucket_name=gcs_bucket,
+                    source_blob_name=final_audio_json_blob,
+                    local_path=str(final_audio_json_local),
+                )
+            )
+
+            with open(final_audio_json_local, "r") as jf:
+                data = json.load(jf)
+
+            audio_blob = data.get("audio_blob")
+            if not audio_blob:
+                raise RuntimeError("final_audio JSON missing 'audio_blob' field")
 
         final_audio_local = Path(f"/tmp/{job_id}/{Path(audio_blob).name}")
         download_file_from_gcs(
@@ -658,9 +715,7 @@ def run_build_video_job():
                 f"expected output file from final video build missing: {final_video_path}"
             )
 
-        # upload final video to gcs with the original filename
-        video_name = Path(filename).stem
-        final_video_blob = f"outputs/{job_id}/{video_name}.mp4"
+        final_video_blob = output_video_blob
         final_video_link = upload_file_to_gcs(
             local_path=str(final_video_path),
             bucket_name=GCS_BUCKET,
@@ -673,7 +728,9 @@ def run_build_video_job():
     output_dict["gcs_links"]["vtt"] = f"gs://{gcs_bucket}/{vtt_blob}"
 
     # remove the original input file from gcs to save space
-    remove_file_from_gcs(bucket_name=gcs_bucket, blob_name=input_blob_name)
+    input_blob_name = os.environ.get("INPUT_BLOB_NAME")
+    if input_blob_name:
+        remove_file_from_gcs(bucket_name=gcs_bucket, blob_name=input_blob_name)
 
     result = {
         "status": "full inference done",
@@ -706,6 +763,7 @@ def run_build_video_job():
 
     clean_gcs_bucket(
         bucket_name=GCS_BUCKET,
+        job_id=job_id,
         keep_blob_names=keep_blob_names,
     )
 

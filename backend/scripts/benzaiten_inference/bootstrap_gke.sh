@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BOOTSTRAP_DIR="${SCRIPT_DIR}/bootstrap"
@@ -9,9 +9,30 @@ CLUSTER="${CLUSTER:-benzaiten-inference-cluster-b}"
 CPU_POOL="${CPU_POOL:-cpu-inference-pool}"
 GPU_POOL="${GPU_POOL:-gpu-pool}"
 
+# Main inference pool selector
+# Valid values:
+#   cpu-inference-pool
+#   gpu-pool
+INFERENCE_POOL="${INFERENCE_POOL:-${CPU_POOL}}"
+
+case "${INFERENCE_POOL}" in
+  "${CPU_POOL}")
+    echo "Selected main inference pool: CPU (${CPU_POOL})"
+    ;;
+  "${GPU_POOL}")
+    echo "Selected main inference pool: GPU (${GPU_POOL})"
+    ;;
+  *)
+    echo "Exception: INFERENCE_POOL must be either '${CPU_POOL}' or '${GPU_POOL}'." >&2
+    echo "Got: '${INFERENCE_POOL}'" >&2
+    exit 1
+    ;;
+esac
+
 echo "Bootstrapping Benzaiten GKE infrastructure..."
 echo "Cluster: ${CLUSTER}"
 echo "Zone: ${ZONE}"
+echo "Inference pool: ${INFERENCE_POOL}"
 
 echo "Checking GKE cluster..."
 if gcloud container clusters describe "${CLUSTER}" --zone "${ZONE}" >/dev/null 2>&1; then
@@ -25,21 +46,24 @@ fi
 echo "Configuring IAM..."
 bash "${BOOTSTRAP_DIR}/iam.sh"
 
-echo "Checking CPU inference node pool..."
-if gcloud container node-pools describe "${CPU_POOL}" \
-  --cluster "${CLUSTER}" \
-  --zone "${ZONE}" >/dev/null 2>&1; then
-  echo "CPU inference node pool already exists, skipping create."
+if [ "${INFERENCE_POOL}" = "${CPU_POOL}" ]; then
+  echo "Checking CPU inference node pool..."
+  if gcloud container node-pools describe "${CPU_POOL}" \
+    --cluster "${CLUSTER}" \
+    --zone "${ZONE}" >/dev/null 2>&1; then
+    echo "CPU inference node pool already exists, skipping create."
+  else
+    echo "Creating CPU inference node pool..."
+    NODE_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/create-gke-cpu-inference-node-pool.sh"
+  fi
+
+  echo "Configuring CPU inference node pool autoscaling..."
+  NODE_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/autoscale_cpu_inference_cluster.sh"
 else
-  echo "Creating CPU inference node pool..."
-  NODE_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/create-gke-cpu-inference-node-pool.sh"
+  echo "Skipping CPU inference node pool setup because INFERENCE_POOL=${INFERENCE_POOL}."
 fi
 
-echo "Configuring CPU inference node pool autoscaling..."
-NODE_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/autoscale_cpu_inference_cluster.sh"
-
-# optional gpu setup
-if [ "${ENABLE_GPU:-false}" = "true" ]; then
+if [ "${INFERENCE_POOL}" = "${GPU_POOL}" ]; then
   echo "Checking GPU inference node pool..."
   if gcloud container node-pools describe "${GPU_POOL}" \
     --cluster "${CLUSTER}" \
@@ -53,10 +77,10 @@ if [ "${ENABLE_GPU:-false}" = "true" ]; then
   echo "Configuring GPU inference node pool autoscaling..."
   NODE_POOL="${GPU_POOL}" bash "${BOOTSTRAP_DIR}/autoscale_gpu_pool.sh"
 else
-  echo "Skipping GPU node pool setup."
+  echo "Skipping GPU node pool setup because INFERENCE_POOL=${INFERENCE_POOL}"
 fi
 
-echo "Bootstrap finished."
+echo "Bootstrap finished"
 
 kubectl get nodes -L cloud.google.com/gke-nodepool
 kubectl get pods -A -o wide

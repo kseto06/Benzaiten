@@ -17,14 +17,6 @@ gcloud container clusters update "${CLUSTER}" \
     --min-nodes 0 \
     --max-nodes 3
 
-# HPA for pod autoscaling (dynamically add/remove replicas of the fastapi pod)
-# kubectl autoscale deployment "${DEPLOYMENT}" \
-#     --cpu-percent=70 \
-#     --min=1 \
-#     --max=6 \
-#     --dry-run=client -o yaml | kubectl apply -f -
-
 # check results
-kubectl get hpa
 kubectl get nodes
 kubectl get pods
