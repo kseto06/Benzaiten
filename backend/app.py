@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+import json
 import os
 import uuid
 import warnings
@@ -18,6 +19,11 @@ from backend.gcp_utils.gcs_bucket import (
 from backend.scripts.benzaiten_inference.k8s.kubernetes_utils import (
     get_k8s_api_client,
     create_k8s_inference_job,
+    create_k8s_source_separation_inference_job,
+    create_k8s_decrowd_inference_job,
+    create_k8s_transcription_inference_job,
+    create_k8s_build_video_job,
+    wait_for_jobs,
 )
 
 app = FastAPI()
@@ -44,6 +50,36 @@ def create_job_id() -> str:
         job_id string
     """
     return str(uuid.uuid4())
+
+
+def write_inference_job_status(
+    job_id: str, status: str, error: Union[str, None] = None
+) -> None:
+    """
+    Function to write the status of the inference job to a json file and upload to GCS bucket.
+    Used for tracking job status in the get_inference_job_status endpoint
+
+    Args:
+        job_id: the unique identifier for the inference job, generated in the create_inference_job
+        status: the current status of the job, can be "queued", "running", "failed", "completed"
+        error: optional error message if the job failed
+    """
+    status_dir = Path(f"/tmp/outputs/{job_id}")
+    status_dir.mkdir(parents=True, exist_ok=True)
+    status_path = status_dir / "status.json"
+
+    payload = {"job_id": job_id, "status": status}
+    if error:
+        payload["error"] = error
+
+    with open(status_path, "w") as f:
+        json.dump(payload, f)
+
+    upload_file_to_gcs(
+        local_path=str(status_path),
+        bucket_name=GCS_BUCKET,
+        destination_blob_name=f"outputs/{job_id}/status.json",
+    )
 
 
 @app.post("/inference")
@@ -419,7 +455,7 @@ def convert_to_vtt(job_id: str) -> dict:
     }
 
 
-@app.post("/jobs")
+# @app.post("/jobs")
 async def create_inference_job(
     file: UploadFile = File(...),
     should_decrowd: bool = Form(False),
@@ -464,9 +500,16 @@ async def create_inference_job(
         )
 
 
-async def create_orchestration_inference_pipeline():
+def run_orchestration_inference_pipeline(
+    job_id: str,
+    input_blob_name: str,
+    filename: str,
+    content_type: Union[str, None],
+    should_decrowd: bool,
+    language: Union[str, None],
+) -> None:
     """
-    Idea of the orchestration pipeline is:
+    The structure of the orchestration pipeline is:
 
     audio --> vocal/instrumental source separation
             |--> decrowding job if chosen
@@ -475,9 +518,89 @@ async def create_orchestration_inference_pipeline():
 
     This attempts to make the pipeline more modular and efficient via parallelizing k8 jobs
     """
-    raise NotImplementedError(
-        "Orchestration inference pipeline creation not implemented yet"
-    )
+    try:
+        # 1. create k8s job for source separation
+        source_separation_job_name = create_k8s_source_separation_inference_job(
+            job_id=job_id,
+            input_gcs_path=f"gs://{GCS_BUCKET}/{input_blob_name}",
+            input_blob_name=input_blob_name,
+            filename=filename,
+            content_type=content_type,
+        )
+        wait_for_jobs([source_separation_job_name])
+
+        # init parallel jobs list to run decrowding and transcription simultaneously
+        parallel_jobs = []
+
+        # 2. create k8s job for decrowding if chosen
+        if should_decrowd:
+            decrowd_job_name = create_k8s_decrowd_inference_job(
+                job_id=job_id,
+                filename=filename,
+            )
+            parallel_jobs.append(decrowd_job_name)
+
+        # 3. create k8s job for transcription/translation/romanization
+        transcription_job_name = create_k8s_transcription_inference_job(
+            job_id=job_id,
+            filename=filename,
+            language=language,
+        )
+        parallel_jobs.append(transcription_job_name)
+
+        wait_for_jobs(parallel_jobs)
+
+        # 4. building the final video
+        build_video_job = create_k8s_build_video_job(
+            job_id=job_id,
+            filename=filename,
+            should_decrowd=should_decrowd,
+            input_blob_name=input_blob_name,
+        )
+        wait_for_jobs([build_video_job])
+
+    except Exception as e:
+        write_inference_job_status(job_id=job_id, status="failed", error=str(e))
+        raise
+
+
+@app.post("/jobs")
+async def create_orchestration_inference_pipeline_job(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    should_decrowd: bool = Form(False),
+    language: Union[str, None] = Form(None),
+) -> Dict:
+    """
+    Start the orchestration pipeline in the background and return immediately for frontend polling.
+    """
+    job_id = create_job_id()
+
+    try:
+        input_gcs_path, input_blob_name, filename = await upload_input_file_to_gcs(
+            file=file, job_id=job_id
+        )
+
+        background_tasks.add_task(
+            run_orchestration_inference_pipeline,
+            job_id=job_id,
+            input_blob_name=input_blob_name,
+            filename=filename,
+            content_type=file.content_type,
+            should_decrowd=should_decrowd,
+            language=language,
+        )
+
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "input_gcs_path": input_gcs_path,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"inference orchestration pipeline failed: {str(e)}"
+        )
 
 
 @app.get("/jobs/{job_id}")
@@ -493,43 +616,104 @@ def get_inference_job_status(job_id: str) -> Dict[str, str]:
         dict containing job_id and status message
     """
     from kubernetes import client
+    from kubernetes.client.rest import ApiException
 
-    try:
-        api_client = get_k8s_api_client()
-        batch_v1 = client.BatchV1Api(api_client=api_client)
-        job_name = f"benzaiten-inference-{job_id}"
+    def completed_result_response() -> Union[Dict[str, str], None]:
+        res_path = Path(f"/tmp/{job_id}_result.json")
 
-        job = batch_v1.read_namespaced_job_status(
-            name=job_name, namespace=K8S_NAMESPACE
-        )
-        status = job.status
-
-        if status.succeeded and status.succeeded >= 1:
-            res_path = Path(f"/tmp/{job_id}_result.json")
-
+        try:
             download_file_from_gcs(
                 bucket_name=GCS_BUCKET,
                 source_blob_name=f"outputs/{job_id}/result.json",
                 local_path=str(res_path),
             )
+        except Exception:
+            return None
 
-            with open(res_path, "r") as f:
-                import json
+        with open(res_path, "r") as f:
+            result = json.load(f)
 
-                result = json.load(f)
+        if (
+            result.get("status") != "full inference done"
+            or not result.get("video_url")
+            or not result.get("subtitle_url")
+        ):
+            return None
 
-            return {
-                "job_id": job_id,
-                "status": "completed",
-                "video_url": result["video_url"],
-                "subtitle_url": result["subtitle_url"],
-            }
+        return {
+            "job_id": job_id,
+            "status": "completed",
+            "video_url": result["video_url"],
+            "subtitle_url": result["subtitle_url"],
+        }
 
-        if status.active and status.active >= 1:
+    def failed_status_response() -> Union[Dict[str, str], None]:
+        status_path = Path(f"/tmp/{job_id}_status.json")
+
+        try:
+            download_file_from_gcs(
+                bucket_name=GCS_BUCKET,
+                source_blob_name=f"outputs/{job_id}/status.json",
+                local_path=str(status_path),
+            )
+        except Exception:
+            return None
+
+        with open(status_path, "r") as f:
+            status_result = json.load(f)
+
+        if status_result.get("status") != "failed":
+            return None
+
+        return {
+            "job_id": job_id,
+            "status": "failed",
+            "error": status_result.get("error", "Inference job failed"),
+        }
+
+    try:
+        result_response = completed_result_response()
+        if result_response is not None:
+            return result_response
+
+        failed_response = failed_status_response()
+        if failed_response is not None:
+            return failed_response
+
+        api_client = get_k8s_api_client()
+        batch_v1 = client.BatchV1Api(api_client=api_client)
+        job_name = f"benzaiten-inference-{job_id}"
+
+        try:
+            jobs = [
+                batch_v1.read_namespaced_job_status(
+                    name=job_name, namespace=K8S_NAMESPACE
+                )
+            ]
+        except ApiException as e:
+            if e.status != 404:
+                raise
+
+            jobs = batch_v1.list_namespaced_job(
+                namespace=K8S_NAMESPACE,
+                label_selector=f"job_id={job_id}",
+            ).items
+
+        if not jobs:
+            return {"job_id": job_id, "status": "queued"}
+
+        if any(job.status.failed and job.status.failed >= 1 for job in jobs):
+            return {"job_id": job_id, "status": "failed"}
+
+        if any(job.status.active and job.status.active >= 1 for job in jobs):
             return {"job_id": job_id, "status": "running"}
 
-        if status.failed and status.failed >= 1:
-            return {"job_id": job_id, "status": "failed"}
+        if all(job.status.succeeded and job.status.succeeded >= 1 for job in jobs):
+            result_response = completed_result_response()
+            if result_response is not None:
+                return result_response
+
+            return {"job_id": job_id, "status": "running"}
 
         return {"job_id": job_id, "status": "queued"}
 

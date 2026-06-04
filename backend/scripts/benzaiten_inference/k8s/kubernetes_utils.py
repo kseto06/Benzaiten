@@ -64,7 +64,7 @@ def _env(name: str, value: Optional[str] = None) -> client.V1EnvVar:
 
 
 def _stage_blob(job_id: str, stage: str, filename: str) -> str:
-    return f"outputs/{job_id}/{stage}/{filename}"
+    return f"outputs/{job_id}/{filename}"
 
 
 def create_k8s_inference_job(
@@ -302,9 +302,7 @@ def create_k8s_source_separation_inference_job(
         ],
         annotations={
             "benzaiten/output_vocals_filename": "vocals.mp3",
-            "benzaiten/source_separation_output_prefix": (
-                f"outputs/{job_id}/source_separation/"
-            ),
+            "benzaiten/source_separation_output_prefix": f"outputs/{job_id}/",
         },
         node_pool=GPU_INFERENCE_NODE_POOL,
         gpu_count=1,
@@ -339,7 +337,7 @@ def create_k8s_decrowd_inference_job(job_id: str, filename: str) -> str:
             _env("SHOULD_DECROWD", "true"),
         ],
         annotations={
-            "benzaiten/decrowd_output_prefix": f"outputs/{job_id}/decrowd/",
+            "benzaiten/decrowd_output_prefix": f"outputs/{job_id}/",
         },
         node_pool=GPU_INFERENCE_NODE_POOL,
         gpu_count=1,
@@ -383,7 +381,7 @@ def create_k8s_transcription_inference_job(
         ],
         annotations={
             "benzaiten/output_subtitle_filename": "vocals.vtt",
-            "benzaiten/transcription_output_prefix": f"outputs/{job_id}/transcription/",
+            "benzaiten/transcription_output_prefix": f"outputs/{job_id}/",
         },
         node_pool=GPU_INFERENCE_NODE_POOL,
         gpu_count=1,
@@ -453,7 +451,7 @@ def create_k8s_build_video_job(
         ],
         annotations={
             "benzaiten/final_output_video_filename": output_video_filename,
-            "benzaiten/final_output_prefix": f"outputs/{job_id}/final_output/",
+            "benzaiten/final_output_prefix": f"outputs/{job_id}/",
         },
         node_pool="default-pool",
         gpu_count=0,

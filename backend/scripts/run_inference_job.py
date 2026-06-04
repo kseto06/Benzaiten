@@ -25,7 +25,7 @@ GCS_BUCKET = os.environ.get("GCS_BUCKET", "benzaiten-outputs")
 
 
 def _stage_blob(job_id: str, stage: str, filename: str) -> str:
-    return f"outputs/{job_id}/{stage}/{filename}"
+    return f"outputs/{job_id}/{filename}"
 
 
 def run_inference_job() -> Dict:
@@ -757,7 +757,7 @@ def run_build_video_job():
     )
 
     # remove all files except for the final video and subtitle files in gcs to save space
-    keep_blob_names = [srt_blob, vtt_blob]
+    keep_blob_names = [srt_blob, vtt_blob, f"outputs/{job_id}/result.json"]
     if final_video_blob is not None:
         keep_blob_names.append(final_video_blob)
 
