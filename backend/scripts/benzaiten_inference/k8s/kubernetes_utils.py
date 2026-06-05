@@ -169,6 +169,102 @@ def create_k8s_inference_job(
 #  Split pipeline orchestration integration for jobs
 
 
+def create_k8s_orchestration_job(
+    job_id: str,
+    input_blob_name: str,
+    filename: str,
+    should_decrowd: bool,
+    content_type: Union[str, None] = "video/mp4",
+    language: Union[str, None] = "mul",
+) -> str:
+    """
+    Function to create a lightweight k8s job solely for coordinating job orchestration in the pipeline
+    - Doesn't run inference directly. Serves as a job to create and wait for the k8 stage jobs to host the inference backend
+    - This aims to allow for pushing to production where there are several users running inference jobs at once
+
+    Args:
+        job_id: Unique identifier for the job, used as part of the K8s job name; generated in fastapi app
+        input_blob_name: The blob name of the input file in GCS.
+        filename: The original filename of the input file.
+        should_decrowd: Boolean indicating whether to run decrowding during inference.
+        content_type: The content type of the input file (e.g. "video/mp4")
+
+    Returns:
+        The name of the created K8s job
+    """
+    api_client = get_k8s_api_client()
+    batch_v1 = client.BatchV1Api(api_client=api_client)
+    job_name = _ensure_safe_k8s_name(f"benzaiten-orchestration-{job_id}")
+
+    env_vars = [
+        _env("JOB_ID", job_id),
+        _env("INPUT_BLOB_NAME", input_blob_name),
+        _env("FILENAME", filename),
+        _env("CONTENT_TYPE", content_type),
+        _env("SHOULD_DECROWD", str(should_decrowd).lower()),
+        _env("LANGUAGE", language),
+    ]
+
+    container = client.V1Container(
+        name="benzaiten-orchestrator",
+        image=IMAGE,
+        image_pull_policy="Always",
+        command=["python", "-m", "backend.scripts.run_orchestration_job"],
+        env=env_vars,
+        resources=client.V1ResourceRequirements(
+            requests={
+                "cpu": "500m",
+                "memory": "512Mi",
+            },
+            limits={
+                "cpu": "1",
+                "memory": "1Gi",
+            },
+        ),
+    )
+
+    pod_spec = client.V1PodSpec(
+        restart_policy="Never",
+        service_account_name="benzaiten-backend-sa",
+        node_selector={"cloud.google.com/gke-nodepool": "default-pool"},
+        containers=[container],
+    )
+
+    template = client.V1PodTemplateSpec(
+        metadata=client.V1ObjectMeta(
+            labels={
+                "app": "benzaiten-orchestrator-job",
+                "job_id": job_id,
+                "stage": "orchestration",
+            }
+        ),
+        spec=pod_spec,
+    )
+
+    job_spec = client.V1JobSpec(
+        template=template,
+        backoff_limit=1,
+        ttl_seconds_after_finished=600,
+    )
+
+    job = client.V1Job(
+        api_version="batch/v1",
+        kind="job",
+        metadata=client.V1ObjectMeta(
+            name=job_name,
+            labels={
+                "app": "benzaiten-orchestrator_job",
+                "job_id": job_id,
+                "stage": "orchestrator",
+            },
+        ),
+        spec=job_spec,
+    )
+
+    batch_v1.create_namespaced_job(namespace=K8S_NAMESPACE, body=job)
+    return job_name
+
+
 def _create_k8s_pipeline_stage_job(
     *,
     job_id: str,
