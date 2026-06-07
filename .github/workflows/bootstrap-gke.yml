@@ -11,9 +11,15 @@ on:
         options:
           - "cpu-inference-pool"
           - "gpu-pool"
+      code_ref:
+        description: "Branch, tag, or commit SHA containing the app code to deploy GKE on"
+        required: true
+        default: "main"
+        type: string
 
 jobs:
   bootstrap:
+    name: Bootstrap GKE infrastructure
     runs-on: ubuntu-latest
 
     permissions:
@@ -22,12 +28,44 @@ jobs:
 
     env:
       PROJECT_ID: project-0c6e9a84-c914-4d2f-ace
+      GKE_CLUSTER: benzaiten-inference-cluster-b
+      GKE_ZONE: northamerica-northeast2-b
 
     steps:
-      - name: Checkout code
+      - name: Checkout code ref
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.code_ref }}
 
-      - name: Authentication to GCP
+      - name: Show checked-out code ref
+        env:
+          CODE_REF: ${{ inputs.code_ref }}
+        run: |
+          set -euo pipefail
+
+          echo "Bootstrapping GKE from code_ref=${CODE_REF}"
+          echo "Resolved commit:"
+          git rev-parse HEAD
+
+      - name: Validate required secrets
+        env:
+          WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${WORKLOAD_IDENTITY_PROVIDER}" ]]; then
+            echo "::error::WORKLOAD_IDENTITY_PROVIDER repository secret missing"
+            exit 1
+          fi
+
+          if [[ -z "${GCP_SERVICE_ACCOUNT}" ]]; then
+            echo "::error::GCP_SERVICE_ACCOUNT repository secret missing"
+            exit 1
+          fi
+
+      - name: Authenticate to GCP
+        id: auth
         uses: google-github-actions/auth@v3
         with:
           project_id: ${{ env.PROJECT_ID }}
@@ -39,9 +77,45 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
           version: latest
+          install_components: gke-gcloud-auth-plugin
+
+      - name: Verify GCP and GKE tooling
+        run: |
+          set -euo pipefail
+
+          echo "Authenticated gcloud account:"
+          gcloud auth list \
+            --filter="status:ACTIVE" \
+            --format="value(account)"
+
+          echo "Configured project:"
+          gcloud config get-value project
+
+          echo "gcloud version:"
+          gcloud --version
+
+          echo "kubectl client version:"
+          kubectl version --client
+
+          echo "GKE authentication plugin version:"
+          gke-gcloud-auth-plugin --version
 
       - name: Bootstrap GKE
         env:
           INFERENCE_POOL: ${{ inputs.inference_pool }}
         run: |
+          set -euo pipefail
+
+          echo "Selected inference pool: ${INFERENCE_POOL}"
           bash backend/scripts/benzaiten_inference/bootstrap_gke.sh
+
+      - name: Verify cluster access
+        run: |
+          set -euo pipefail
+
+          gcloud container clusters get-credentials "${GKE_CLUSTER}" \
+            --zone="${GKE_ZONE}" \
+            --project="${PROJECT_ID}"
+
+          kubectl cluster-info
+          kubectl get nodes -o wide
