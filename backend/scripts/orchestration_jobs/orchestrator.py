@@ -67,6 +67,7 @@ def run_orchestration_inference_pipeline(
             filename=filename,
             should_decrowd=should_decrowd,
             input_blob_name=input_blob_name,
+            content_type=content_type,
         )
         wait_for_jobs([build_video_job])
 

@@ -489,6 +489,7 @@ def create_k8s_build_video_job(
     filename: str,
     should_decrowd: bool,
     input_blob_name: str,
+    content_type: Union[str, None] = "video/mp4",
     video_gcs_path: Union[str, None] = None,
     audio_gcs_path: Union[str, None] = None,
     srt_gcs_path: Union[str, None] = None,
@@ -507,7 +508,9 @@ def create_k8s_build_video_job(
     Returns:
         The name of the created K8s job
     """
+    is_video = content_type is not None and content_type.startswith("video/")
     output_video_filename = f"{Path(filename).stem}.mp4"
+    output_audio_filename = f"{Path(filename).stem}.mp3"
 
     default_audio_gcs_path = (
         _stage_blob(job_id, "decrowd", "instrumental_(decrowd).mp3")
@@ -521,7 +524,7 @@ def create_k8s_build_video_job(
         sh_cmd_module="backend.scripts.orchestration_jobs.run_build_video_job",
         env_vars=[
             _env("FILENAME", filename),
-            _env("IS_VIDEO", "true"),
+            _env("IS_VIDEO", str(is_video).lower()),
             _env("INPUT_BLOB_NAME", input_blob_name),
             _env(
                 "VIDEO_BLOB_NAME",
@@ -544,9 +547,14 @@ def create_k8s_build_video_job(
                 "OUTPUT_VIDEO_BLOB_NAME",
                 _stage_blob(job_id, "final_output", output_video_filename),
             ),
+            _env(
+                "OUTPUT_AUDIO_BLOB_NAME",
+                _stage_blob(job_id, "final_output", output_audio_filename),
+            ),
         ],
         annotations={
             "benzaiten/final_output_video_filename": output_video_filename,
+            "benzaiten/final_output_audio_filename": output_audio_filename,
             "benzaiten/final_output_prefix": f"outputs/{job_id}/",
         },
         node_pool="default-pool",

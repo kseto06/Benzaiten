@@ -543,7 +543,7 @@ def get_inference_job_status(job_id: str) -> Dict[str, str]:
 
         if (
             result.get("status") != "full inference done"
-            or not result.get("video_url")
+            or not (result.get("video_url") or result.get("audio_url"))
             or not result.get("subtitle_url")
         ):
             return None
@@ -551,7 +551,8 @@ def get_inference_job_status(job_id: str) -> Dict[str, str]:
         return {
             "job_id": job_id,
             "status": "completed",
-            "video_url": result["video_url"],
+            "video_url": result.get("video_url"),
+            "audio_url": result.get("audio_url"),
             "subtitle_url": result["subtitle_url"],
         }
 
@@ -637,7 +638,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "http://kseto06.github.io",  # putting for now
+        "https://kseto06.github.io",
     ],
     allow_credentials=True,
     allow_methods=["*"],
