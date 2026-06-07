@@ -613,6 +613,40 @@ def run_transcription_job():
     return result
 
 
+def _download_final_audio_blob(
+    job_id: str,
+    gcs_bucket: str,
+    audio_blob: Optional[str],
+) -> Path:
+    if not audio_blob:
+        final_audio_json_blob = f"outputs/{job_id}/final_audio_path.json"
+        final_audio_json_local = Path(f"/tmp/{job_id}/final_audio_path.json")
+        final_audio_json_local.parent.mkdir(parents=True, exist_ok=True)
+        final_audio_json_local = Path(
+            download_file_from_gcs(
+                bucket_name=gcs_bucket,
+                source_blob_name=final_audio_json_blob,
+                local_path=str(final_audio_json_local),
+            )
+        )
+
+        with open(final_audio_json_local, "r") as jf:
+            data = json.load(jf)
+
+        audio_blob = data.get("audio_blob")
+        if not audio_blob:
+            raise RuntimeError("final_audio JSON missing 'audio_blob' field")
+
+    final_audio_local = Path(f"/tmp/{job_id}/{Path(audio_blob).name}")
+    return Path(
+        download_file_from_gcs(
+            bucket_name=gcs_bucket,
+            source_blob_name=audio_blob,
+            local_path=str(final_audio_local),
+        )
+    )
+
+
 def run_build_video_job():
     """
     Function to run the build video job of the orchestration pipeline
@@ -624,8 +658,9 @@ def run_build_video_job():
     output_dir = Path(f"/tmp/outputs/{job_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # building the final video
+    # building the final playable media
     video_path, final_video_path, final_video_blob = None, None, None
+    final_audio_blob = None
     filename = os.environ["FILENAME"]
     video_blob = os.environ.get("VIDEO_BLOB_NAME") or os.environ.get("INPUT_BLOB_NAME")
     audio_blob = os.environ.get("AUDIO_BLOB_NAME")
@@ -640,6 +675,10 @@ def run_build_video_job():
     output_video_blob = os.environ.get(
         "OUTPUT_VIDEO_BLOB_NAME",
         _stage_blob(job_id, "final_output", f"{Path(filename).stem}.mp4"),
+    )
+    output_audio_blob = os.environ.get(
+        "OUTPUT_AUDIO_BLOB_NAME",
+        _stage_blob(job_id, "final_output", f"{Path(filename).stem}.mp3"),
     )
 
     # construct the video build output dict
@@ -670,30 +709,10 @@ def run_build_video_job():
         output_dict["video"] = Path(video_path).name
         final_video_path = output_dir / Path(output_video_blob).name
 
-        if not audio_blob:
-            final_audio_json_blob = f"outputs/{job_id}/final_audio_path.json"
-            final_audio_json_local = Path(f"/tmp/{job_id}/final_audio_path.json")
-            final_audio_json_local.parent.mkdir(parents=True, exist_ok=True)
-            final_audio_json_local = Path(
-                download_file_from_gcs(
-                    bucket_name=gcs_bucket,
-                    source_blob_name=final_audio_json_blob,
-                    local_path=str(final_audio_json_local),
-                )
-            )
-
-            with open(final_audio_json_local, "r") as jf:
-                data = json.load(jf)
-
-            audio_blob = data.get("audio_blob")
-            if not audio_blob:
-                raise RuntimeError("final_audio JSON missing 'audio_blob' field")
-
-        final_audio_local = Path(f"/tmp/{job_id}/{Path(audio_blob).name}")
-        download_file_from_gcs(
-            bucket_name=gcs_bucket,
-            source_blob_name=audio_blob,
-            local_path=str(final_audio_local),
+        final_audio_local = _download_final_audio_blob(
+            job_id=job_id,
+            gcs_bucket=gcs_bucket,
+            audio_blob=audio_blob,
         )
         srt_output_path = Path(
             download_file_from_gcs(
@@ -723,6 +742,26 @@ def run_build_video_job():
         )
 
         output_dict["gcs_links"]["video"] = final_video_link
+    else:
+        final_audio_local = _download_final_audio_blob(
+            job_id=job_id,
+            gcs_bucket=gcs_bucket,
+            audio_blob=audio_blob,
+        )
+
+        if not final_audio_local.exists():
+            raise FileNotFoundError(
+                f"expected final audio file missing: {final_audio_local}"
+            )
+
+        final_audio_blob = output_audio_blob
+        final_audio_link = upload_file_to_gcs(
+            local_path=str(final_audio_local),
+            bucket_name=gcs_bucket,
+            destination_blob_name=final_audio_blob,
+        )
+
+        output_dict["gcs_links"]["audio"] = final_audio_link
 
     output_dict["gcs_links"]["srt"] = f"gs://{gcs_bucket}/{srt_blob}"
     output_dict["gcs_links"]["vtt"] = f"gs://{gcs_bucket}/{vtt_blob}"
@@ -738,6 +777,11 @@ def run_build_video_job():
         "video_url": (
             f"https://storage.googleapis.com/{gcs_bucket}/{final_video_blob}"
             if final_video_blob is not None
+            else None
+        ),
+        "audio_url": (
+            f"https://storage.googleapis.com/{gcs_bucket}/{final_audio_blob}"
+            if final_audio_blob is not None
             else None
         ),
         "subtitle_url": f"https://storage.googleapis.com/{gcs_bucket}/{vtt_blob}",
@@ -760,6 +804,8 @@ def run_build_video_job():
     keep_blob_names = [srt_blob, vtt_blob, f"outputs/{job_id}/result.json"]
     if final_video_blob is not None:
         keep_blob_names.append(final_video_blob)
+    if final_audio_blob is not None:
+        keep_blob_names.append(final_audio_blob)
 
     clean_gcs_bucket(
         bucket_name=GCS_BUCKET,
