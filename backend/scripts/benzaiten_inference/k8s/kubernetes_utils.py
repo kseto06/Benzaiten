@@ -249,7 +249,7 @@ def create_k8s_orchestration_job(
 
     job = client.V1Job(
         api_version="batch/v1",
-        kind="job",
+        kind="Job",
         metadata=client.V1ObjectMeta(
             name=job_name,
             labels={
