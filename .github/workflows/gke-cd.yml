@@ -3,6 +3,11 @@ name: Deploy Backend to GKE
 on:
   workflow_dispatch:
     inputs:
+      code_ref:
+        description: "Branch, tag, or commit SHA containing the app code to build and deploy"
+        required: true
+        default: "main"
+        type: string
       tag:
         description: "Docker image tag to build and deploy (e.g. a git sha, defaults to 'latest')"
         required: false
@@ -44,8 +49,17 @@ jobs:
       NAMESPACE: default
     
     steps:
-    - name: Checkout code
+    - name: Checkout code ref
       uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.code_ref }}
+
+    - name: Show checked-out code ref
+      env:
+        CODE_REF: ${{ inputs.code_ref }}
+      run: |
+        echo "Building and deploying code_ref=${CODE_REF}"
+        git rev-parse HEAD
 
     - name: Authentication to GCP
       uses: google-github-actions/auth@v3
