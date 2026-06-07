@@ -11,12 +11,12 @@ const loadButton = document.getElementById("loadButton") as HTMLButtonElement;
 const statusText = document.getElementById("statusText") as HTMLParagraphElement;
 const video = document.getElementById("videoPlayer") as HTMLVideoElement;
 
-type FullInferenceResponse = {
-    status: string;
-    job_id: string;
-    video_url: string;
-    subtitle_url: string;
-}
+// type FullInferenceResponse = {
+//     status: string;
+//     job_id: string;
+//     video_url: string;
+//     subtitle_url: string;
+// }
 
 //inference k8s job types:
 type JobStartResponse = {
@@ -59,29 +59,29 @@ function buildGcsUrl(jobId: string, filename: string): string {
 /**
  * @deprecated Unused with the k8s job pipeline. Keep only for the old pipeline.
  */
-async function convertSubtitlesToVtt(jobId: string): Promise<string> {
-    /*
-    This function sends a POST request to the backend to convert the subtitles for a given job ID to VTT format
+// async function convertSubtitlesToVtt(jobId: string): Promise<string> {
+//     /*
+//     This function sends a POST request to the backend to convert the subtitles for a given job ID to VTT format
 
-    Args:
-        jobId (string): The ID of the job for which to convert subtitles
-    Returns:
-        Promise<string>: A promise that resolves to the URL of the converted VTT file
-    */
-    const res = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/convert_to_vtt`, {
-        method: "POST",
-    });
+//     Args:
+//         jobId (string): The ID of the job for which to convert subtitles
+//     Returns:
+//         Promise<string>: A promise that resolves to the URL of the converted VTT file
+//     */
+//     const res = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/convert_to_vtt`, {
+//         method: "POST",
+//     });
 
-    if (!res.ok) {
-        throw new Error(await res.text());
-    }
+//     if (!res.ok) {
+//         throw new Error(await res.text());
+//     }
 
-    const data = await res.json();
+//     const data = await res.json();
 
-    console.log("VTT conversion response:", data);
+//     console.log("VTT conversion response:", data);
 
-    return data.vtt_url;
-}
+//     return data.vtt_url;
+// }
 
 function setVideoSources(videoUrl: string, subtitleUrl?: string) {
     /*
@@ -185,44 +185,44 @@ async function loadVideo() {
 /**
  * @deprecated Unused with the k8s job pipeline. Keep only for the old pipeline.
  */
-async function runFullInference(
-    file: File,
-    language: string,
-    shouldDecrowd: boolean,
-): Promise<FullInferenceResponse> {
-    /*
-    This function sends a POST request to the backend to run full inference on the provided video file
+// async function runFullInference(
+//     file: File,
+//     language: string,
+//     shouldDecrowd: boolean,
+// ): Promise<FullInferenceResponse> {
+//     /*
+//     This function sends a POST request to the backend to run full inference on the provided video file
 
-    Args:
-        file (File): The video file to process
-    Returns:
-        Promise<FullInferenceResponse>: A promise that resolves to the response from the backend containing job ID, video URL, and subtitle URL
-    */
-    const formData = new FormData();
+//     Args:
+//         file (File): The video file to process
+//     Returns:
+//         Promise<FullInferenceResponse>: A promise that resolves to the response from the backend containing job ID, video URL, and subtitle URL
+//     */
+//     const formData = new FormData();
 
-    formData.append("file", file);
-    formData.append("language", language);
-    formData.append("should_decrowd", shouldDecrowd ? "true" : "false");
+//     formData.append("file", file);
+//     formData.append("language", language);
+//     formData.append("should_decrowd", shouldDecrowd ? "true" : "false");
 
-    setStatus("Running inference...");
+//     setStatus("Running inference...");
 
-    const res = await fetch(`${API_BASE_URL}/jobs`, { //await fetch(`${API_BASE_URL}/full_inference`, {
-        method: "POST",
-        body: formData,
-    });
+//     const res = await fetch(`${API_BASE_URL}/jobs`, { //await fetch(`${API_BASE_URL}/full_inference`, {
+//         method: "POST",
+//         body: formData,
+//     });
 
-    if (!res.ok) {
-        throw new Error(await res.text());
-    }
+//     if (!res.ok) {
+//         throw new Error(await res.text());
+//     }
 
-    const data: FullInferenceResponse = await res.json();
-    console.log("Inference response:", data);
+//     const data: FullInferenceResponse = await res.json();
+//     console.log("Inference response:", data);
 
-    localStorage.setItem("job_id", data.job_id);
-    localStorage.setItem("video_url", data.video_url);
+//     localStorage.setItem("job_id", data.job_id);
+//     localStorage.setItem("video_url", data.video_url);
     
-    return data;
-}
+//     return data;
+// }
 
 async function handleRunFullInference() {
     /*
