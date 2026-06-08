@@ -475,7 +475,10 @@ async def create_orchestration_inference_pipeline_job(
     """
     Create a Kubernetes orchestration Job and return immediately for frontend polling.
     """
-    from backend.scripts.orchestration_jobs.status import write_inference_job_status
+    from backend.scripts.orchestration_jobs.status import (
+        try_write_inference_job_status,
+        write_inference_job_status,
+    )
 
     job_id = create_job_id()
 
@@ -504,7 +507,7 @@ async def create_orchestration_inference_pipeline_job(
         }
 
     except Exception as e:
-        write_inference_job_status(job_id=job_id, status="failed", error=str(e))
+        try_write_inference_job_status(job_id=job_id, status="failed", error=str(e))
         raise HTTPException(
             status_code=500,
             detail=f"inference orchestration job creation failed: {str(e)}",

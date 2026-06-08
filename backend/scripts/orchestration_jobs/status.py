@@ -1,9 +1,12 @@
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Optional
 
 from backend.gcp_utils.gcs_bucket import upload_file_to_gcs
+
+logger = logging.getLogger(__name__)
 
 
 def write_inference_job_status(
@@ -36,3 +39,19 @@ def write_inference_job_status(
         bucket_name=gcs_bucket,
         destination_blob_name=f"outputs/{job_id}/status.json",
     )
+
+
+def try_write_inference_job_status(
+    *, job_id: str, status: str, error: Optional[str] = None
+) -> bool:
+    """Persist job status without replacing the original pipeline error."""
+    try:
+        write_inference_job_status(job_id=job_id, status=status, error=error)
+    except Exception:
+        logger.exception(
+            "Failed to persist inference job status",
+            extra={"job_id": job_id, "status": status},
+        )
+        return False
+
+    return True
