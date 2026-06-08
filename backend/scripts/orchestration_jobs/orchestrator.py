@@ -8,7 +8,7 @@ from backend.scripts.benzaiten_inference.k8s.kubernetes_utils import (
     create_k8s_build_video_job,
     wait_for_jobs,
 )
-from backend.scripts.orchestration_jobs.status import write_inference_job_status
+from backend.scripts.orchestration_jobs.status import try_write_inference_job_status
 
 
 def run_orchestration_inference_pipeline(
@@ -72,5 +72,5 @@ def run_orchestration_inference_pipeline(
         wait_for_jobs([build_video_job])
 
     except Exception as e:
-        write_inference_job_status(job_id=job_id, status="failed", error=str(e))
-        raise e
+        try_write_inference_job_status(job_id=job_id, status="failed", error=str(e))
+        raise

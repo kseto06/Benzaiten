@@ -16,6 +16,7 @@ gcloud container clusters create "${CLUSTER}" \
     --num-nodes 1 \
     --disk-type pd-balanced \
     --disk-size 50 \
+    --scopes=https://www.googleapis.com/auth/cloud-platform \
     --enable-ip-alias
 
 # credentials

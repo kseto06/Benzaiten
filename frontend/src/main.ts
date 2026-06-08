@@ -44,6 +44,17 @@ function setStatus(message: string) {
     statusText.textContent = message;
 }
 
+async function getApiError(response: Response): Promise<string> {
+    const body = await response.text();
+
+    try {
+        const parsed = JSON.parse(body) as { detail?: string };
+        return parsed.detail || body || `Request failed with status ${response.status}`;
+    } catch {
+        return body || `Request failed with status ${response.status}`;
+    }
+}
+
 function buildGcsUrl(jobId: string, filename: string): string {
     /*
     This function builds the URL to access a file in GCS based on the job ID and filename
@@ -295,7 +306,8 @@ async function handleRunFullInference() {
         setStatus(`Inference done. Loading ${mediaLabel.toLowerCase()}...`);
         setMediaSources(mediaUrl, completedJob.subtitle_url, mediaLabel);
     } catch (err) {
-        setStatus("Failed to run inference.");
+        const message = err instanceof Error ? err.message : String(err);
+        setStatus(`Failed to run inference: ${message}`);
         console.error(err);
     } finally {
         runInferenceButton.disabled = false;
@@ -321,7 +333,7 @@ async function startInferenceJob(
     });
 
     if (!res.ok) {
-        throw new Error(await res.text());
+        throw new Error(await getApiError(res));
     }
 
     return await res.json();
@@ -332,7 +344,7 @@ async function pollJobStatus(jobId: string): Promise<JobStatusResponse> {
         const res = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`);
 
         if (!res.ok) {
-            throw new Error(await res.text());
+            throw new Error(await getApiError(res));
         }
 
         const data: JobStatusResponse = await res.json();

@@ -38,6 +38,18 @@ echo "Checking GKE cluster..."
 if gcloud container clusters describe "${CLUSTER}" --zone "${ZONE}" >/dev/null 2>&1; then
   echo "Cluster already exists, skipping create."
   gcloud container clusters get-credentials "${CLUSTER}" --zone "${ZONE}"
+
+  DEFAULT_POOL_SCOPES="$(gcloud container node-pools describe default-pool \
+    --cluster "${CLUSTER}" \
+    --zone "${ZONE}" \
+    --format='value(config.oauthScopes)')"
+
+  if [[ "${DEFAULT_POOL_SCOPES}" != *"https://www.googleapis.com/auth/cloud-platform"* ]]; then
+    echo "Existing default-pool is missing the cloud-platform OAuth scope." >&2
+    echo "The backend cannot upload inputs or job status files to GCS." >&2
+    echo "Recreate the cluster so create-gke-cluster.sh can apply the required scope." >&2
+    exit 1
+  fi
 else
   echo "Creating GKE cluster..."
   bash "${BOOTSTRAP_DIR}/create-gke-cluster.sh"
