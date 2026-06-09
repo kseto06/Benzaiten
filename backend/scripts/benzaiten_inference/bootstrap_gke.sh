@@ -8,6 +8,7 @@ ZONE="${ZONE:-northamerica-northeast2-b}"
 CLUSTER="${CLUSTER:-benzaiten-inference-cluster-b}"
 CPU_POOL="${CPU_POOL:-cpu-inference-pool}"
 GPU_POOL="${GPU_POOL:-gpu-pool}"
+GPU_POOL_MAX_NODES="${GPU_POOL_MAX_NODES:-1}"
 DEFAULT_POOL_MIN_NODES="${DEFAULT_POOL_MIN_NODES:-1}"
 DEFAULT_POOL_MAX_NODES="${DEFAULT_POOL_MAX_NODES:-3}"
 
@@ -93,11 +94,15 @@ if [ "${INFERENCE_POOL}" = "${GPU_POOL}" ]; then
     echo "GPU inference node pool already exists, skipping create."
   else
     echo "Creating GPU inference node pool..."
-    NODE_POOL="${GPU_POOL}" bash "${BOOTSTRAP_DIR}/create-gke-node-pool.sh"
+    NODE_POOL="${GPU_POOL}" \
+      MAX_NODES="${GPU_POOL_MAX_NODES}" \
+      bash "${BOOTSTRAP_DIR}/create-gke-node-pool.sh"
   fi
 
   echo "Configuring GPU inference node pool autoscaling..."
-  NODE_POOL="${GPU_POOL}" bash "${BOOTSTRAP_DIR}/autoscale_gpu_pool.sh"
+  NODE_POOL="${GPU_POOL}" \
+    MAX_NODES="${GPU_POOL_MAX_NODES}" \
+    bash "${BOOTSTRAP_DIR}/autoscale_gpu_pool.sh"
 else
   echo "Skipping GPU node pool setup because INFERENCE_POOL=${INFERENCE_POOL}"
 fi
