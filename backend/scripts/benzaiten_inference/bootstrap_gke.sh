@@ -8,6 +8,8 @@ ZONE="${ZONE:-northamerica-northeast2-b}"
 CLUSTER="${CLUSTER:-benzaiten-inference-cluster-b}"
 CPU_POOL="${CPU_POOL:-cpu-inference-pool}"
 GPU_POOL="${GPU_POOL:-gpu-pool}"
+DEFAULT_POOL_MIN_NODES="${DEFAULT_POOL_MIN_NODES:-1}"
+DEFAULT_POOL_MAX_NODES="${DEFAULT_POOL_MAX_NODES:-3}"
 
 # Main inference pool selector
 # Valid values:
@@ -54,6 +56,14 @@ else
   echo "Creating GKE cluster..."
   bash "${BOOTSTRAP_DIR}/create-gke-cluster.sh"
 fi
+
+echo "Configuring default node pool autoscaling..."
+gcloud container clusters update "${CLUSTER}" \
+  --zone "${ZONE}" \
+  --enable-autoscaling \
+  --node-pool default-pool \
+  --min-nodes "${DEFAULT_POOL_MIN_NODES}" \
+  --max-nodes "${DEFAULT_POOL_MAX_NODES}"
 
 echo "Configuring IAM..."
 bash "${BOOTSTRAP_DIR}/iam.sh"
