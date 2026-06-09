@@ -58,19 +58,19 @@ require_file "$RESTART_SCRIPT"
 
 log "Deployment configuration"
 cat <<EOF
-Project:       ${PROJECT_ID}
-Region:        ${REGION}
-Zone:          ${ZONE}
-Cluster:       ${CLUSTER}
-Repository:    ${REPOSITORY}
-Image:         ${IMAGE_NAME}
-Tag:           ${TAG}
-Image URI:     ${IMAGE_URI}
-Deployment:    ${DEPLOYMENT_NAME}
-Container:     ${CONTAINER_NAME}
-Namespace:     ${NAMESPACE}
-Push latest:   ${PUSH_LATEST}
-No cache:      ${NO_CACHE}
+Project: ${PROJECT_ID}
+Region: ${REGION}
+Zone: ${ZONE}
+Cluster: ${CLUSTER}
+Repository: ${REPOSITORY}
+Image: ${IMAGE_NAME}
+Tag: ${TAG}
+Image URI: ${IMAGE_URI}
+Deployment: ${DEPLOYMENT_NAME}
+Container: ${CONTAINER_NAME}
+Namespace: ${NAMESPACE}
+Push latest: ${PUSH_LATEST}
+No cache: ${NO_CACHE}
 EOF
 
 log "Checking Docker Desktop"
