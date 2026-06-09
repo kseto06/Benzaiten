@@ -6,3 +6,4 @@ tests/
 backend/models/BS-RoFormer/bs_roformer_karaoke.ckpt
 backend/models/MelBand-RoFormer-DeCrowd/mel_band_roformer_decrowd.ckpt
 cleanup-benzaiten-deployment.sh
+cleanup-artifact-images.sh

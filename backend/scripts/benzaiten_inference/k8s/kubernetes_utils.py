@@ -215,7 +215,7 @@ def create_k8s_orchestration_job(
         env=env_vars,
         resources=client.V1ResourceRequirements(
             requests={
-                "cpu": "500m",
+                "cpu": "100m",
                 "memory": "512Mi",
             },
             limits={
@@ -564,7 +564,7 @@ def create_k8s_build_video_job(
         },
         node_pool="default-pool",
         gpu_count=0,
-        cpu_request="1",
+        cpu_request="100m",
         memory_request="2Gi",
         cpu_limit="2",
         memory_limit="4Gi",
