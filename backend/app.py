@@ -553,13 +553,17 @@ def get_inference_job_status(job_id: str) -> Dict[str, str]:
         ):
             return None
 
-        return {
+        response = {
             "job_id": job_id,
             "status": "completed",
-            "video_url": result.get("video_url"),
-            "audio_url": result.get("audio_url"),
             "subtitle_url": result["subtitle_url"],
         }
+        if result.get("video_url"):
+            response["video_url"] = result["video_url"]
+        if result.get("audio_url"):
+            response["audio_url"] = result["audio_url"]
+
+        return response
 
     def failed_status_response() -> Union[Dict[str, str], None]:
         status_path = Path(f"/tmp/{job_id}_status.json")
