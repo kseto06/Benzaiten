@@ -174,6 +174,7 @@ def create_k8s_orchestration_job(
     input_blob_name: str,
     filename: str,
     should_decrowd: bool,
+    fast_decrowd: bool = False,
     content_type: Union[str, None] = "video/mp4",
     language: Union[str, None] = "mul",
 ) -> str:
@@ -202,6 +203,7 @@ def create_k8s_orchestration_job(
         _env("FILENAME", filename),
         _env("CONTENT_TYPE", content_type),
         _env("SHOULD_DECROWD", str(should_decrowd).lower()),
+        _env("FAST_DECROWD", str(fast_decrowd).lower()),
         _env("LANGUAGE", language),
     ]
 
@@ -405,7 +407,9 @@ def create_k8s_source_separation_inference_job(
     )
 
 
-def create_k8s_decrowd_inference_job(job_id: str, filename: str) -> str:
+def create_k8s_decrowd_inference_job(
+    job_id: str, filename: str, fast_decrowd: bool = False
+) -> str:
     """
     do a decrowding operation on the input audio and write the decrowded instrumentals to GCS bucket
 
@@ -431,6 +435,7 @@ def create_k8s_decrowd_inference_job(job_id: str, filename: str) -> str:
                 _stage_blob(job_id, "decrowd", "instrumental_(decrowd).mp3"),
             ),
             _env("SHOULD_DECROWD", "true"),
+            _env("FAST_DECROWD", str(fast_decrowd).lower()),
         ],
         annotations={
             "benzaiten/decrowd_output_prefix": f"outputs/{job_id}/",

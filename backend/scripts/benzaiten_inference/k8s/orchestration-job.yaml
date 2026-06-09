@@ -41,8 +41,12 @@ spec:
               value: "placeholder.mp4"
             - name: CONTENT_TYPE
               value: "video/mp4"
+            - name: SHOULD_DECROWD
+              value: "false"
             - name: LANGUAGE
               value: "mul"
+            - name: FAST_DECROWD
+              value: "false"
           resources:
             requests:
               cpu: "500m"
@@ -140,6 +144,8 @@ spec:
               value: "outputs/job-id-placeholder/decrowd/instrumental_(decrowd).mp3"
             - name: SHOULD_DECROWD
               value: "true"
+            - name: FAST_DECROWD
+              value: "false"
           resources:
             requests:
               cpu: "2"

@@ -1,6 +1,108 @@
 import subprocess
 from pathlib import Path
-from typing import Tuple
+from typing import Sequence, Tuple
+
+
+def get_media_duration(media_path: str) -> float:
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(media_path),
+    ]
+
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffprobe duration check failed: {e}") from e
+
+    duration = float(result.stdout.strip())
+    if duration <= 0:
+        raise ValueError(f"Expected positive media duration, got {duration}")
+
+    return duration
+
+
+def extract_audio_segment(
+    audio_path: str,
+    output_path: str,
+    *,
+    start_seconds: float,
+    duration_seconds: float,
+) -> Path:
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        str(start_seconds),
+        "-i",
+        str(audio_path),
+        "-t",
+        str(duration_seconds),
+        "-vn",
+        "-c:a",
+        "libmp3lame",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        str(output),
+    ]
+
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffmpeg audio segment extraction failed: {e}") from e
+
+    return output
+
+
+def concatenate_audio_files(audio_paths: Sequence[str], output_path: str) -> Path:
+    if not audio_paths:
+        raise ValueError("At least one audio path is required")
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    command = ["ffmpeg", "-y"]
+    for audio_path in audio_paths:
+        command.extend(["-i", str(audio_path)])
+
+    filter_inputs = "".join(f"[{index}:a]" for index in range(len(audio_paths)))
+    command.extend(
+        [
+            "-filter_complex",
+            f"{filter_inputs}concat=n={len(audio_paths)}:v=0:a=1[outa]",
+            "-map",
+            "[outa]",
+            "-c:a",
+            "libmp3lame",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            str(output),
+        ]
+    )
+
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffmpeg audio concatenation failed: {e}") from e
+
+    return output
 
 
 def split_sources(video_path: str, output_dir: str) -> Tuple[Path, Path]:

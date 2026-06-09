@@ -17,6 +17,7 @@ def run_orchestration_inference_pipeline(
     filename: str,
     content_type: Union[str, None],
     should_decrowd: bool,
+    fast_decrowd: bool,
     language: Union[str, None],
 ) -> None:
     """
@@ -48,6 +49,7 @@ def run_orchestration_inference_pipeline(
             decrowd_job_name = create_k8s_decrowd_inference_job(
                 job_id=job_id,
                 filename=filename,
+                fast_decrowd=fast_decrowd,
             )
             parallel_jobs.append(decrowd_job_name)
 

@@ -470,6 +470,7 @@ async def create_inference_job(
 async def create_orchestration_inference_pipeline_job(
     file: UploadFile = File(...),
     should_decrowd: bool = Form(False),
+    fast_decrowd: bool = Form(False),
     language: Union[str, None] = Form(None),
 ) -> Dict:
     """
@@ -494,6 +495,7 @@ async def create_orchestration_inference_pipeline_job(
             filename=filename,
             content_type=file.content_type,
             should_decrowd=should_decrowd,
+            fast_decrowd=fast_decrowd,
             language=language,
         )
 
