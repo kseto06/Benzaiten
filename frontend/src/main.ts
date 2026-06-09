@@ -243,11 +243,13 @@ async function handleRunFullInference() {
     const fileInput = document.getElementById("fileInput") as HTMLInputElement;
     const languageInput = document.getElementById("languageInput") as HTMLInputElement;
     const shouldDecrowdInput = document.getElementById("shouldDecrowdInput") as HTMLInputElement;
+    const fastDecrowdInput = document.getElementById("fastDecrowdInput") as HTMLInputElement;
     const runInferenceButton = document.getElementById("runInferenceButton") as HTMLButtonElement;
     
     const file = fileInput.files?.[0];
     const language = languageInput.value.trim();
     const shouldDecrowd = shouldDecrowdInput.checked;
+    const fastDecrowd = shouldDecrowd && fastDecrowdInput.checked;
 
     if (!file) {
         setStatus("Select a file.")
@@ -281,7 +283,12 @@ async function handleRunFullInference() {
     // }
 
     try {
-        const startData = await startInferenceJob(file, language, shouldDecrowd);
+        const startData = await startInferenceJob(
+            file,
+            language,
+            shouldDecrowd,
+            fastDecrowd,
+        );
 
         localStorage.setItem("job_id", startData.job_id);
         jobIdInput.value = startData.job_id;
@@ -318,12 +325,14 @@ async function startInferenceJob(
     file: File,
     language: string,
     shouldDecrowd: boolean,
+    fastDecrowd: boolean,
 ): Promise<JobStartResponse> {
     const formData = new FormData();
 
     formData.append("file", file);
     formData.append("language", language);
     formData.append("should_decrowd", shouldDecrowd ? "true" : "false");
+    formData.append("fast_decrowd", fastDecrowd ? "true" : "false");
 
     setStatus("Uploading media and starting inference job...");
 
@@ -362,3 +371,16 @@ const runInferenceButton = document.getElementById("runInferenceButton") as HTML
 runInferenceButton.addEventListener("click", handleRunFullInference);
 
 loadButton.addEventListener("click", loadVideo);
+
+const shouldDecrowdInput = document.getElementById("shouldDecrowdInput") as HTMLInputElement;
+const fastDecrowdInput = document.getElementById("fastDecrowdInput") as HTMLInputElement;
+
+function syncFastDecrowdAvailability() {
+    fastDecrowdInput.disabled = !shouldDecrowdInput.checked;
+    if (fastDecrowdInput.disabled) {
+        fastDecrowdInput.checked = false;
+    }
+}
+
+shouldDecrowdInput.addEventListener("change", syncFastDecrowdAvailability);
+syncFastDecrowdAvailability();

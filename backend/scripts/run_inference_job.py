@@ -17,7 +17,14 @@ from backend.gcp_utils.gcs_bucket import (
     remove_file_from_gcs,
     clean_gcs_bucket,
 )
-from backend.scripts.ffmpeg import split_sources, build_video, convert_srt_to_vtt
+from backend.scripts.ffmpeg import (
+    split_sources,
+    build_video,
+    convert_srt_to_vtt,
+    get_media_duration,
+    extract_audio_segment,
+    concatenate_audio_files,
+)
 from backend.scripts.process import run_karaoke_inference
 from backend.language_models.transcribe import run_srt_inference
 
@@ -411,12 +418,89 @@ def write_json_to_gcs_blob(job_id: str, final_audio_path: Path) -> str:
     return public_url
 
 
+FAST_DECROWD_SEGMENT_SECONDS = 30.0
+
+
+def run_fast_decrowd_inference(
+    decrowd_input_path: Path,
+    output_dir: Path,
+) -> Path:
+    duration = get_media_duration(str(decrowd_input_path))
+    full_output_path = output_dir / "instrumental_(decrowd).mp3"
+
+    if duration <= FAST_DECROWD_SEGMENT_SECONDS * 2:
+        run_karaoke_inference(
+            model_name="decrowd",
+            audio_path=str(decrowd_input_path),
+            output_path=str(output_dir),
+        )
+        return full_output_path
+
+    work_dir = output_dir / "fast_decrowd"
+    inference_output_dir = work_dir / "inference"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    inference_output_dir.mkdir(parents=True, exist_ok=True)
+
+    first_input = extract_audio_segment(
+        str(decrowd_input_path),
+        str(work_dir / "first_30_seconds.mp3"),
+        start_seconds=0,
+        duration_seconds=FAST_DECROWD_SEGMENT_SECONDS,
+    )
+    last_input = extract_audio_segment(
+        str(decrowd_input_path),
+        str(work_dir / "last_30_seconds.mp3"),
+        start_seconds=duration - FAST_DECROWD_SEGMENT_SECONDS,
+        duration_seconds=FAST_DECROWD_SEGMENT_SECONDS,
+    )
+    fast_input = concatenate_audio_files(
+        [str(first_input), str(last_input)],
+        str(work_dir / "fast_decrowd_input.mp3"),
+    )
+
+    run_karaoke_inference(
+        model_name="decrowd",
+        audio_path=str(fast_input),
+        output_path=str(inference_output_dir),
+    )
+
+    fast_output = inference_output_dir / "instrumental_(decrowd).mp3"
+    if not fast_output.exists():
+        raise FileNotFoundError(f"expected fast decrowd output missing: {fast_output}")
+
+    first_output = extract_audio_segment(
+        str(fast_output),
+        str(work_dir / "first_30_seconds_decrowd.mp3"),
+        start_seconds=0,
+        duration_seconds=FAST_DECROWD_SEGMENT_SECONDS,
+    )
+    last_output = extract_audio_segment(
+        str(fast_output),
+        str(work_dir / "last_30_seconds_decrowd.mp3"),
+        start_seconds=FAST_DECROWD_SEGMENT_SECONDS,
+        duration_seconds=FAST_DECROWD_SEGMENT_SECONDS,
+    )
+    middle_input = extract_audio_segment(
+        str(decrowd_input_path),
+        str(work_dir / "middle_original.mp3"),
+        start_seconds=FAST_DECROWD_SEGMENT_SECONDS,
+        duration_seconds=duration - (FAST_DECROWD_SEGMENT_SECONDS * 2),
+    )
+
+    concatenate_audio_files(
+        [str(first_output), str(middle_input), str(last_output)],
+        str(full_output_path),
+    )
+    return full_output_path
+
+
 def run_decrowding_job():
     """
     This function runs the decrowding job of the orchestration pipeline which is optional depending on user configurations
     Takes in separated instrumental audio from the source separation job and runs decrowding to separate crowd noise, further cleaning the instrumental audio
     """
     should_decrowd = os.environ.get("SHOULD_DECROWD", "false").lower() == "true"
+    fast_decrowd = os.environ.get("FAST_DECROWD", "false").lower() == "true"
     job_id = os.environ["JOB_ID"]
 
     # decrowding pipeline (if selected)
@@ -444,13 +528,18 @@ def run_decrowding_job():
         output_dir = Path(f"/tmp/outputs/{job_id}")
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        run_karaoke_inference(
-            model_name=model_name,
-            audio_path=str(decrowd_input_path),
-            output_path=str(output_dir),
-        )
-
-        decrowd_instrumental_path = output_dir / "instrumental_(decrowd).mp3"
+        if fast_decrowd:
+            decrowd_instrumental_path = run_fast_decrowd_inference(
+                decrowd_input_path=decrowd_input_path,
+                output_dir=output_dir,
+            )
+        else:
+            run_karaoke_inference(
+                model_name=model_name,
+                audio_path=str(decrowd_input_path),
+                output_path=str(output_dir),
+            )
+            decrowd_instrumental_path = output_dir / "instrumental_(decrowd).mp3"
 
         if not decrowd_instrumental_path.exists():
             raise FileNotFoundError(
@@ -471,6 +560,7 @@ def run_decrowding_job():
         output_dict = {
             "status": "decrowding done",
             "model": "bs-roformer+decrowd",
+            "fast_decrowd": fast_decrowd,
             "crowd": "crowd.mp3",
             "instrumental_(decrowd)": "instrumental_(decrowd).mp3",
             "gcs_links": {
