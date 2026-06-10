@@ -72,10 +72,26 @@ jobs:
       uses: google-github-actions/setup-gcloud@v3
       with:
         project_id: ${{ env.PROJECT_ID }}
-        version: 'latest'
+        version: "latest"
+        install_components: "gke-gcloud-auth-plugin"
 
     - name: Configure Docker auth on gcloud
       run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+    - name: Free runner disk space
+      run: |
+        echo "Before cleanup:"
+        df -h
+
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+
+        docker system prune --all --force || true
+
+        echo "After cleanup:"
+        df -h
 
     - name: Build and push image to Artifact Registry
       env:
