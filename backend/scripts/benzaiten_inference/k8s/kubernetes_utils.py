@@ -17,6 +17,13 @@ CPU_INFERENCE_NODE_POOL = os.environ.get(
     "CPU_INFERENCE_NODE_POOL", "cpu-inference-pool"
 )
 GPU_INFERENCE_NODE_POOL = os.environ.get("GPU_INFERENCE_NODE_POOL", "gpu-pool")
+INFERENCE_NODE_POOL = os.environ.get("INFERENCE_NODE_POOL", GPU_INFERENCE_NODE_POOL)
+INFERENCE_GPU_COUNT = int(
+    os.environ.get(
+        "INFERENCE_GPU_COUNT",
+        "1" if INFERENCE_NODE_POOL == GPU_INFERENCE_NODE_POOL else "0",
+    )
+)
 
 
 def _ensure_safe_k8s_name(name: str) -> str:
@@ -101,6 +108,13 @@ def create_k8s_inference_job(
         client.V1EnvVar(name="CONTENT_TYPE", value=content_type),
     ]
 
+    resource_limits = {
+        "cpu": "6",
+        "memory": "24Gi",
+    }
+    if INFERENCE_GPU_COUNT > 0:
+        resource_limits["nvidia.com/gpu"] = str(INFERENCE_GPU_COUNT)
+
     container = client.V1Container(
         name="benzaiten-inference",
         image=IMAGE,
@@ -112,17 +126,14 @@ def create_k8s_inference_job(
                 "cpu": "4",
                 "memory": "12Gi",
             },
-            limits={
-                "cpu": "6",
-                "memory": "24Gi",
-            },
+            limits=resource_limits,
         ),
     )
 
     pod_spec = client.V1PodSpec(
         restart_policy="Never",
         service_account_name="benzaiten-backend-sa",
-        node_selector={"cloud.google.com/gke-nodepool": CPU_INFERENCE_NODE_POOL},
+        node_selector={"cloud.google.com/gke-nodepool": INFERENCE_NODE_POOL},
         tolerations=[
             client.V1Toleration(
                 key="inference", operator="Equal", value="true", effect="NoSchedule"
@@ -402,8 +413,8 @@ def create_k8s_source_separation_inference_job(
             "benzaiten/output_vocals_filename": "vocals.mp3",
             "benzaiten/source_separation_output_prefix": f"outputs/{job_id}/",
         },
-        node_pool=GPU_INFERENCE_NODE_POOL,
-        gpu_count=1,
+        node_pool=INFERENCE_NODE_POOL,
+        gpu_count=INFERENCE_GPU_COUNT,
     )
 
 
@@ -440,8 +451,8 @@ def create_k8s_decrowd_inference_job(
         annotations={
             "benzaiten/decrowd_output_prefix": f"outputs/{job_id}/",
         },
-        node_pool=GPU_INFERENCE_NODE_POOL,
-        gpu_count=1,
+        node_pool=INFERENCE_NODE_POOL,
+        gpu_count=INFERENCE_GPU_COUNT,
     )
 
 
@@ -484,8 +495,8 @@ def create_k8s_transcription_inference_job(
             "benzaiten/output_subtitle_filename": "vocals.vtt",
             "benzaiten/transcription_output_prefix": f"outputs/{job_id}/",
         },
-        node_pool=GPU_INFERENCE_NODE_POOL,
-        gpu_count=1,
+        node_pool=INFERENCE_NODE_POOL,
+        gpu_count=INFERENCE_GPU_COUNT,
     )
 
 

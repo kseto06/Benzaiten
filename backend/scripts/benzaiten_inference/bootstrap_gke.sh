@@ -11,6 +11,7 @@ GPU_POOL="${GPU_POOL:-gpu-pool}"
 GPU_POOL_MAX_NODES="${GPU_POOL_MAX_NODES:-1}"
 DEFAULT_POOL_MIN_NODES="${DEFAULT_POOL_MIN_NODES:-1}"
 DEFAULT_POOL_MAX_NODES="${DEFAULT_POOL_MAX_NODES:-3}"
+INFERENCE_CONFIG_MAP="${INFERENCE_CONFIG_MAP:-benzaiten-inference-config}"
 
 # Main inference pool selector
 # Valid values:
@@ -36,6 +37,12 @@ echo "Bootstrapping Benzaiten GKE infrastructure..."
 echo "Cluster: ${CLUSTER}"
 echo "Zone: ${ZONE}"
 echo "Inference pool: ${INFERENCE_POOL}"
+
+if [ "${INFERENCE_POOL}" = "${GPU_POOL}" ]; then
+  INFERENCE_GPU_COUNT=1
+else
+  INFERENCE_GPU_COUNT=0
+fi
 
 echo "Checking GKE cluster..."
 if gcloud container clusters describe "${CLUSTER}" --zone "${ZONE}" >/dev/null 2>&1; then
@@ -105,6 +112,20 @@ if [ "${INFERENCE_POOL}" = "${GPU_POOL}" ]; then
     bash "${BOOTSTRAP_DIR}/autoscale_gpu_pool.sh"
 else
   echo "Skipping GPU node pool setup because INFERENCE_POOL=${INFERENCE_POOL}"
+fi
+
+echo "Persisting backend inference pool configuration..."
+kubectl create configmap "${INFERENCE_CONFIG_MAP}" \
+  --from-literal="CPU_INFERENCE_NODE_POOL=${CPU_POOL}" \
+  --from-literal="GPU_INFERENCE_NODE_POOL=${GPU_POOL}" \
+  --from-literal="INFERENCE_NODE_POOL=${INFERENCE_POOL}" \
+  --from-literal="INFERENCE_GPU_COUNT=${INFERENCE_GPU_COUNT}" \
+  --dry-run=client \
+  -o yaml | kubectl apply -f -
+
+if kubectl get deployment benzaiten-inference-deployment >/dev/null 2>&1; then
+  echo "Restarting backend to load the inference pool configuration..."
+  kubectl rollout restart deployment/benzaiten-inference-deployment
 fi
 
 echo "Bootstrap finished"
