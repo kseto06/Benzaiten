@@ -10,6 +10,7 @@ const loadButton = document.getElementById("loadButton") as HTMLButtonElement;
 
 const statusText = document.getElementById("statusText") as HTMLParagraphElement;
 const media = document.getElementById("videoPlayer") as HTMLMediaElement;
+const LOG_PREFIX = "[Benzaiten]";
 
 // type FullInferenceResponse = {
 //     status: string;
@@ -40,7 +41,7 @@ function setStatus(message: string) {
     Args: 
         message (string): The message to display in the status text
     */
-    console.log(message);
+    console.log(`${LOG_PREFIX} UI status: ${message}`);
     statusText.textContent = message;
 }
 
@@ -283,6 +284,18 @@ async function handleRunFullInference() {
     // }
 
     try {
+        console.log(`${LOG_PREFIX} Starting inference`, {
+            apiBaseUrl: API_BASE_URL,
+            file: {
+                name: file.name,
+                type: file.type,
+                sizeBytes: file.size,
+            },
+            language,
+            shouldDecrowd,
+            fastDecrowd,
+        });
+
         const startData = await startInferenceJob(
             file,
             language,
@@ -293,6 +306,7 @@ async function handleRunFullInference() {
         localStorage.setItem("job_id", startData.job_id);
         jobIdInput.value = startData.job_id;
 
+        console.log(`${LOG_PREFIX} Inference job accepted`, startData);
         setStatus("Inference job started...");
 
         const completedJob = await pollJobStatus(startData.job_id);
@@ -308,6 +322,7 @@ async function handleRunFullInference() {
             throw new Error("Job completed but output URLs are missing");
         }
 
+        console.log(`${LOG_PREFIX} Inference job completed`, completedJob);
         localStorage.setItem("media_url", mediaUrl);
 
         setStatus(`Inference done. Loading ${mediaLabel.toLowerCase()}...`);
@@ -315,7 +330,7 @@ async function handleRunFullInference() {
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setStatus(`Failed to run inference: ${message}`);
-        console.error(err);
+        console.error(`${LOG_PREFIX} Inference flow failed`, err);
     } finally {
         runInferenceButton.disabled = false;
     }
@@ -336,27 +351,86 @@ async function startInferenceJob(
 
     setStatus("Uploading media and starting inference job...");
 
-    const res = await fetch(`${API_BASE_URL}/jobs`, {
+    const requestUrl = `${API_BASE_URL}/jobs`;
+    const requestStartedAt = performance.now();
+
+    console.log(`${LOG_PREFIX} POST ${requestUrl}`, {
+        fileName: file.name,
+        fileType: file.type,
+        fileSizeBytes: file.size,
+        language,
+        shouldDecrowd,
+        fastDecrowd,
+    });
+
+    const res = await fetch(requestUrl, {
         method: "POST",
         body: formData,
     });
 
+    console.log(`${LOG_PREFIX} POST ${requestUrl} response`, {
+        status: res.status,
+        ok: res.ok,
+        durationMs: Math.round(performance.now() - requestStartedAt),
+    });
+
     if (!res.ok) {
-        throw new Error(await getApiError(res));
+        const error = await getApiError(res);
+        console.error(`${LOG_PREFIX} Job submission rejected`, {
+            status: res.status,
+            error,
+        });
+        throw new Error(error);
     }
 
-    return await res.json();
+    const data: JobStartResponse = await res.json();
+    console.log(`${LOG_PREFIX} Job submission response`, data);
+    return data;
 }
 
 async function pollJobStatus(jobId: string): Promise<JobStatusResponse> {
+    const requestUrl = `${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`;
+    const pollingStartedAt = performance.now();
+    let pollAttempt = 0;
+    let previousStatus: JobStatusResponse["status"] | undefined;
+
+    console.log(`${LOG_PREFIX} Polling job`, { jobId, requestUrl });
+
     while (true) {
-        const res = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`);
+        pollAttempt += 1;
+        const requestStartedAt = performance.now();
+        const res = await fetch(requestUrl);
 
         if (!res.ok) {
-            throw new Error(await getApiError(res));
+            const error = await getApiError(res);
+            console.error(`${LOG_PREFIX} Job status request failed`, {
+                jobId,
+                pollAttempt,
+                status: res.status,
+                durationMs: Math.round(performance.now() - requestStartedAt),
+                error,
+            });
+            throw new Error(error);
         }
 
         const data: JobStatusResponse = await res.json();
+
+        console.log(`${LOG_PREFIX} Job status response`, {
+            jobId,
+            pollAttempt,
+            requestDurationMs: Math.round(performance.now() - requestStartedAt),
+            elapsedMs: Math.round(performance.now() - pollingStartedAt),
+            data,
+        });
+
+        if (data.status !== previousStatus) {
+            console.log(`${LOG_PREFIX} Job status changed`, {
+                jobId,
+                previousStatus,
+                status: data.status,
+            });
+            previousStatus = data.status;
+        }
 
         if (data.status === "completed" || data.status === "failed") {
             return data;
