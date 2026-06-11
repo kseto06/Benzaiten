@@ -4,7 +4,6 @@ This TS script integrates the backend and frontend integration of GET/POST endpo
 const GCS_BUCKET = "benzaiten-outputs";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL; //"http://127.0.0.1:8000";
 
-const jobIdInput = document.getElementById("jobIdInput") as HTMLInputElement;
 const videoNameInput = document.getElementById("videoNameInput") as HTMLInputElement;
 const loadButton = document.getElementById("loadButton") as HTMLButtonElement;
 
@@ -34,6 +33,15 @@ type JobStatusResponse = {
     error?: string;
 };
 
+type GcsObject = {
+    name: string;
+};
+
+type GcsObjectListResponse = {
+    items?: GcsObject[];
+    nextPageToken?: string;
+};
+
 function setStatus(message: string) {
     /*
     This function updates the status text on the page
@@ -56,17 +64,131 @@ async function getApiError(response: Response): Promise<string> {
     }
 }
 
-function buildGcsUrl(jobId: string, filename: string): string {
-    /*
-    This function builds the URL to access a file in GCS based on the job ID and filename
+function buildGcsObjectUrl(objectName: string): string {
+    const encodedObjectName = objectName
+        .split("/")
+        .map(segment => encodeURIComponent(segment))
+        .join("/");
 
-    Args:
-        jobId (string): The ID of the job
-        filename (string): The name of the file to access
-    Returns:
-        string: The full URL to access the file in GCS
-    */
-    return `https://storage.googleapis.com/${GCS_BUCKET}/outputs/${encodeURIComponent(jobId)}/${encodeURIComponent(filename)}`;
+    return `https://storage.googleapis.com/${GCS_BUCKET}/${encodedObjectName}`;
+}
+
+function normalizeSearchText(value: string): string {
+    return value
+        .normalize("NFKD")
+        .replace(/\p{M}/gu, "")
+        .toLocaleLowerCase()
+        .replace(/\.[^.]+$/, "")
+        .replace(/[^\p{L}\p{N}]+/gu, " ")
+        .trim()
+        .replace(/\s+/g, " ");
+}
+
+function getObjectFilename(objectName: string): string {
+    return objectName.split("/").at(-1) || objectName;
+}
+
+function getSearchBigrams(value: string): Set<string> {
+    const compactValue = value.replace(/\s/g, "");
+
+    if (compactValue.length < 2) {
+        return new Set([compactValue]);
+    }
+
+    const bigrams = new Set<string>();
+    for (let index = 0; index < compactValue.length - 1; index += 1) {
+        bigrams.add(compactValue.slice(index, index + 2));
+    }
+    return bigrams;
+}
+
+function getFuzzyMatchScore(query: string, candidate: string): number {
+    const normalizedQuery = normalizeSearchText(query);
+    const normalizedCandidate = normalizeSearchText(candidate);
+
+    if (!normalizedQuery || !normalizedCandidate) {
+        return 0;
+    }
+
+    if (normalizedCandidate === normalizedQuery) {
+        return 1;
+    }
+
+    if (normalizedCandidate.includes(normalizedQuery)) {
+        return 0.95;
+    }
+
+    const queryTokens = normalizedQuery.split(" ");
+    const candidateTokens = new Set(normalizedCandidate.split(" "));
+    const matchedTokens = queryTokens.filter(token => candidateTokens.has(token));
+    const tokenCoverage = matchedTokens.length / queryTokens.length;
+
+    const queryBigrams = getSearchBigrams(normalizedQuery);
+    const candidateBigrams = getSearchBigrams(normalizedCandidate);
+    const sharedBigrams = [...queryBigrams].filter(bigram => candidateBigrams.has(bigram));
+    const diceSimilarity = (
+        2 * sharedBigrams.length
+        / (queryBigrams.size + candidateBigrams.size)
+    );
+
+    return Math.max(tokenCoverage * 0.9, diceSimilarity);
+}
+
+function isSearchableMediaObject(objectName: string): boolean {
+    const parts = objectName.split("/");
+    const filename = getObjectFilename(objectName).toLocaleLowerCase();
+    const extension = filename.split(".").at(-1);
+    const intermediateFilenames = new Set([
+        "input_video.mp4",
+        "vocals.mp3",
+        "instrumental.mp3",
+        "instrumental_(decrowd).mp3",
+    ]);
+
+    if (
+        parts[0] !== "outputs"
+        || parts.length < 3
+        || !["mp4", "mp3"].includes(extension || "")
+        || intermediateFilenames.has(filename)
+    ) {
+        return false;
+    }
+
+    return parts.length === 3 || parts.includes("final_output");
+}
+
+async function listOutputObjects(): Promise<GcsObject[]> {
+    const objects: GcsObject[] = [];
+    let pageToken: string | undefined;
+
+    do {
+        const searchParams = new URLSearchParams({
+            prefix: "outputs/",
+            maxResults: "1000",
+            fields: "items(name),nextPageToken",
+        });
+
+        if (pageToken) {
+            searchParams.set("pageToken", pageToken);
+        }
+
+        const requestUrl = (
+            `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o?${searchParams}`
+        );
+        const response = await fetch(requestUrl);
+
+        if (!response.ok) {
+            throw new Error(
+                `Could not search stored videos (GCS returned ${response.status})`,
+            );
+        }
+
+        const data: GcsObjectListResponse = await response.json();
+        objects.push(...(data.items || []));
+        pageToken = data.nextPageToken;
+    } while (pageToken);
+
+    return objects;
 }
 
 /**
@@ -160,36 +282,64 @@ function setMediaSources(mediaUrl: string, subtitleUrl?: string, mediaLabel = "M
 
 async function loadVideo() {
     /*
-    This function retrieves the job ID and video name, then builds the video URL and subtitle URL, and finally sets the video sources for playback
+    This function searches the public GCS outputs by video name and loads the
+    closest matching media and subtitle objects.
     */
-    const jobId = jobIdInput.value.trim();
-    const videoName = videoNameInput.value.trim();
+    const searchQuery = videoNameInput.value.trim();
 
-    if (!jobId || !videoName) {
-        setStatus("Missing job_id or video_name");
+    if (!searchQuery) {
+        setStatus("Enter a video name to search.");
         return;
     }
 
-    setStatus("Loading...");
+    setStatus(`Searching for "${searchQuery}"...`);
     loadButton.disabled = true;
 
     try {
-        // old pipeline:
-        // setStatus("Converting subtitles...");
-        // const videoUrl = buildGcsUrl(jobId, `${videoName}.mp4`);
-        // const subtitleUrl = await convertSubtitlesToVtt(jobId);
-        // setStatus("Subtitle conversion done. Loading video...");
-        // setMediaSources(videoUrl, subtitleUrl, "Video");
+        const objects = await listOutputObjects();
+        const mediaMatches = objects
+            .filter(object => isSearchableMediaObject(object.name))
+            .map(object => ({
+                object,
+                score: getFuzzyMatchScore(
+                    searchQuery,
+                    getObjectFilename(object.name),
+                ),
+            }))
+            .sort((left, right) => right.score - left.score);
 
-        //k8 job pipeline:
-        const videoUrl = buildGcsUrl(jobId, `${videoName}.mp4`);
-        const subtitleUrl = buildGcsUrl(jobId, "vocals.vtt");
+        const bestMatch = mediaMatches[0];
+        if (!bestMatch || bestMatch.score < 0.45) {
+            throw new Error(`No close match found for "${searchQuery}"`);
+        }
 
-        setStatus("Loading video...");
-        setMediaSources(videoUrl, subtitleUrl, "Video");
+        const jobId = bestMatch.object.name.split("/")[1];
+        const subtitleObject = objects.find(object => (
+            object.name.startsWith(`outputs/${jobId}/`)
+            && object.name.endsWith("/vocals.vtt")
+        ));
+        const matchedFilename = getObjectFilename(bestMatch.object.name);
+        const mediaLabel = matchedFilename.toLocaleLowerCase().endsWith(".mp4")
+            ? "Video"
+            : "Audio";
+
+        console.log(`${LOG_PREFIX} Media search match`, {
+            searchQuery,
+            score: bestMatch.score,
+            matchedObject: bestMatch.object.name,
+            subtitleObject: subtitleObject?.name,
+        });
+
+        setStatus(`Found "${matchedFilename}". Loading ${mediaLabel.toLowerCase()}...`);
+        setMediaSources(
+            buildGcsObjectUrl(bestMatch.object.name),
+            subtitleObject ? buildGcsObjectUrl(subtitleObject.name) : undefined,
+            mediaLabel,
+        );
     } catch (err) {
-        setStatus("Failed to convert subtitles or load video.");
-        console.error(err);
+        const message = err instanceof Error ? err.message : String(err);
+        setStatus(`Failed to load media: ${message}`);
+        console.error(`${LOG_PREFIX} Media search failed`, err);
     } finally {
         loadButton.disabled = false;
     }
@@ -275,7 +425,6 @@ async function handleRunFullInference() {
     //     const subtitleUrl = await convertSubtitlesToVtt(data.job_id);
     //     setStatus("Inference and subtitle conversion done. Loading video...");
     //     setMediaSources(data.video_url, subtitleUrl, "Video");
-    //     jobIdInput.value = data.job_id;
     // } catch (err) {
     //     setStatus("Failed to run inference or convert subtitles.");
     //     console.error(err);
@@ -304,7 +453,6 @@ async function handleRunFullInference() {
         );
 
         localStorage.setItem("job_id", startData.job_id);
-        jobIdInput.value = startData.job_id;
 
         console.log(`${LOG_PREFIX} Inference job accepted`, startData);
         setStatus("Inference job started...");
@@ -445,6 +593,11 @@ const runInferenceButton = document.getElementById("runInferenceButton") as HTML
 runInferenceButton.addEventListener("click", handleRunFullInference);
 
 loadButton.addEventListener("click", loadVideo);
+videoNameInput.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+        void loadVideo();
+    }
+});
 
 const shouldDecrowdInput = document.getElementById("shouldDecrowdInput") as HTMLInputElement;
 const fastDecrowdInput = document.getElementById("fastDecrowdInput") as HTMLInputElement;
