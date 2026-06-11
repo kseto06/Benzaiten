@@ -838,7 +838,7 @@ function renderEditor(project: EditorProject): void {
       </header>
 
       <main class="editor-main">
-        <aside class="subtitle-panel">
+        <aside class="subtitle-panel" id="subtitlePanel">
           <div class="subtitle-panel-header">
             <h2>Subtitles</h2>
             <p>Edit multiline cues and timing. Changes stay in this browser session.</p>
@@ -850,6 +850,12 @@ function renderEditor(project: EditorProject): void {
             <div class="empty-subtitles">Loading subtitle cues from GCS...</div>
           </div>
         </aside>
+
+        <div class="panel-resizer" id="panelResizer" role="separator" aria-label="Resize subtitle panel" aria-orientation="vertical">
+          <button class="panel-collapse-button" id="panelCollapseButton" type="button" title="Collapse subtitle panel" aria-label="Collapse subtitle panel">
+            <span aria-hidden="true">&lsaquo;</span>
+          </button>
+        </div>
 
         <section class="editor-workspace">
           <div class="preview-area">
@@ -865,15 +871,21 @@ function renderEditor(project: EditorProject): void {
 
           <div class="transport-bar">
             <div class="transport-left">
-              <button class="transport-button" id="skipBackButton" title="Back 5 seconds">-5</button>
-              <button class="transport-button play" id="playButton" title="Play">Play</button>
-              <button class="transport-button" id="skipForwardButton" title="Forward 5 seconds">+5</button>
+              <button class="transport-button" id="skipBackButton" title="Back 5 seconds" aria-label="Back 5 seconds">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7 6 12l5 5v-3.5c3.2 0 5.4 1 7 3.5-.4-5-3-7.5-7-7.5V7Z"/><text x="10.5" y="14.3">5</text></svg>
+              </button>
+              <button class="transport-button play" id="playButton" title="Play" aria-label="Play">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path class="play-icon-path" d="m9 7 8 5-8 5V7Z"/></svg>
+              </button>
+              <button class="transport-button" id="skipForwardButton" title="Forward 5 seconds" aria-label="Forward 5 seconds">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 7 5 5-5 5v-3.5c-3.2 0-5.4 1-7 3.5.4-5 3-7.5 7-7.5V7Z"/><text x="7.5" y="14.3">5</text></svg>
+              </button>
             </div>
             <div class="transport-center">
               <span class="time-display" id="timeDisplay">00:00 / 00:00</span>
             </div>
             <div class="transport-right">
-              <span>Zoom</span>
+              <span title="Use the slider, Ctrl/Cmd + mouse wheel, or a touchpad pinch">Zoom</span>
               <input class="zoom-input" id="zoomInput" type="range" min="4" max="20" value="8" />
             </div>
           </div>
@@ -882,7 +894,7 @@ function renderEditor(project: EditorProject): void {
             <div class="timeline-scroll" id="timelineScroll">
               <div class="timeline-content" id="timelineContent"></div>
             </div>
-            <div class="timeline-drop-hint">Drop local video or audio onto the timeline</div>
+            <div class="timeline-drop-hint">Drop media here. Pinch or Ctrl/Cmd + wheel to zoom.</div>
           </div>
         </section>
       </main>
@@ -893,6 +905,10 @@ function renderEditor(project: EditorProject): void {
 }
 
 function setupEditor(project: EditorProject): void {
+  const editorMain = queryElement<HTMLElement>(".editor-main");
+  const subtitlePanel = queryElement<HTMLElement>("#subtitlePanel");
+  const panelResizer = queryElement<HTMLDivElement>("#panelResizer");
+  const panelCollapseButton = queryElement<HTMLButtonElement>("#panelCollapseButton");
   const media = queryElement<HTMLVideoElement>("#editorMedia");
   const audioPreview = queryElement<HTMLDivElement>("#audioPreview");
   const subtitleList = queryElement<HTMLDivElement>("#subtitleList");
@@ -910,6 +926,7 @@ function setupEditor(project: EditorProject): void {
   let selectedCueId: string | null = null;
   let selectedSourceId: string | null = null;
   let activeCueId: string | null = null;
+  let previousSidebarWidth = 350;
 
   media.src = project.mediaUrl;
   media.style.display = project.mediaType === "video" ? "block" : "none";
@@ -922,6 +939,19 @@ function setupEditor(project: EditorProject): void {
     cues.find(cue => time >= cue.start && time <= cue.end)
   );
 
+  const syncSubtitleSelection = (scrollIntoView = false): void => {
+    for (const card of subtitleList.querySelectorAll<HTMLElement>(".subtitle-card")) {
+      card.classList.toggle("is-active", card.dataset.cueId === selectedCueId);
+    }
+    if (scrollIntoView && selectedCueId) {
+      window.requestAnimationFrame(() => {
+        subtitleList
+          .querySelector<HTMLElement>(`[data-cue-id="${CSS.escape(selectedCueId || "")}"]`)
+          ?.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+    }
+  };
+
   const updatePreview = (): void => {
     const currentTime = media.currentTime || 0;
     const activeCue = activeCueAt(currentTime);
@@ -930,7 +960,7 @@ function setupEditor(project: EditorProject): void {
       activeCueId = activeCue?.id || null;
       if (activeCue) {
         selectedCueId = activeCue.id;
-        renderSubtitleList();
+        syncSubtitleSelection();
       }
     }
     timeDisplay.textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
@@ -979,6 +1009,7 @@ function setupEditor(project: EditorProject): void {
         <textarea data-cue-text="${cue.id}" aria-label="Subtitle text">${escapeHtml(cue.text)}</textarea>
       </article>
     `).join("");
+    syncSubtitleSelection();
   };
 
   const drawWaveform = (canvas: HTMLCanvasElement, samples?: Float32Array): void => {
@@ -1083,8 +1114,8 @@ function setupEditor(project: EditorProject): void {
     selectedCueId = cue.id;
     media.currentTime = cue.start;
     updatePreview();
-    renderSubtitleList();
     renderTimeline();
+    syncSubtitleSelection(true);
   };
 
   subtitleList.addEventListener("click", event => {
@@ -1100,6 +1131,9 @@ function setupEditor(project: EditorProject): void {
       updatePreview();
       return;
     }
+    if (target.matches("textarea, input, button")) {
+      return;
+    }
     const card = target.closest<HTMLElement>(".subtitle-card");
     if (card?.dataset.cueId) {
       const cue = cues.find(item => item.id === card.dataset.cueId);
@@ -1107,6 +1141,22 @@ function setupEditor(project: EditorProject): void {
         seekToCue(cue);
       }
     }
+  });
+
+  subtitleList.addEventListener("focusin", event => {
+    const target = event.target as HTMLElement;
+    const card = target.closest<HTMLElement>(".subtitle-card");
+    if (!card?.dataset.cueId) {
+      return;
+    }
+    selectedCueId = card.dataset.cueId;
+    const cue = cues.find(item => item.id === selectedCueId);
+    if (cue) {
+      media.currentTime = cue.start;
+    }
+    syncSubtitleSelection();
+    renderTimeline();
+    updatePreview();
   });
 
   subtitleList.addEventListener("input", event => {
@@ -1161,6 +1211,14 @@ function setupEditor(project: EditorProject): void {
     window.location.hash = "";
   });
 
+  const setPlayButtonState = (isPlaying: boolean): void => {
+    playButton.title = isPlaying ? "Pause" : "Play";
+    playButton.setAttribute("aria-label", isPlaying ? "Pause" : "Play");
+    playButton.innerHTML = isPlaying
+      ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7h3v10H8V7Zm5 0h3v10h-3V7Z"/></svg>`
+      : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 8 5-8 5V7Z"/></svg>`;
+  };
+
   playButton.addEventListener("click", () => {
     if (media.paused) {
       void media.play();
@@ -1180,10 +1238,10 @@ function setupEditor(project: EditorProject): void {
   });
 
   media.addEventListener("play", () => {
-    playButton.textContent = "Pause";
+    setPlayButtonState(true);
   });
   media.addEventListener("pause", () => {
-    playButton.textContent = "Play";
+    setPlayButtonState(false);
     for (const source of sources) {
       source.element?.pause();
     }
@@ -1230,6 +1288,7 @@ function setupEditor(project: EditorProject): void {
     mode: "move" | "left" | "right",
   ): void => {
     event.preventDefault();
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
     const startX = event.clientX;
     const cue = kind === "cue" ? cues.find(item => item.id === id) : undefined;
     const source = kind === "source" ? sources.find(item => item.id === id) : undefined;
@@ -1238,9 +1297,17 @@ function setupEditor(project: EditorProject): void {
     }
     const originalStart = cue?.start ?? source?.start ?? 0;
     const originalEnd = cue?.end ?? ((source?.start || 0) + (source?.duration || 0));
+    const dragPixelsPerSecond = pixelsPerSecond();
+    if (cue) {
+      selectedCueId = cue.id;
+      syncSubtitleSelection(true);
+    }
+    if (source) {
+      selectedSourceId = source.id;
+    }
 
     const onMove = (moveEvent: PointerEvent): void => {
-      const deltaSeconds = (moveEvent.clientX - startX) / pixelsPerSecond();
+      const deltaSeconds = (moveEvent.clientX - startX) / dragPixelsPerSecond;
       if (cue) {
         const cueDuration = originalEnd - originalStart;
         if (mode === "move") {
@@ -1255,11 +1322,8 @@ function setupEditor(project: EditorProject): void {
       }
       if (source) {
         if (mode === "move") {
-          source.start = clamp(
-            originalStart + deltaSeconds,
-            0,
-            Math.max(0, duration - source.duration),
-          );
+          source.start = Math.max(0, originalStart + deltaSeconds);
+          duration = Math.max(duration, source.start + source.duration);
         } else if (mode === "left") {
           const newStart = clamp(
             originalStart + deltaSeconds,
@@ -1321,6 +1385,73 @@ function setupEditor(project: EditorProject): void {
     }
     const bounds = lane.getBoundingClientRect();
     media.currentTime = clamp((event.clientX - bounds.left) / pixelsPerSecond(), 0, duration);
+  });
+
+  timelineScroll.addEventListener("wheel", event => {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+    event.preventDefault();
+    const bounds = timelineScroll.getBoundingClientRect();
+    const pointerX = event.clientX - bounds.left + timelineScroll.scrollLeft - 118;
+    const anchorTime = clamp(pointerX / pixelsPerSecond(), 0, duration);
+    const direction = event.deltaY < 0 ? 1 : -1;
+    zoom = clamp(zoom + direction * Math.max(0.5, Math.abs(event.deltaY) / 180), 4, 20);
+    zoomInput.value = zoom.toFixed(1);
+    renderTimeline();
+    timelineScroll.scrollLeft = Math.max(
+      0,
+      118 + anchorTime * pixelsPerSecond() - (event.clientX - bounds.left),
+    );
+  }, { passive: false });
+
+  const setSidebarWidth = (width: number): void => {
+    const maximum = Math.max(320, editorMain.clientWidth * 0.62);
+    const clampedWidth = clamp(width, 250, maximum);
+    editorMain.style.setProperty("--subtitle-panel-width", `${clampedWidth}px`);
+    previousSidebarWidth = clampedWidth;
+    editorMain.classList.remove("is-sidebar-collapsed");
+    panelCollapseButton.title = "Collapse subtitle panel";
+    panelCollapseButton.setAttribute("aria-label", "Collapse subtitle panel");
+    panelCollapseButton.innerHTML = `<span aria-hidden="true">&lsaquo;</span>`;
+  };
+
+  panelResizer.addEventListener("pointerdown", event => {
+    if ((event.target as HTMLElement).closest("button")) {
+      return;
+    }
+    event.preventDefault();
+    panelResizer.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = subtitlePanel.getBoundingClientRect().width;
+
+    const onMove = (moveEvent: PointerEvent): void => {
+      setSidebarWidth(startWidth + moveEvent.clientX - startX);
+    };
+    const onUp = (): void => {
+      panelResizer.removeEventListener("pointermove", onMove);
+      panelResizer.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("is-resizing-panel");
+    };
+
+    document.body.classList.add("is-resizing-panel");
+    panelResizer.addEventListener("pointermove", onMove);
+    panelResizer.addEventListener("pointerup", onUp);
+  });
+
+  panelCollapseButton.addEventListener("click", () => {
+    const isCollapsed = editorMain.classList.toggle("is-sidebar-collapsed");
+    if (isCollapsed) {
+      const currentWidth = subtitlePanel.getBoundingClientRect().width;
+      if (currentWidth > 100) {
+        previousSidebarWidth = currentWidth;
+      }
+      panelCollapseButton.title = "Expand subtitle panel";
+      panelCollapseButton.setAttribute("aria-label", "Expand subtitle panel");
+      panelCollapseButton.innerHTML = `<span aria-hidden="true">&rsaquo;</span>`;
+    } else {
+      setSidebarWidth(previousSidebarWidth);
+    }
   });
 
   for (const eventName of ["dragenter", "dragover"]) {
