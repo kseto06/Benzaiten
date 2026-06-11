@@ -1,613 +1,1426 @@
-/*
-This TS script integrates the backend and frontend integration of GET/POST endpoints for video and subtitle retrieval
-*/
+import "./style.css";
+
 const GCS_BUCKET = "benzaiten-outputs";
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL; //"http://127.0.0.1:8000";
-
-const videoNameInput = document.getElementById("videoNameInput") as HTMLInputElement;
-const loadButton = document.getElementById("loadButton") as HTMLButtonElement;
-
-const statusText = document.getElementById("statusText") as HTMLParagraphElement;
-const media = document.getElementById("videoPlayer") as HTMLMediaElement;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+const PROJECT_STORAGE_KEY = "benzaiten-editor-project";
 const LOG_PREFIX = "[Benzaiten]";
 
-// type FullInferenceResponse = {
-//     status: string;
-//     job_id: string;
-//     video_url: string;
-//     subtitle_url: string;
-// }
-
-//inference k8s job types:
 type JobStartResponse = {
-    status: "queued";
-    job_id: string;
-}
+  status: "queued";
+  job_id: string;
+};
 
 type JobStatusResponse = {
-    status: "queued" | "running" | "completed" | "failed";
-    job_id: string;
-    video_url?: string;
-    audio_url?: string;
-    subtitle_url?: string;
-    error?: string;
+  status: "queued" | "running" | "completed" | "failed";
+  job_id: string;
+  video_url?: string;
+  audio_url?: string;
+  subtitle_url?: string;
+  error?: string;
 };
 
 type GcsObject = {
-    name: string;
+  name: string;
 };
 
 type GcsObjectListResponse = {
-    items?: GcsObject[];
-    nextPageToken?: string;
+  items?: GcsObject[];
+  nextPageToken?: string;
 };
 
-function setStatus(message: string) {
-    /*
-    This function updates the status text on the page
+type EditorProject = {
+  title: string;
+  jobId?: string;
+  mediaUrl: string;
+  subtitleUrl?: string;
+  mediaType: "video" | "audio";
+};
 
-    Args: 
-        message (string): The message to display in the status text
-    */
-    console.log(`${LOG_PREFIX} UI status: ${message}`);
-    statusText.textContent = message;
+type SubtitleCue = {
+  id: string;
+  start: number;
+  end: number;
+  text: string;
+};
+
+type TimelineSource = {
+  id: string;
+  name: string;
+  type: "video" | "audio";
+  url: string;
+  start: number;
+  duration: number;
+  isPrimary: boolean;
+  element?: HTMLMediaElement;
+};
+
+type PipelineStage = {
+  id: string;
+  label: string;
+  complete: boolean;
+  skipped?: boolean;
+};
+
+const appRoot = document.querySelector<HTMLDivElement>("#app");
+if (!appRoot) {
+  throw new Error("Application root is missing");
+}
+const app = appRoot;
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
-async function getApiError(response: Response): Promise<string> {
-    const body = await response.text();
+function queryElement<T extends Element>(selector: string, root: ParentNode = document): T {
+  const element = root.querySelector<T>(selector);
+  if (!element) {
+    throw new Error(`Missing required element: ${selector}`);
+  }
+  return element;
+}
 
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function getApiError(response: Response): Promise<string> {
+  return response.text().then(body => {
     try {
-        const parsed = JSON.parse(body) as { detail?: string };
-        return parsed.detail || body || `Request failed with status ${response.status}`;
+      const parsed = JSON.parse(body) as { detail?: string };
+      return parsed.detail || body || `Request failed with status ${response.status}`;
     } catch {
-        return body || `Request failed with status ${response.status}`;
+      return body || `Request failed with status ${response.status}`;
     }
+  });
 }
 
 function buildGcsObjectUrl(objectName: string): string {
-    const encodedObjectName = objectName
-        .split("/")
-        .map(segment => encodeURIComponent(segment))
-        .join("/");
-
-    return `https://storage.googleapis.com/${GCS_BUCKET}/${encodedObjectName}`;
-}
-
-function normalizeSearchText(value: string): string {
-    return value
-        .normalize("NFKD")
-        .replace(/\p{M}/gu, "")
-        .toLocaleLowerCase()
-        .replace(/\.[^.]+$/, "")
-        .replace(/[^\p{L}\p{N}]+/gu, " ")
-        .trim()
-        .replace(/\s+/g, " ");
+  const encodedName = objectName
+    .split("/")
+    .map(segment => encodeURIComponent(segment))
+    .join("/");
+  return `https://storage.googleapis.com/${GCS_BUCKET}/${encodedName}`;
 }
 
 function getObjectFilename(objectName: string): string {
-    return objectName.split("/").at(-1) || objectName;
+  return objectName.split("/").at(-1) || objectName;
+}
+
+function filenameWithoutExtension(filename: string): string {
+  return filename.replace(/\.[^.]+$/, "");
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .toLocaleLowerCase()
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
 }
 
 function getSearchBigrams(value: string): Set<string> {
-    const compactValue = value.replace(/\s/g, "");
+  const compact = value.replace(/\s/g, "");
+  if (compact.length < 2) {
+    return new Set([compact]);
+  }
 
-    if (compactValue.length < 2) {
-        return new Set([compactValue]);
-    }
-
-    const bigrams = new Set<string>();
-    for (let index = 0; index < compactValue.length - 1; index += 1) {
-        bigrams.add(compactValue.slice(index, index + 2));
-    }
-    return bigrams;
+  const bigrams = new Set<string>();
+  for (let index = 0; index < compact.length - 1; index += 1) {
+    bigrams.add(compact.slice(index, index + 2));
+  }
+  return bigrams;
 }
 
 function getFuzzyMatchScore(query: string, candidate: string): number {
-    const normalizedQuery = normalizeSearchText(query);
-    const normalizedCandidate = normalizeSearchText(candidate);
+  const normalizedQuery = normalizeSearchText(query);
+  const normalizedCandidate = normalizeSearchText(candidate);
+  if (!normalizedQuery || !normalizedCandidate) {
+    return 0;
+  }
+  if (normalizedCandidate === normalizedQuery) {
+    return 1;
+  }
+  if (normalizedCandidate.includes(normalizedQuery)) {
+    return 0.96;
+  }
 
-    if (!normalizedQuery || !normalizedCandidate) {
-        return 0;
-    }
-
-    if (normalizedCandidate === normalizedQuery) {
-        return 1;
-    }
-
-    if (normalizedCandidate.includes(normalizedQuery)) {
-        return 0.95;
-    }
-
-    const queryTokens = normalizedQuery.split(" ");
-    const candidateTokens = new Set(normalizedCandidate.split(" "));
-    const matchedTokens = queryTokens.filter(token => candidateTokens.has(token));
-    const tokenCoverage = matchedTokens.length / queryTokens.length;
-
-    const queryBigrams = getSearchBigrams(normalizedQuery);
-    const candidateBigrams = getSearchBigrams(normalizedCandidate);
-    const sharedBigrams = [...queryBigrams].filter(bigram => candidateBigrams.has(bigram));
-    const diceSimilarity = (
-        2 * sharedBigrams.length
-        / (queryBigrams.size + candidateBigrams.size)
-    );
-
-    return Math.max(tokenCoverage * 0.9, diceSimilarity);
+  const queryTokens = normalizedQuery.split(" ");
+  const candidateTokens = new Set(normalizedCandidate.split(" "));
+  const tokenCoverage = (
+    queryTokens.filter(token => candidateTokens.has(token)).length / queryTokens.length
+  );
+  const queryBigrams = getSearchBigrams(normalizedQuery);
+  const candidateBigrams = getSearchBigrams(normalizedCandidate);
+  const shared = [...queryBigrams].filter(bigram => candidateBigrams.has(bigram));
+  const dice = (2 * shared.length) / (queryBigrams.size + candidateBigrams.size);
+  return Math.max(tokenCoverage * 0.9, dice);
 }
 
 function isSearchableMediaObject(objectName: string): boolean {
-    const parts = objectName.split("/");
-    const filename = getObjectFilename(objectName).toLocaleLowerCase();
-    const extension = filename.split(".").at(-1);
-    const intermediateFilenames = new Set([
-        "input_video.mp4",
-        "vocals.mp3",
-        "instrumental.mp3",
-        "instrumental_(decrowd).mp3",
-    ]);
+  const parts = objectName.split("/");
+  const filename = getObjectFilename(objectName).toLocaleLowerCase();
+  const extension = filename.split(".").at(-1);
+  const intermediates = new Set([
+    "input_video.mp4",
+    "vocals.mp3",
+    "instrumental.mp3",
+    "instrumental_(decrowd).mp3",
+  ]);
 
-    if (
-        parts[0] !== "outputs"
-        || parts.length < 3
-        || !["mp4", "mp3"].includes(extension || "")
-        || intermediateFilenames.has(filename)
-    ) {
-        return false;
-    }
-
-    return parts.length === 3 || parts.includes("final_output");
+  return (
+    parts[0] === "outputs"
+    && parts.length >= 3
+    && ["mp4", "mp3"].includes(extension || "")
+    && !intermediates.has(filename)
+    && (parts.length === 3 || parts.includes("final_output"))
+  );
 }
 
-async function listOutputObjects(): Promise<GcsObject[]> {
-    const objects: GcsObject[] = [];
-    let pageToken: string | undefined;
+async function listGcsObjects(prefix = "outputs/"): Promise<GcsObject[]> {
+  const objects: GcsObject[] = [];
+  let pageToken: string | undefined;
 
-    do {
-        const searchParams = new URLSearchParams({
-            prefix: "outputs/",
-            maxResults: "1000",
-            fields: "items(name),nextPageToken",
-        });
-
-        if (pageToken) {
-            searchParams.set("pageToken", pageToken);
-        }
-
-        const requestUrl = (
-            `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o?${searchParams}`
-        );
-        const response = await fetch(requestUrl);
-
-        if (!response.ok) {
-            throw new Error(
-                `Could not search stored videos (GCS returned ${response.status})`,
-            );
-        }
-
-        const data: GcsObjectListResponse = await response.json();
-        objects.push(...(data.items || []));
-        pageToken = data.nextPageToken;
-    } while (pageToken);
-
-    return objects;
-}
-
-/**
- * @deprecated Unused with the k8s job pipeline. Keep only for the old pipeline.
- */
-// async function convertSubtitlesToVtt(jobId: string): Promise<string> {
-//     /*
-//     This function sends a POST request to the backend to convert the subtitles for a given job ID to VTT format
-
-//     Args:
-//         jobId (string): The ID of the job for which to convert subtitles
-//     Returns:
-//         Promise<string>: A promise that resolves to the URL of the converted VTT file
-//     */
-//     const res = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/convert_to_vtt`, {
-//         method: "POST",
-//     });
-
-//     if (!res.ok) {
-//         throw new Error(await res.text());
-//     }
-
-//     const data = await res.json();
-
-//     console.log("VTT conversion response:", data);
-
-//     return data.vtt_url;
-// }
-
-function setMediaSources(mediaUrl: string, subtitleUrl?: string, mediaLabel = "Media") {
-    /*
-    This function sets the media source and subtitle track for the player
-    
-    Args:
-        mediaUrl (string): The URL of the video or audio file to play
-        subtitleUrl (string, optional): The URL of the subtitle file to use (if available)
-    */
-    setStatus(`Setting ${mediaLabel.toLowerCase()} source...`);
-
-    console.log("Media URL:", mediaUrl);
-    console.log("Subtitle URL:", subtitleUrl);
-
-    // set media src directly
-    media.src = `${mediaUrl}?t=${Date.now()}`;
-
-    // remove old tracks
-    const oldTracks = media.querySelectorAll("track");
-    oldTracks.forEach((track) => track.remove());
-
-    // if subtitle exists, add it as a track
-    if (subtitleUrl) {
-        const track = document.createElement("track");
-        track.kind = "subtitles";
-        track.label = "lyrics";
-        track.srclang = "ko";
-        track.src = `${subtitleUrl}?t=${Date.now()}`;
-        track.default = true;
-
-        track.onload = () => {
-            setStatus("Subtitle track loaded");
-
-            for (let i = 0; i < media.textTracks.length; i++) {
-                media.textTracks[i].mode = "showing";
-            }
-        };
-
-        track.onerror = () => {
-            setStatus("Subtitle track failed to load");
-            console.error("Subtitle failed:", track.src);
-        };
-
-        media.appendChild(track);
+  do {
+    const params = new URLSearchParams({
+      prefix,
+      maxResults: "1000",
+      fields: "items(name),nextPageToken",
+    });
+    if (pageToken) {
+      params.set("pageToken", pageToken);
     }
 
-    media.load();
-
-    media.onloadedmetadata = () => {
-        setStatus(`${mediaLabel} metadata loaded, duration: ${media.duration}s`);
-    };
-
-    media.oncanplay = () => {
-        setStatus(`${mediaLabel} ready`);
-    };
-
-    media.onerror = () => {
-        setStatus(`${mediaLabel} failed to load`);
-        console.error("Media error:", media.error);
-        console.error("Attempted media src:", media.src);
-    };
-}
-
-async function loadVideo() {
-    /*
-    This function searches the public GCS outputs by video name and loads the
-    closest matching media and subtitle objects.
-    */
-    const searchQuery = videoNameInput.value.trim();
-
-    if (!searchQuery) {
-        setStatus("Enter a video name to search.");
-        return;
+    const response = await fetch(
+      `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o?${params}`,
+    );
+    if (!response.ok) {
+      throw new Error(`GCS listing failed with status ${response.status}`);
     }
 
-    setStatus(`Searching for "${searchQuery}"...`);
-    loadButton.disabled = true;
+    const data = await response.json() as GcsObjectListResponse;
+    objects.push(...(data.items || []));
+    pageToken = data.nextPageToken;
+  } while (pageToken);
 
-    try {
-        const objects = await listOutputObjects();
-        const mediaMatches = objects
-            .filter(object => isSearchableMediaObject(object.name))
-            .map(object => ({
-                object,
-                score: getFuzzyMatchScore(
-                    searchQuery,
-                    getObjectFilename(object.name),
-                ),
-            }))
-            .sort((left, right) => right.score - left.score);
-
-        const bestMatch = mediaMatches[0];
-        if (!bestMatch || bestMatch.score < 0.45) {
-            throw new Error(`No close match found for "${searchQuery}"`);
-        }
-
-        const jobId = bestMatch.object.name.split("/")[1];
-        const subtitleObject = objects.find(object => (
-            object.name.startsWith(`outputs/${jobId}/`)
-            && object.name.endsWith("/vocals.vtt")
-        ));
-        const matchedFilename = getObjectFilename(bestMatch.object.name);
-        const mediaLabel = matchedFilename.toLocaleLowerCase().endsWith(".mp4")
-            ? "Video"
-            : "Audio";
-
-        console.log(`${LOG_PREFIX} Media search match`, {
-            searchQuery,
-            score: bestMatch.score,
-            matchedObject: bestMatch.object.name,
-            subtitleObject: subtitleObject?.name,
-        });
-
-        setStatus(`Found "${matchedFilename}". Loading ${mediaLabel.toLowerCase()}...`);
-        setMediaSources(
-            buildGcsObjectUrl(bestMatch.object.name),
-            subtitleObject ? buildGcsObjectUrl(subtitleObject.name) : undefined,
-            mediaLabel,
-        );
-    } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setStatus(`Failed to load media: ${message}`);
-        console.error(`${LOG_PREFIX} Media search failed`, err);
-    } finally {
-        loadButton.disabled = false;
-    }
+  return objects;
 }
 
-/**
- * @deprecated Unused with the k8s job pipeline. Keep only for the old pipeline.
- */
-// async function runFullInference(
-//     file: File,
-//     language: string,
-//     shouldDecrowd: boolean,
-// ): Promise<FullInferenceResponse> {
-//     /*
-//     This function sends a POST request to the backend to run full inference on the provided video file
+function saveEditorProject(project: EditorProject): void {
+  sessionStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(project));
+}
 
-//     Args:
-//         file (File): The video file to process
-//     Returns:
-//         Promise<FullInferenceResponse>: A promise that resolves to the response from the backend containing job ID, video URL, and subtitle URL
-//     */
-//     const formData = new FormData();
+function loadEditorProject(): EditorProject | null {
+  const rawProject = sessionStorage.getItem(PROJECT_STORAGE_KEY);
+  if (!rawProject) {
+    return null;
+  }
+  try {
+    return JSON.parse(rawProject) as EditorProject;
+  } catch {
+    return null;
+  }
+}
 
-//     formData.append("file", file);
-//     formData.append("language", language);
-//     formData.append("should_decrowd", shouldDecrowd ? "true" : "false");
+function openEditor(project: EditorProject): void {
+  saveEditorProject(project);
+  window.location.hash = "editor";
+}
 
-//     setStatus("Running inference...");
+function setLandingStatus(message: string, isError = false): void {
+  const status = document.querySelector<HTMLParagraphElement>("#statusText");
+  if (!status) {
+    return;
+  }
+  status.textContent = message;
+  status.classList.toggle("is-error", isError);
+  console.log(`${LOG_PREFIX} ${message}`);
+}
 
-//     const res = await fetch(`${API_BASE_URL}/jobs`, { //await fetch(`${API_BASE_URL}/full_inference`, {
-//         method: "POST",
-//         body: formData,
-//     });
+function renderLanding(): void {
+  document.title = "Benzaiten | Karaoke Orchestration Video Maker";
+  app.innerHTML = `
+    <div class="app-shell">
+      <header class="site-header">
+        <a class="brand" href="#top" aria-label="Benzaiten home">
+          <span class="brand-mark">B</span>
+          <span>Benzaiten</span>
+        </a>
+        <nav class="header-nav" aria-label="Main navigation">
+          <a href="#create">Create</a>
+          <a href="#library">Library</a>
+          <a href="#workflow">Workflow</a>
+          <a class="button button-quiet" href="#create">Start a project</a>
+        </nav>
+      </header>
 
-//     if (!res.ok) {
-//         throw new Error(await res.text());
-//     }
+      <main>
+        <section class="hero-section" id="top">
+          <div class="hero-content">
+            <div class="eyebrow"><span class="eyebrow-dot"></span> Browser-based karaoke studio</div>
+            <h1 class="hero-title">Benzaiten</h1>
+            <p class="hero-subtitle">Karaoke Orchestration Video Maker</p>
+            <p class="hero-copy">
+              Turn a performance into separated audio, timed lyrics, and an editable
+              karaoke video. Build in the cloud, then refine every cue in the browser.
+            </p>
+            <div class="hero-actions">
+              <a class="button" href="#create">Create karaoke video</a>
+              <a class="button button-secondary" href="#library">Open existing project</a>
+            </div>
+          </div>
+        </section>
 
-//     const data: FullInferenceResponse = await res.json();
-//     console.log("Inference response:", data);
+        <section class="content-section" id="create">
+          <div class="section-inner">
+            <div class="section-heading">
+              <p class="section-kicker">Create</p>
+              <h2 class="section-title">From source media to an editable timeline.</h2>
+              <p class="section-description">
+                Upload a performance and Benzaiten will orchestrate source separation,
+                optional crowd reduction, transcription, and final composition.
+              </p>
+            </div>
 
-//     localStorage.setItem("job_id", data.job_id);
-//     localStorage.setItem("video_url", data.video_url);
-    
-//     return data;
-// }
+            <div class="workspace-grid">
+              <section class="panel">
+                <div class="panel-body">
+                  <div class="panel-heading">
+                    <div>
+                      <h3>New inference</h3>
+                      <p>Submit media to the existing orchestration API.</p>
+                    </div>
+                    <span class="number-badge">01</span>
+                  </div>
 
-async function handleRunFullInference() {
-    /*
-    This function handles the click event for the "Run Full Inference" button, retrieves the selected file, and initiates the full inference process
-    */
-    const fileInput = document.getElementById("fileInput") as HTMLInputElement;
-    const languageInput = document.getElementById("languageInput") as HTMLInputElement;
-    const shouldDecrowdInput = document.getElementById("shouldDecrowdInput") as HTMLInputElement;
-    const fastDecrowdInput = document.getElementById("fastDecrowdInput") as HTMLInputElement;
-    const runInferenceButton = document.getElementById("runInferenceButton") as HTMLButtonElement;
-    
+                  <div class="upload-zone" id="uploadZone">
+                    <input id="fileInput" type="file" accept="video/*,audio/*" />
+                    <div>
+                      <div class="upload-icon">+</div>
+                      <div class="upload-title">Drop a video here or browse</div>
+                      <div class="upload-help">MP4, MOV, WebM, MP3, or WAV</div>
+                    </div>
+                  </div>
+                  <div class="selected-file" id="selectedFile"></div>
+
+                  <div class="form-grid">
+                    <div class="field">
+                      <label for="languageInput">Audio language</label>
+                      <input class="input" id="languageInput" value="ko" placeholder="e.g. en, ko, ja" />
+                    </div>
+                    <div class="field">
+                      <label for="projectNameInput">Project name</label>
+                      <input class="input" id="projectNameInput" placeholder="Uses the uploaded filename" />
+                    </div>
+                    <label class="toggle-row field-wide">
+                      <input id="shouldDecrowdInput" type="checkbox" />
+                      <span class="toggle-copy">
+                        Reduce audience noise
+                        <span>Useful for live performances and concert recordings.</span>
+                      </span>
+                    </label>
+                    <label class="toggle-row field-wide">
+                      <input id="fastDecrowdInput" type="checkbox" disabled />
+                      <span class="toggle-copy">
+                        Fast crowd reduction
+                        <span>Only processes the first and last 30 seconds.</span>
+                      </span>
+                    </label>
+                  </div>
+
+                  <div class="form-actions">
+                    <button class="button" id="runInferenceButton">Run orchestration</button>
+                  </div>
+
+                  <div class="progress-panel" id="progressPanel">
+                    <div class="progress-header">
+                      <div>
+                        <h4 id="progressTitle">Preparing your project</h4>
+                        <p id="progressDetail">Uploading media to the pipeline.</p>
+                      </div>
+                      <span class="progress-number" id="progressNumber">0%</span>
+                    </div>
+                    <div class="progress-track">
+                      <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="stage-list" id="stageList"></div>
+                  </div>
+
+                  <p class="status-message" id="statusText" aria-live="polite"></p>
+                </div>
+              </section>
+
+              <section class="panel" id="library">
+                <div class="panel-body">
+                  <div class="panel-heading">
+                    <div>
+                      <h3>Project library</h3>
+                      <p>Search completed GCS outputs without a job ID.</p>
+                    </div>
+                    <span class="number-badge">02</span>
+                  </div>
+                  <div class="field">
+                    <label for="videoNameInput">Song or project title</label>
+                    <div class="search-wrap">
+                      <input
+                        class="input"
+                        id="videoNameInput"
+                        placeholder="e.g. Practice Love"
+                      />
+                      <button class="button" id="loadButton">Find project</button>
+                    </div>
+                  </div>
+                  <div class="library-note">
+                    Search is Unicode-aware and accepts partial or close matches. For example,
+                    an English fragment can match a title that also contains foreign characters.
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="content-section features-section" id="workflow">
+          <div class="section-inner">
+            <div class="section-heading">
+              <p class="section-kicker">Workflow</p>
+              <h2 class="section-title">Cloud processing, browser editing.</h2>
+              <p class="section-description">
+                The editor reads completed media and subtitle assets directly from GCS.
+                No new editing endpoints are required.
+              </p>
+            </div>
+            <div class="feature-grid">
+              <article class="feature-card">
+                <span>01</span>
+                <h3>Orchestrate</h3>
+                <p>Track source separation, crowd reduction, transcription, and composition as they complete.</p>
+              </article>
+              <article class="feature-card">
+                <span>02</span>
+                <h3>Edit subtitles</h3>
+                <p>Adjust multiline text, timing, and cue order alongside the video timeline.</p>
+              </article>
+              <article class="feature-card">
+                <span>03</span>
+                <h3>Arrange media</h3>
+                <p>Drop additional local video or audio, then drag and trim clips in the browser.</p>
+              </article>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <span>Benzaiten karaoke orchestration studio</span>
+        <span>Media and subtitles remain sourced from Google Cloud Storage.</span>
+      </footer>
+    </div>
+  `;
+
+  setupLandingInteractions();
+}
+
+function setupLandingInteractions(): void {
+  const fileInput = queryElement<HTMLInputElement>("#fileInput");
+  const uploadZone = queryElement<HTMLDivElement>("#uploadZone");
+  const selectedFile = queryElement<HTMLDivElement>("#selectedFile");
+  const shouldDecrowd = queryElement<HTMLInputElement>("#shouldDecrowdInput");
+  const fastDecrowd = queryElement<HTMLInputElement>("#fastDecrowdInput");
+  const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
+  const searchInput = queryElement<HTMLInputElement>("#videoNameInput");
+  const searchButton = queryElement<HTMLButtonElement>("#loadButton");
+
+  const showSelectedFile = (): void => {
     const file = fileInput.files?.[0];
-    const language = languageInput.value.trim();
-    const shouldDecrowd = shouldDecrowdInput.checked;
-    const fastDecrowd = shouldDecrowd && fastDecrowdInput.checked;
-
     if (!file) {
-        setStatus("Select a file.")
-        return;
+      selectedFile.classList.remove("is-visible");
+      selectedFile.textContent = "";
+      return;
     }
+    const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+    selectedFile.innerHTML = `
+      <span><strong>${escapeHtml(file.name)}</strong><br><small>${sizeMb} MB</small></span>
+      <span>Ready</span>
+    `;
+    selectedFile.classList.add("is-visible");
+  };
 
-    if (!file.type.startsWith("video/") && !file.type.startsWith("audio/")) {
-        setStatus("Select a video or audio file.");
-        return;
+  fileInput.addEventListener("change", showSelectedFile);
+  for (const eventName of ["dragenter", "dragover"]) {
+    uploadZone.addEventListener(eventName, () => uploadZone.classList.add("is-dragging"));
+  }
+  for (const eventName of ["dragleave", "drop"]) {
+    uploadZone.addEventListener(eventName, () => uploadZone.classList.remove("is-dragging"));
+  }
+
+  shouldDecrowd.addEventListener("change", () => {
+    fastDecrowd.disabled = !shouldDecrowd.checked;
+    if (fastDecrowd.disabled) {
+      fastDecrowd.checked = false;
     }
+  });
 
-    if (!language) {
-        setStatus("Enter a language code (e.g. 'en' for English, 'ko' for Korean).");
-        return;
+  runButton.addEventListener("click", () => {
+    void handleRunInference();
+  });
+  searchButton.addEventListener("click", () => {
+    void handleLibrarySearch();
+  });
+  searchInput.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      void handleLibrarySearch();
     }
-
-    runInferenceButton.disabled = true;
-
-    // try {
-    //     const data = await runFullInference(file, language, shouldDecrowd);
-    //     setStatus("Converting subtitles...");
-    //     const subtitleUrl = await convertSubtitlesToVtt(data.job_id);
-    //     setStatus("Inference and subtitle conversion done. Loading video...");
-    //     setMediaSources(data.video_url, subtitleUrl, "Video");
-    // } catch (err) {
-    //     setStatus("Failed to run inference or convert subtitles.");
-    //     console.error(err);
-    // } finally {
-    //     runInferenceButton.disabled = false;
-    // }
-
-    try {
-        console.log(`${LOG_PREFIX} Starting inference`, {
-            apiBaseUrl: API_BASE_URL,
-            file: {
-                name: file.name,
-                type: file.type,
-                sizeBytes: file.size,
-            },
-            language,
-            shouldDecrowd,
-            fastDecrowd,
-        });
-
-        const startData = await startInferenceJob(
-            file,
-            language,
-            shouldDecrowd,
-            fastDecrowd,
-        );
-
-        localStorage.setItem("job_id", startData.job_id);
-
-        console.log(`${LOG_PREFIX} Inference job accepted`, startData);
-        setStatus("Inference job started...");
-
-        const completedJob = await pollJobStatus(startData.job_id);
-
-        if (completedJob.status === "failed") {
-            throw new Error(completedJob.error || "Inference job failed");
-        }
-
-        const mediaUrl = completedJob.video_url || completedJob.audio_url;
-        const mediaLabel = completedJob.video_url ? "Video" : "Audio";
-
-        if (!mediaUrl || !completedJob.subtitle_url) {
-            throw new Error("Job completed but output URLs are missing");
-        }
-
-        console.log(`${LOG_PREFIX} Inference job completed`, completedJob);
-        localStorage.setItem("media_url", mediaUrl);
-
-        setStatus(`Inference done. Loading ${mediaLabel.toLowerCase()}...`);
-        setMediaSources(mediaUrl, completedJob.subtitle_url, mediaLabel);
-    } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setStatus(`Failed to run inference: ${message}`);
-        console.error(`${LOG_PREFIX} Inference flow failed`, err);
-    } finally {
-        runInferenceButton.disabled = false;
-    }
+  });
 }
 
-async function startInferenceJob(
-    file: File,
-    language: string,
-    shouldDecrowd: boolean,
-    fastDecrowd: boolean,
-): Promise<JobStartResponse> {
-    const formData = new FormData();
+function renderPipelineStages(stages: PipelineStage[], activeIndex: number): void {
+  const stageList = queryElement<HTMLDivElement>("#stageList");
+  stageList.innerHTML = stages.map((stage, index) => {
+    const classes = [
+      "stage-item",
+      stage.complete ? "is-complete" : "",
+      index === activeIndex && !stage.complete ? "is-active" : "",
+      stage.skipped ? "is-skipped" : "",
+    ].filter(Boolean).join(" ");
+    return `<div class="${classes}" data-stage="${stage.id}">${escapeHtml(stage.label)}</div>`;
+  }).join("");
+}
 
+function createProgressController(shouldDecrowd: boolean): {
+  update: (objects: GcsObject[], status: JobStatusResponse["status"]) => void;
+  finish: () => void;
+  stop: () => void;
+} {
+  const panel = queryElement<HTMLDivElement>("#progressPanel");
+  const fill = queryElement<HTMLDivElement>("#progressFill");
+  const number = queryElement<HTMLSpanElement>("#progressNumber");
+  const title = queryElement<HTMLHeadingElement>("#progressTitle");
+  const detail = queryElement<HTMLParagraphElement>("#progressDetail");
+  let displayed = 4;
+  let target = 9;
+
+  panel.classList.add("is-visible");
+  const stages: PipelineStage[] = [
+    { id: "separate", label: "Separate audio", complete: false },
+    {
+      id: "decrowd",
+      label: shouldDecrowd ? "Reduce crowd" : "Crowd reduction skipped",
+      complete: !shouldDecrowd,
+      skipped: !shouldDecrowd,
+    },
+    { id: "transcribe", label: "Transcribe lyrics", complete: false },
+    { id: "compose", label: "Compose video", complete: false },
+  ];
+
+  const paint = (): void => {
+    displayed += (target - displayed) * 0.075;
+    if (Math.abs(target - displayed) < 0.15) {
+      displayed = target;
+    }
+    const rounded = Math.round(displayed);
+    fill.style.width = `${rounded}%`;
+    number.textContent = `${rounded}%`;
+  };
+
+  const timer = window.setInterval(() => {
+    if (displayed < target) {
+      paint();
+    } else if (displayed < 94) {
+      target = Math.min(94, target + 0.18);
+      paint();
+    }
+  }, 400);
+
+  const update = (objects: GcsObject[], status: JobStatusResponse["status"]): void => {
+    const names = objects.map(object => object.name);
+    const sourceComplete = names.some(name => (
+      name.includes("/source_separation/")
+      || name.endsWith("/vocals.mp3")
+      || name.endsWith("/instrumental.mp3")
+    ));
+    const decrowdComplete = !shouldDecrowd || names.some(name => (
+      name.includes("/decrowd/")
+      || name.endsWith("/instrumental_(decrowd).mp3")
+    ));
+    const transcriptionComplete = names.some(name => (
+      name.includes("/transcription/vocals.vtt")
+      || name.endsWith("/vocals.vtt")
+    ));
+    const compositionComplete = names.some(name => name.endsWith("/result.json"));
+
+    stages[0].complete = sourceComplete;
+    stages[1].complete = decrowdComplete;
+    stages[2].complete = transcriptionComplete;
+    stages[3].complete = compositionComplete;
+
+    const completedCount = stages.filter(stage => stage.complete).length;
+    const activeIndex = Math.min(
+      stages.findIndex(stage => !stage.complete),
+      stages.length - 1,
+    );
+    renderPipelineStages(stages, activeIndex < 0 ? stages.length - 1 : activeIndex);
+
+    if (compositionComplete || status === "completed") {
+      target = 100;
+      title.textContent = "Project complete";
+      detail.textContent = "Opening the browser editor.";
+      return;
+    }
+
+    const milestoneFloor = [10, 28, 51, 76, 96][completedCount];
+    target = Math.max(target, milestoneFloor);
+    if (!sourceComplete) {
+      title.textContent = "Separating the performance";
+      detail.textContent = "Extracting vocals and instrumental audio.";
+    } else if (!decrowdComplete || !transcriptionComplete) {
+      title.textContent = "Refining audio and lyrics";
+      detail.textContent = shouldDecrowd
+        ? "Crowd reduction and transcription are running."
+        : "Transcription is running.";
+    } else {
+      title.textContent = "Composing the final media";
+      detail.textContent = "Combining the processed audio, video, and subtitles.";
+    }
+  };
+
+  renderPipelineStages(stages, 0);
+  paint();
+  return {
+    update,
+    finish: () => {
+      target = 100;
+      displayed = 100;
+      paint();
+      title.textContent = "Project complete";
+      detail.textContent = "Opening the browser editor.";
+    },
+    stop: () => window.clearInterval(timer),
+  };
+}
+
+async function handleRunInference(): Promise<void> {
+  const fileInput = queryElement<HTMLInputElement>("#fileInput");
+  const languageInput = queryElement<HTMLInputElement>("#languageInput");
+  const projectNameInput = queryElement<HTMLInputElement>("#projectNameInput");
+  const shouldDecrowdInput = queryElement<HTMLInputElement>("#shouldDecrowdInput");
+  const fastDecrowdInput = queryElement<HTMLInputElement>("#fastDecrowdInput");
+  const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
+  const file = fileInput.files?.[0];
+  const language = languageInput.value.trim();
+
+  if (!file) {
+    setLandingStatus("Choose a video or audio file first.", true);
+    return;
+  }
+  if (!file.type.startsWith("video/") && !file.type.startsWith("audio/")) {
+    setLandingStatus("The selected file must be video or audio.", true);
+    return;
+  }
+  if (!language) {
+    setLandingStatus("Enter an audio language code.", true);
+    return;
+  }
+
+  runButton.disabled = true;
+  const progress = createProgressController(shouldDecrowdInput.checked);
+
+  try {
+    setLandingStatus("Uploading media and starting orchestration...");
+    const formData = new FormData();
     formData.append("file", file);
     formData.append("language", language);
-    formData.append("should_decrowd", shouldDecrowd ? "true" : "false");
-    formData.append("fast_decrowd", fastDecrowd ? "true" : "false");
+    formData.append("should_decrowd", shouldDecrowdInput.checked ? "true" : "false");
+    formData.append(
+      "fast_decrowd",
+      shouldDecrowdInput.checked && fastDecrowdInput.checked ? "true" : "false",
+    );
 
-    setStatus("Uploading media and starting inference job...");
+    const response = await fetch(`${API_BASE_URL}/jobs`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!response.ok) {
+      throw new Error(await getApiError(response));
+    }
 
-    const requestUrl = `${API_BASE_URL}/jobs`;
-    const requestStartedAt = performance.now();
+    const startData = await response.json() as JobStartResponse;
+    localStorage.setItem("job_id", startData.job_id);
+    setLandingStatus(`Job ${startData.job_id} is running.`);
+    const completed = await pollInferenceJob(startData.job_id, progress);
+    if (completed.status === "failed") {
+      throw new Error(completed.error || "Inference job failed");
+    }
 
-    console.log(`${LOG_PREFIX} POST ${requestUrl}`, {
-        fileName: file.name,
-        fileType: file.type,
-        fileSizeBytes: file.size,
-        language,
-        shouldDecrowd,
-        fastDecrowd,
+    const mediaUrl = completed.video_url || completed.audio_url;
+    if (!mediaUrl) {
+      throw new Error("The completed job did not return a media URL");
+    }
+
+    progress.finish();
+    await new Promise(resolve => window.setTimeout(resolve, 650));
+    openEditor({
+      title: projectNameInput.value.trim() || filenameWithoutExtension(file.name),
+      jobId: startData.job_id,
+      mediaUrl,
+      subtitleUrl: completed.subtitle_url,
+      mediaType: completed.video_url ? "video" : "audio",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setLandingStatus(`Inference failed: ${message}`, true);
+    console.error(`${LOG_PREFIX} Inference failed`, error);
+  } finally {
+    progress.stop();
+    runButton.disabled = false;
+  }
+}
+
+async function pollInferenceJob(
+  jobId: string,
+  progress: ReturnType<typeof createProgressController>,
+): Promise<JobStatusResponse> {
+  while (true) {
+    const [statusResponse, jobObjects] = await Promise.all([
+      fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`),
+      listGcsObjects(`outputs/${jobId}/`).catch(() => []),
+    ]);
+    if (!statusResponse.ok) {
+      throw new Error(await getApiError(statusResponse));
+    }
+
+    const status = await statusResponse.json() as JobStatusResponse;
+    progress.update(jobObjects, status.status);
+    if (status.status === "completed" || status.status === "failed") {
+      return status;
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 4000));
+  }
+}
+
+async function handleLibrarySearch(): Promise<void> {
+  const input = queryElement<HTMLInputElement>("#videoNameInput");
+  const button = queryElement<HTMLButtonElement>("#loadButton");
+  const query = input.value.trim();
+  if (!query) {
+    setLandingStatus("Enter a song or project title.", true);
+    return;
+  }
+
+  button.disabled = true;
+  setLandingStatus(`Searching the project library for "${query}"...`);
+  try {
+    const objects = await listGcsObjects();
+    const matches = objects
+      .filter(object => isSearchableMediaObject(object.name))
+      .map(object => ({
+        object,
+        score: getFuzzyMatchScore(query, getObjectFilename(object.name)),
+      }))
+      .sort((left, right) => right.score - left.score);
+    const match = matches[0];
+    if (!match || match.score < 0.45) {
+      throw new Error(`No close match was found for "${query}"`);
+    }
+
+    const jobId = match.object.name.split("/")[1];
+    const subtitle = objects.find(object => (
+      object.name.startsWith(`outputs/${jobId}/`)
+      && object.name.endsWith("/vocals.vtt")
+    ));
+    const filename = getObjectFilename(match.object.name);
+    const isVideo = filename.toLocaleLowerCase().endsWith(".mp4");
+    console.log(`${LOG_PREFIX} Library match`, {
+      query,
+      score: match.score,
+      media: match.object.name,
+      subtitle: subtitle?.name,
     });
 
-    const res = await fetch(requestUrl, {
-        method: "POST",
-        body: formData,
+    openEditor({
+      title: filenameWithoutExtension(filename),
+      jobId,
+      mediaUrl: buildGcsObjectUrl(match.object.name),
+      subtitleUrl: subtitle ? buildGcsObjectUrl(subtitle.name) : undefined,
+      mediaType: isVideo ? "video" : "audio",
     });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setLandingStatus(message, true);
+    console.error(`${LOG_PREFIX} Library search failed`, error);
+  } finally {
+    button.disabled = false;
+  }
+}
 
-    console.log(`${LOG_PREFIX} POST ${requestUrl} response`, {
-        status: res.status,
-        ok: res.ok,
-        durationMs: Math.round(performance.now() - requestStartedAt),
+function parseTimestamp(value: string): number {
+  const parts = value.trim().replace(",", ".").split(":").map(Number);
+  if (parts.some(Number.isNaN)) {
+    return 0;
+  }
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+  return parts[0] * 60 + parts[1];
+}
+
+function parseSubtitleFile(content: string): SubtitleCue[] {
+  const normalized = content.replace(/\r/g, "").replace(/^WEBVTT[^\n]*\n+/, "");
+  const blocks = normalized.split(/\n{2,}/);
+  const cues: SubtitleCue[] = [];
+
+  for (const block of blocks) {
+    const lines = block.split("\n").filter(Boolean);
+    const timingIndex = lines.findIndex(line => line.includes("-->"));
+    if (timingIndex < 0) {
+      continue;
+    }
+    const [startValue, endPart] = lines[timingIndex].split("-->");
+    const endValue = endPart.trim().split(/\s+/)[0];
+    const start = parseTimestamp(startValue);
+    const end = parseTimestamp(endValue);
+    const text = lines.slice(timingIndex + 1).join("\n").replace(/<[^>]+>/g, "");
+    if (end > start && text) {
+      cues.push({
+        id: crypto.randomUUID(),
+        start,
+        end,
+        text,
+      });
+    }
+  }
+  return cues;
+}
+
+function formatTime(seconds: number, includeMilliseconds = false): string {
+  const safeSeconds = Math.max(0, seconds);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const wholeSeconds = Math.floor(safeSeconds % 60);
+  const milliseconds = Math.round((safeSeconds % 1) * 1000);
+  const base = hours > 0
+    ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")}`
+    : `${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")}`;
+  return includeMilliseconds ? `${base}.${String(milliseconds).padStart(3, "0")}` : base;
+}
+
+function formatVttTimestamp(seconds: number): string {
+  const safeSeconds = Math.max(0, seconds);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const wholeSeconds = Math.floor(safeSeconds % 60);
+  const milliseconds = Math.round((safeSeconds % 1) * 1000);
+  return (
+    `${String(hours).padStart(2, "0")}:`
+    + `${String(minutes).padStart(2, "0")}:`
+    + `${String(wholeSeconds).padStart(2, "0")}.`
+    + String(milliseconds).padStart(3, "0")
+  );
+}
+
+function renderEditor(project: EditorProject): void {
+  document.title = `${project.title} | Benzaiten Editor`;
+  app.innerHTML = `
+    <div class="editor-page">
+      <header class="editor-header">
+        <button class="editor-back" id="backButton" type="button"><span>&larr;</span> Projects</button>
+        <div class="editor-project-title">${escapeHtml(project.title)}</div>
+        <div class="editor-actions">
+          <button class="button button-quiet" id="exportVttButton">Export VTT</button>
+        </div>
+      </header>
+
+      <main class="editor-main">
+        <aside class="subtitle-panel">
+          <div class="subtitle-panel-header">
+            <h2>Subtitles</h2>
+            <p>Edit multiline cues and timing. Changes stay in this browser session.</p>
+          </div>
+          <div class="subtitle-toolbar">
+            <button class="button button-quiet" id="addSubtitleButton">+ Add subtitle</button>
+          </div>
+          <div class="subtitle-list" id="subtitleList">
+            <div class="empty-subtitles">Loading subtitle cues from GCS...</div>
+          </div>
+        </aside>
+
+        <section class="editor-workspace">
+          <div class="preview-area">
+            <div class="preview-stage">
+              <video id="editorMedia" crossorigin="anonymous" preload="metadata"></video>
+              <div class="audio-preview" id="audioPreview">
+                <div class="audio-disc">B</div>
+                <strong>${escapeHtml(project.title)}</strong>
+              </div>
+              <div class="subtitle-overlay" id="subtitleOverlay"></div>
+            </div>
+          </div>
+
+          <div class="transport-bar">
+            <div class="transport-left">
+              <button class="transport-button" id="skipBackButton" title="Back 5 seconds">-5</button>
+              <button class="transport-button play" id="playButton" title="Play">Play</button>
+              <button class="transport-button" id="skipForwardButton" title="Forward 5 seconds">+5</button>
+            </div>
+            <div class="transport-center">
+              <span class="time-display" id="timeDisplay">00:00 / 00:00</span>
+            </div>
+            <div class="transport-right">
+              <span>Zoom</span>
+              <input class="zoom-input" id="zoomInput" type="range" min="4" max="20" value="8" />
+            </div>
+          </div>
+
+          <div class="timeline-shell" id="timelineShell">
+            <div class="timeline-scroll" id="timelineScroll">
+              <div class="timeline-content" id="timelineContent"></div>
+            </div>
+            <div class="timeline-drop-hint">Drop local video or audio onto the timeline</div>
+          </div>
+        </section>
+      </main>
+    </div>
+  `;
+
+  setupEditor(project);
+}
+
+function setupEditor(project: EditorProject): void {
+  const media = queryElement<HTMLVideoElement>("#editorMedia");
+  const audioPreview = queryElement<HTMLDivElement>("#audioPreview");
+  const subtitleList = queryElement<HTMLDivElement>("#subtitleList");
+  const overlay = queryElement<HTMLDivElement>("#subtitleOverlay");
+  const timelineContent = queryElement<HTMLDivElement>("#timelineContent");
+  const timelineShell = queryElement<HTMLDivElement>("#timelineShell");
+  const timelineScroll = queryElement<HTMLDivElement>("#timelineScroll");
+  const playButton = queryElement<HTMLButtonElement>("#playButton");
+  const timeDisplay = queryElement<HTMLSpanElement>("#timeDisplay");
+  const zoomInput = queryElement<HTMLInputElement>("#zoomInput");
+  let cues: SubtitleCue[] = [];
+  let sources: TimelineSource[] = [];
+  let duration = 120;
+  let zoom = Number(zoomInput.value);
+  let selectedCueId: string | null = null;
+  let selectedSourceId: string | null = null;
+  let activeCueId: string | null = null;
+
+  media.src = project.mediaUrl;
+  media.style.display = project.mediaType === "video" ? "block" : "none";
+  audioPreview.classList.toggle("is-visible", project.mediaType === "audio");
+
+  const getTimelineWidth = (): number => Math.max(900, Math.ceil(duration * zoom));
+  const pixelsPerSecond = (): number => getTimelineWidth() / duration;
+
+  const activeCueAt = (time: number): SubtitleCue | undefined => (
+    cues.find(cue => time >= cue.start && time <= cue.end)
+  );
+
+  const updatePreview = (): void => {
+    const currentTime = media.currentTime || 0;
+    const activeCue = activeCueAt(currentTime);
+    overlay.textContent = activeCue?.text || "";
+    if (activeCue?.id !== activeCueId) {
+      activeCueId = activeCue?.id || null;
+      if (activeCue) {
+        selectedCueId = activeCue.id;
+        renderSubtitleList();
+      }
+    }
+    timeDisplay.textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
+    const playhead = timelineContent.querySelector<HTMLDivElement>(".playhead");
+    if (playhead) {
+      playhead.style.left = `${118 + currentTime * pixelsPerSecond()}px`;
+    }
+
+    for (const source of sources) {
+      if (source.isPrimary || !source.element) {
+        continue;
+      }
+      const sourceTime = currentTime - source.start;
+      const shouldPlay = sourceTime >= 0 && sourceTime <= source.duration && !media.paused;
+      if (shouldPlay) {
+        if (Math.abs(source.element.currentTime - sourceTime) > 0.35) {
+          source.element.currentTime = sourceTime;
+        }
+        void source.element.play().catch(() => undefined);
+      } else {
+        source.element.pause();
+      }
+    }
+  };
+
+  const renderSubtitleList = (): void => {
+    if (cues.length === 0) {
+      subtitleList.innerHTML = `
+        <div class="empty-subtitles">
+          No subtitle cues were found. Add a cue to begin editing.
+        </div>
+      `;
+      return;
+    }
+
+    subtitleList.innerHTML = cues.map(cue => `
+      <article class="subtitle-card ${cue.id === selectedCueId ? "is-active" : ""}" data-cue-id="${cue.id}">
+        <div class="subtitle-time-row">
+          <div class="subtitle-time">
+            <input class="time-input" data-time="start" value="${cue.start.toFixed(2)}" aria-label="Start seconds" />
+            <span>to</span>
+            <input class="time-input" data-time="end" value="${cue.end.toFixed(2)}" aria-label="End seconds" />
+          </div>
+          <button class="icon-button" data-delete-cue="${cue.id}" title="Delete subtitle">x</button>
+        </div>
+        <textarea data-cue-text="${cue.id}" aria-label="Subtitle text">${escapeHtml(cue.text)}</textarea>
+      </article>
+    `).join("");
+  };
+
+  const drawWaveform = (canvas: HTMLCanvasElement, samples?: Float32Array): void => {
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+    const width = Math.min(6000, getTimelineWidth());
+    const height = 46;
+    canvas.width = width;
+    canvas.height = height;
+    context.clearRect(0, 0, width, height);
+    context.fillStyle = "rgba(19, 104, 153, 0.6)";
+    const center = height / 2;
+    const bars = Math.min(900, Math.floor(width / 3));
+
+    for (let index = 0; index < bars; index += 1) {
+      let amplitude: number;
+      if (samples && samples.length > 0) {
+        const start = Math.floor((index / bars) * samples.length);
+        const end = Math.max(start + 1, Math.floor(((index + 1) / bars) * samples.length));
+        let peak = 0;
+        for (let sampleIndex = start; sampleIndex < end; sampleIndex += 1) {
+          peak = Math.max(peak, Math.abs(samples[sampleIndex]));
+        }
+        amplitude = peak;
+      } else {
+        amplitude = 0.22 + Math.abs(Math.sin(index * 0.37) * 0.55);
+      }
+      const barHeight = Math.max(2, amplitude * (height - 5));
+      const x = (index / bars) * width;
+      context.fillRect(x, center - barHeight / 2, Math.max(1, width / bars - 1), barHeight);
+    }
+  };
+
+  let waveformSamples: Float32Array | undefined;
+
+  const renderTimeline = (): void => {
+    const width = getTimelineWidth();
+    const interval = duration > 300 ? 30 : duration > 120 ? 15 : 10;
+    const rulerMarks: string[] = [];
+    for (let second = 0; second <= duration; second += interval) {
+      rulerMarks.push(
+        `<span class="ruler-mark" style="left:${second * pixelsPerSecond()}px">${formatTime(second)}</span>`,
+      );
+    }
+
+    const sourceRows = sources.map(source => {
+      const sourceClass = source.type === "video" ? "video-clip" : "audio-clip";
+      return `
+        <div class="track-row">
+          <div class="track-label">${source.type === "video" ? "Video" : "Audio"}</div>
+          <div class="track-lane" style="width:${width}px">
+            ${source.type === "audio" ? `<canvas class="waveform" data-waveform="${source.id}"></canvas>` : ""}
+            <div
+              class="clip ${sourceClass} ${source.id === selectedSourceId ? "is-selected" : ""}"
+              data-source-id="${source.id}"
+              style="left:${source.start * pixelsPerSecond()}px;width:${Math.max(20, source.duration * pixelsPerSecond())}px"
+            >
+              <span class="resize-handle left" data-resize="left"></span>
+              <span class="clip-label">${escapeHtml(source.name)}</span>
+              <span class="resize-handle right" data-resize="right"></span>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    const subtitleClips = cues.map(cue => `
+      <div
+        class="clip subtitle-clip ${cue.id === selectedCueId ? "is-selected" : ""}"
+        data-cue-clip="${cue.id}"
+        style="left:${cue.start * pixelsPerSecond()}px;width:${Math.max(18, (cue.end - cue.start) * pixelsPerSecond())}px"
+      >
+        <span class="resize-handle left" data-resize="left"></span>
+        <span class="clip-label">${escapeHtml(cue.text)}</span>
+        <span class="resize-handle right" data-resize="right"></span>
+      </div>
+    `).join("");
+
+    timelineContent.innerHTML = `
+      <div class="timeline-ruler">
+        <div class="ruler-label">Timeline</div>
+        <div class="ruler-lane" style="width:${width}px">${rulerMarks.join("")}</div>
+      </div>
+      <div class="track-row subtitle-track">
+        <div class="track-label">Subtitles</div>
+        <div class="track-lane" style="width:${width}px">${subtitleClips}</div>
+      </div>
+      ${sourceRows}
+      <div class="playhead" style="left:${118 + media.currentTime * pixelsPerSecond()}px"></div>
+    `;
+
+    for (const canvas of timelineContent.querySelectorAll<HTMLCanvasElement>(".waveform")) {
+      const sourceId = canvas.dataset.waveform;
+      const source = sources.find(item => item.id === sourceId);
+      drawWaveform(canvas, source?.isPrimary ? waveformSamples : undefined);
+    }
+  };
+
+  const seekToCue = (cue: SubtitleCue): void => {
+    selectedCueId = cue.id;
+    media.currentTime = cue.start;
+    updatePreview();
+    renderSubtitleList();
+    renderTimeline();
+  };
+
+  subtitleList.addEventListener("click", event => {
+    const target = event.target as HTMLElement;
+    const deleteId = target.dataset.deleteCue;
+    if (deleteId) {
+      cues = cues.filter(cue => cue.id !== deleteId);
+      if (selectedCueId === deleteId) {
+        selectedCueId = null;
+      }
+      renderSubtitleList();
+      renderTimeline();
+      updatePreview();
+      return;
+    }
+    const card = target.closest<HTMLElement>(".subtitle-card");
+    if (card?.dataset.cueId) {
+      const cue = cues.find(item => item.id === card.dataset.cueId);
+      if (cue) {
+        seekToCue(cue);
+      }
+    }
+  });
+
+  subtitleList.addEventListener("input", event => {
+    const target = event.target as HTMLInputElement | HTMLTextAreaElement;
+    const card = target.closest<HTMLElement>(".subtitle-card");
+    const cue = cues.find(item => item.id === card?.dataset.cueId);
+    if (!cue) {
+      return;
+    }
+    if (target.dataset.cueText) {
+      cue.text = target.value;
+    } else if (target.dataset.time === "start") {
+      cue.start = clamp(Number(target.value) || 0, 0, Math.max(0, cue.end - 0.1));
+    } else if (target.dataset.time === "end") {
+      cue.end = clamp(Number(target.value) || cue.start + 0.1, cue.start + 0.1, duration);
+    }
+    renderTimeline();
+    updatePreview();
+  });
+
+  queryElement<HTMLButtonElement>("#addSubtitleButton").addEventListener("click", () => {
+    const start = clamp(media.currentTime, 0, Math.max(0, duration - 1));
+    const cue: SubtitleCue = {
+      id: crypto.randomUUID(),
+      start,
+      end: Math.min(duration, start + 3),
+      text: "New subtitle",
+    };
+    cues.push(cue);
+    cues.sort((left, right) => left.start - right.start);
+    selectedCueId = cue.id;
+    renderSubtitleList();
+    renderTimeline();
+  });
+
+  queryElement<HTMLButtonElement>("#exportVttButton").addEventListener("click", () => {
+    const body = cues
+      .sort((left, right) => left.start - right.start)
+      .map((cue, index) => (
+        `${index + 1}\n${formatVttTimestamp(cue.start)} --> ${formatVttTimestamp(cue.end)}\n${cue.text}`
+      ))
+      .join("\n\n");
+    const blob = new Blob([`WEBVTT\n\n${body}\n`], { type: "text/vtt" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${project.title.replace(/[^\p{L}\p{N}]+/gu, "-") || "subtitles"}.vtt`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  });
+
+  queryElement<HTMLButtonElement>("#backButton").addEventListener("click", () => {
+    window.location.hash = "";
+  });
+
+  playButton.addEventListener("click", () => {
+    if (media.paused) {
+      void media.play();
+    } else {
+      media.pause();
+    }
+  });
+  queryElement<HTMLButtonElement>("#skipBackButton").addEventListener("click", () => {
+    media.currentTime = Math.max(0, media.currentTime - 5);
+  });
+  queryElement<HTMLButtonElement>("#skipForwardButton").addEventListener("click", () => {
+    media.currentTime = Math.min(duration, media.currentTime + 5);
+  });
+  zoomInput.addEventListener("input", () => {
+    zoom = Number(zoomInput.value);
+    renderTimeline();
+  });
+
+  media.addEventListener("play", () => {
+    playButton.textContent = "Pause";
+  });
+  media.addEventListener("pause", () => {
+    playButton.textContent = "Play";
+    for (const source of sources) {
+      source.element?.pause();
+    }
+  });
+  media.addEventListener("timeupdate", updatePreview);
+  media.addEventListener("seeked", updatePreview);
+  media.addEventListener("loadedmetadata", () => {
+    duration = Number.isFinite(media.duration) ? media.duration : duration;
+    const primarySource: TimelineSource = {
+      id: crypto.randomUUID(),
+      name: project.title,
+      type: project.mediaType,
+      url: project.mediaUrl,
+      start: 0,
+      duration,
+      isPrimary: true,
+    };
+    sources = [primarySource];
+    if (project.mediaType === "video") {
+      sources.push({
+        id: crypto.randomUUID(),
+        name: `${project.title} - program audio`,
+        type: "audio",
+        url: project.mediaUrl,
+        start: 0,
+        duration,
+        isPrimary: true,
+      });
+    }
+    renderTimeline();
+    updatePreview();
+    if (project.mediaType === "audio") {
+      void buildWaveform(project.mediaUrl).then(samples => {
+        waveformSamples = samples;
+        renderTimeline();
+      });
+    }
+  });
+
+  const beginTimelineDrag = (
+    event: PointerEvent,
+    kind: "cue" | "source",
+    id: string,
+    mode: "move" | "left" | "right",
+  ): void => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const cue = kind === "cue" ? cues.find(item => item.id === id) : undefined;
+    const source = kind === "source" ? sources.find(item => item.id === id) : undefined;
+    if (!cue && !source) {
+      return;
+    }
+    const originalStart = cue?.start ?? source?.start ?? 0;
+    const originalEnd = cue?.end ?? ((source?.start || 0) + (source?.duration || 0));
+
+    const onMove = (moveEvent: PointerEvent): void => {
+      const deltaSeconds = (moveEvent.clientX - startX) / pixelsPerSecond();
+      if (cue) {
+        const cueDuration = originalEnd - originalStart;
+        if (mode === "move") {
+          cue.start = clamp(originalStart + deltaSeconds, 0, duration - cueDuration);
+          cue.end = cue.start + cueDuration;
+        } else if (mode === "left") {
+          cue.start = clamp(originalStart + deltaSeconds, 0, cue.end - 0.1);
+        } else {
+          cue.end = clamp(originalEnd + deltaSeconds, cue.start + 0.1, duration);
+        }
+        selectedCueId = cue.id;
+      }
+      if (source) {
+        if (mode === "move") {
+          source.start = clamp(
+            originalStart + deltaSeconds,
+            0,
+            Math.max(0, duration - source.duration),
+          );
+        } else if (mode === "left") {
+          const newStart = clamp(
+            originalStart + deltaSeconds,
+            0,
+            originalEnd - 0.25,
+          );
+          source.duration = originalEnd - newStart;
+          source.start = newStart;
+        } else {
+          source.duration = clamp(
+            originalEnd + deltaSeconds - source.start,
+            0.25,
+            duration - source.start,
+          );
+        }
+        selectedSourceId = source.id;
+      }
+      renderTimeline();
+    };
+
+    const onUp = (): void => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      renderSubtitleList();
+      renderTimeline();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  timelineContent.addEventListener("pointerdown", event => {
+    const target = event.target as HTMLElement;
+    const cueClip = target.closest<HTMLElement>("[data-cue-clip]");
+    const sourceClip = target.closest<HTMLElement>("[data-source-id]");
+    const resize = target.dataset.resize as "left" | "right" | undefined;
+    if (cueClip?.dataset.cueClip) {
+      beginTimelineDrag(event, "cue", cueClip.dataset.cueClip, resize || "move");
+    } else if (sourceClip?.dataset.sourceId) {
+      beginTimelineDrag(event, "source", sourceClip.dataset.sourceId, resize || "move");
+    }
+  });
+
+  timelineContent.addEventListener("click", event => {
+    const target = event.target as HTMLElement;
+    const cueClip = target.closest<HTMLElement>("[data-cue-clip]");
+    if (cueClip?.dataset.cueClip) {
+      const cue = cues.find(item => item.id === cueClip.dataset.cueClip);
+      if (cue) {
+        seekToCue(cue);
+      }
+      return;
+    }
+    if (target.closest(".clip")) {
+      return;
+    }
+    const lane = target.closest<HTMLElement>(".track-lane, .ruler-lane");
+    if (!lane) {
+      return;
+    }
+    const bounds = lane.getBoundingClientRect();
+    media.currentTime = clamp((event.clientX - bounds.left) / pixelsPerSecond(), 0, duration);
+  });
+
+  for (const eventName of ["dragenter", "dragover"]) {
+    timelineShell.addEventListener(eventName, event => {
+      event.preventDefault();
+      timelineShell.classList.add("is-dragging");
     });
-
-    if (!res.ok) {
-        const error = await getApiError(res);
-        console.error(`${LOG_PREFIX} Job submission rejected`, {
-            status: res.status,
-            error,
+  }
+  for (const eventName of ["dragleave", "drop"]) {
+    timelineShell.addEventListener(eventName, event => {
+      event.preventDefault();
+      timelineShell.classList.remove("is-dragging");
+    });
+  }
+  timelineShell.addEventListener("drop", event => {
+    const files = [...(event.dataTransfer?.files || [])];
+    for (const file of files) {
+      if (!file.type.startsWith("video/") && !file.type.startsWith("audio/")) {
+        continue;
+      }
+      const url = URL.createObjectURL(file);
+      const element = document.createElement(file.type.startsWith("video/") ? "video" : "audio");
+      element.src = url;
+      element.preload = "metadata";
+      element.addEventListener("loadedmetadata", () => {
+        const sourceDuration = Number.isFinite(element.duration) ? element.duration : 10;
+        sources.push({
+          id: crypto.randomUUID(),
+          name: file.name,
+          type: file.type.startsWith("video/") ? "video" : "audio",
+          url,
+          start: clamp(media.currentTime, 0, duration),
+          duration: Math.min(sourceDuration, Math.max(0.25, duration - media.currentTime)),
+          isPrimary: false,
+          element,
         });
-        throw new Error(error);
+        renderTimeline();
+      }, { once: true });
     }
+  });
 
-    const data: JobStartResponse = await res.json();
-    console.log(`${LOG_PREFIX} Job submission response`, data);
-    return data;
+  async function buildWaveform(url: string): Promise<Float32Array | undefined> {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        return undefined;
+      }
+      const buffer = await response.arrayBuffer();
+      const audioContext = new AudioContext();
+      const audioBuffer = await audioContext.decodeAudioData(buffer.slice(0));
+      const samples = audioBuffer.getChannelData(0).slice();
+      await audioContext.close();
+      return samples;
+    } catch (error) {
+      console.info(`${LOG_PREFIX} Using fallback waveform`, error);
+      return undefined;
+    }
+  }
+
+  async function loadSubtitles(): Promise<void> {
+    if (!project.subtitleUrl) {
+      cues = [];
+      renderSubtitleList();
+      renderTimeline();
+      return;
+    }
+    try {
+      const response = await fetch(project.subtitleUrl);
+      if (!response.ok) {
+        throw new Error(`Subtitle request returned ${response.status}`);
+      }
+      cues = parseSubtitleFile(await response.text());
+      selectedCueId = cues[0]?.id || null;
+    } catch (error) {
+      console.error(`${LOG_PREFIX} Could not load subtitles`, error);
+      cues = [];
+    }
+    renderSubtitleList();
+    renderTimeline();
+    updatePreview();
+  }
+
+  renderTimeline();
+  void loadSubtitles();
+  timelineScroll.scrollLeft = 0;
 }
 
-async function pollJobStatus(jobId: string): Promise<JobStatusResponse> {
-    const requestUrl = `${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`;
-    const pollingStartedAt = performance.now();
-    let pollAttempt = 0;
-    let previousStatus: JobStatusResponse["status"] | undefined;
-
-    console.log(`${LOG_PREFIX} Polling job`, { jobId, requestUrl });
-
-    while (true) {
-        pollAttempt += 1;
-        const requestStartedAt = performance.now();
-        const res = await fetch(requestUrl);
-
-        if (!res.ok) {
-            const error = await getApiError(res);
-            console.error(`${LOG_PREFIX} Job status request failed`, {
-                jobId,
-                pollAttempt,
-                status: res.status,
-                durationMs: Math.round(performance.now() - requestStartedAt),
-                error,
-            });
-            throw new Error(error);
-        }
-
-        const data: JobStatusResponse = await res.json();
-
-        console.log(`${LOG_PREFIX} Job status response`, {
-            jobId,
-            pollAttempt,
-            requestDurationMs: Math.round(performance.now() - requestStartedAt),
-            elapsedMs: Math.round(performance.now() - pollingStartedAt),
-            data,
-        });
-
-        if (data.status !== previousStatus) {
-            console.log(`${LOG_PREFIX} Job status changed`, {
-                jobId,
-                previousStatus,
-                status: data.status,
-            });
-            previousStatus = data.status;
-        }
-
-        if (data.status === "completed" || data.status === "failed") {
-            return data;
-        }
-
-        setStatus(`Inference ${data.status}...`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
+function renderRoute(): void {
+  if (window.location.hash === "#editor") {
+    const project = loadEditorProject();
+    if (project) {
+      renderEditor(project);
+      return;
     }
+    window.location.hash = "";
+  }
+  if (!app.querySelector(".app-shell")) {
+    renderLanding();
+  }
 }
 
-const runInferenceButton = document.getElementById("runInferenceButton") as HTMLButtonElement;
-runInferenceButton.addEventListener("click", handleRunFullInference);
-
-loadButton.addEventListener("click", loadVideo);
-videoNameInput.addEventListener("keydown", event => {
-    if (event.key === "Enter") {
-        void loadVideo();
-    }
-});
-
-const shouldDecrowdInput = document.getElementById("shouldDecrowdInput") as HTMLInputElement;
-const fastDecrowdInput = document.getElementById("fastDecrowdInput") as HTMLInputElement;
-
-function syncFastDecrowdAvailability() {
-    fastDecrowdInput.disabled = !shouldDecrowdInput.checked;
-    if (fastDecrowdInput.disabled) {
-        fastDecrowdInput.checked = false;
-    }
-}
-
-shouldDecrowdInput.addEventListener("change", syncFastDecrowdAvailability);
-syncFastDecrowdAvailability();
+window.addEventListener("hashchange", renderRoute);
+renderRoute();
