@@ -1,10 +1,13 @@
 from pathlib import Path
 from google.cloud import storage
 from fastapi import UploadFile
-from typing import Tuple
+from typing import Tuple, Optional, Iterable, Set
 
-def upload_file_to_gcs(local_path: str, bucket_name: str, destination_blob_name: str) -> str:
-    '''
+
+def upload_file_to_gcs(
+    local_path: str, bucket_name: str, destination_blob_name: str
+) -> str:
+    """
     Function to upload a local file to an audio file to google cloud storage (GCS)
 
     Args:
@@ -13,12 +16,12 @@ def upload_file_to_gcs(local_path: str, bucket_name: str, destination_blob_name:
         destination_blob_name: The name of the destination blob in the GCS bucket.
     Returns:
         The public URL of the uploaded file in GCS. (gs://...)
-    '''
+    """
     local_file = Path(local_path)
 
     if not local_file.exists():
         return FileNotFoundError(f"file not found: {local_path}")
-    
+
     client = storage.Client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(destination_blob_name)
@@ -27,8 +30,11 @@ def upload_file_to_gcs(local_path: str, bucket_name: str, destination_blob_name:
 
     return f"gs://{bucket_name}/{destination_blob_name}"
 
-def download_file_from_gcs(bucket_name: str, source_blob_name: str, local_path: str) -> Path:
-    '''
+
+def download_file_from_gcs(
+    bucket_name: str, source_blob_name: str, local_path: str
+) -> Path:
+    """
     Function to download a file from google cloud storage (GCS) to a local path
 
     Args:
@@ -37,7 +43,7 @@ def download_file_from_gcs(bucket_name: str, source_blob_name: str, local_path: 
         local_path: The local path where the file will be downloaded.
     Returns:
         The local path of the downloaded file.
-    '''
+    """
     client = storage.Client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(source_blob_name)
@@ -49,8 +55,9 @@ def download_file_from_gcs(bucket_name: str, source_blob_name: str, local_path: 
 
     return local_file
 
+
 def remove_file_from_gcs(bucket_name: str, blob_name: str) -> bool:
-    '''
+    """
     Function to remove a file from google cloud storage (GCS)
 
     Args:
@@ -58,7 +65,7 @@ def remove_file_from_gcs(bucket_name: str, blob_name: str) -> bool:
         blob_name: The name of the blob to remove from the GCS bucket.
     Returns:
         True if the file was removed successfully.
-    '''
+    """
     client = storage.Client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
@@ -69,15 +76,50 @@ def remove_file_from_gcs(bucket_name: str, blob_name: str) -> bool:
     blob.delete()
     return True
 
-async def upload_input_file_to_gcs(file: UploadFile, job_id: str) -> Tuple[str, str, str]:
-    '''
+
+def clean_gcs_bucket(
+    bucket_name: str,
+    job_id: str,
+    keep_blob_names: Optional[Iterable[str]] = None,
+) -> int:
+    """
+    Remove every blob from a GCS bucket except for an explicit allowlist.
+
+    Args:
+        bucket_name: The name of the GCS bucket to clean.
+        keep_blob_names: Blob names that should remain in the bucket.
+
+    Returns:
+        The number of blobs deleted from the bucket.
+    """
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    preserved: Set[str] = set(keep_blob_names or [])
+    deleted_count = 0
+
+    for blob in bucket.list_blobs():
+        is_input_blob = blob.name.startswith("inputs/")
+        is_current_job_output = blob.name.startswith(f"outputs/{job_id}/")
+        is_unpreserved = blob.name not in preserved
+
+        if is_input_blob or (is_current_job_output and is_unpreserved):
+            blob.delete()
+            deleted_count += 1
+
+    return deleted_count
+
+
+async def upload_input_file_to_gcs(
+    file: UploadFile, job_id: str
+) -> Tuple[str, str, str]:
+    """
     Async function to upload an input file from FastAPI endpoint to GCS
     Saves uploaded file to /tmp -> uploads to GCS - > returns GCS path, blob name, original filename
 
     Args:
         file: The UploadFile object received from the FastAPI endpoint.
         job_id: unique job id for the inference job
-    '''
+    """
     GCS_BUCKET = "benzaiten-outputs"
 
     filename = file.filename
@@ -93,7 +135,7 @@ async def upload_input_file_to_gcs(file: UploadFile, job_id: str) -> Tuple[str, 
     input_gcs_path = upload_file_to_gcs(
         local_path=str(local_input_path),
         bucket_name=GCS_BUCKET,
-        destination_blob_name=destination_blob_name
+        destination_blob_name=destination_blob_name,
     )
 
     return input_gcs_path, destination_blob_name, filename

@@ -1,6 +1,109 @@
 import subprocess
 from pathlib import Path
-from typing import Tuple
+from typing import Sequence, Tuple
+
+
+def get_media_duration(media_path: str) -> float:
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(media_path),
+    ]
+
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffprobe duration check failed: {e}") from e
+
+    duration = float(result.stdout.strip())
+    if duration <= 0:
+        raise ValueError(f"Expected positive media duration, got {duration}")
+
+    return duration
+
+
+def extract_audio_segment(
+    audio_path: str,
+    output_path: str,
+    *,
+    start_seconds: float,
+    duration_seconds: float,
+) -> Path:
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        str(start_seconds),
+        "-i",
+        str(audio_path),
+        "-t",
+        str(duration_seconds),
+        "-vn",
+        "-c:a",
+        "libmp3lame",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        str(output),
+    ]
+
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffmpeg audio segment extraction failed: {e}") from e
+
+    return output
+
+
+def concatenate_audio_files(audio_paths: Sequence[str], output_path: str) -> Path:
+    if not audio_paths:
+        raise ValueError("At least one audio path is required")
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    command = ["ffmpeg", "-y"]
+    for audio_path in audio_paths:
+        command.extend(["-i", str(audio_path)])
+
+    filter_inputs = "".join(f"[{index}:a]" for index in range(len(audio_paths)))
+    command.extend(
+        [
+            "-filter_complex",
+            f"{filter_inputs}concat=n={len(audio_paths)}:v=0:a=1[outa]",
+            "-map",
+            "[outa]",
+            "-c:a",
+            "libmp3lame",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            str(output),
+        ]
+    )
+
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffmpeg audio concatenation failed: {e}") from e
+
+    return output
+
 
 def split_sources(video_path: str, output_dir: str) -> Tuple[Path, Path]:
     """
@@ -26,9 +129,11 @@ def split_sources(video_path: str, output_dir: str) -> Tuple[Path, Path]:
     video_command = [
         "ffmpeg",
         "-y",
-        "-i", str(video_path),
+        "-i",
+        str(video_path),
         "-an",
-        "-c:v", "copy",
+        "-c:v",
+        "copy",
         str(video_output_path),
     ]
 
@@ -36,11 +141,15 @@ def split_sources(video_path: str, output_dir: str) -> Tuple[Path, Path]:
     audio_command = [
         "ffmpeg",
         "-y",
-        "-i", str(video_path),
+        "-i",
+        str(video_path),
         "-vn",
-        "-acodec", "libmp3lame",
-        "-ar", "44100",
-        "-ac", "2",
+        "-acodec",
+        "libmp3lame",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
         str(audio_output_path),
     ]
 
@@ -52,7 +161,10 @@ def split_sources(video_path: str, output_dir: str) -> Tuple[Path, Path]:
 
     return video_output_path, audio_output_path
 
-def build_video(video_path: str, audio_path: str, srt_path: str, output_path: str) -> Path:
+
+def build_video(
+    video_path: str, audio_path: str, srt_path: str, output_path: str
+) -> Path:
     """
     Combines video and audio sources into a single video file with subtitles.
 
@@ -75,22 +187,27 @@ def build_video(video_path: str, audio_path: str, srt_path: str, output_path: st
     command = [
         "ffmpeg",
         "-y",
-
-        "-i", str(video_path),
-        "-i", str(audio_path),
-        "-i", str(srt_path),
-
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-        "-map", "2:s:0",
-
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-c:s", "mov_text",
-
-        "-disposition:s:0", "default",
-
-        #"-shortest",
+        "-i",
+        str(video_path),
+        "-i",
+        str(audio_path),
+        "-i",
+        str(srt_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-map",
+        "2:s:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-c:s",
+        "mov_text",
+        "-disposition:s:0",
+        "default",
+        # "-shortest",
         str(output_path),
     ]
 
@@ -98,8 +215,9 @@ def build_video(video_path: str, audio_path: str, srt_path: str, output_path: st
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"ffmpeg video building failed: {e}")
-    
+
     return output_path
+
 
 def convert_srt_to_vtt(srt_path: str, vtt_path: str) -> Path:
     vtt_path = Path(vtt_path)
@@ -108,7 +226,8 @@ def convert_srt_to_vtt(srt_path: str, vtt_path: str) -> Path:
     command = [
         "ffmpeg",
         "-y",
-        "-i", str(srt_path),
+        "-i",
+        str(srt_path),
         str(vtt_path),
     ]
 
