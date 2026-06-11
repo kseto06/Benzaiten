@@ -35,6 +35,15 @@ type EditorProject = {
   subtitleUrl?: string;
   mediaType: "video" | "audio";
   subtitleFontSize?: number;
+  subtitleTransform?: SubtitleTransform;
+};
+
+type SubtitleTransform = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
 };
 
 type SubtitleCue = {
@@ -874,7 +883,22 @@ function renderEditor(project: EditorProject): void {
                 <div class="audio-disc">B</div>
                 <strong>${escapeHtml(project.title)}</strong>
               </div>
-              <div class="subtitle-overlay" id="subtitleOverlay"></div>
+              <div class="subtitle-transform-box" id="subtitleTransformBox" tabindex="0" aria-label="Subtitle text box">
+                <div class="subtitle-overlay" id="subtitleOverlay"></div>
+                <span class="subtitle-box-outline" aria-hidden="true"></span>
+                <span class="subtitle-transform-handle handle-nw" data-subtitle-resize="nw" aria-hidden="true"></span>
+                <span class="subtitle-transform-handle handle-n" data-subtitle-resize="n" aria-hidden="true"></span>
+                <span class="subtitle-transform-handle handle-ne" data-subtitle-resize="ne" aria-hidden="true"></span>
+                <span class="subtitle-transform-handle handle-e" data-subtitle-resize="e" aria-hidden="true"></span>
+                <span class="subtitle-transform-handle handle-se" data-subtitle-resize="se" aria-hidden="true"></span>
+                <span class="subtitle-transform-handle handle-s" data-subtitle-resize="s" aria-hidden="true"></span>
+                <span class="subtitle-transform-handle handle-sw" data-subtitle-resize="sw" aria-hidden="true"></span>
+                <span class="subtitle-transform-handle handle-w" data-subtitle-resize="w" aria-hidden="true"></span>
+                <span class="subtitle-rotation-stem" aria-hidden="true"></span>
+                <button class="subtitle-rotation-handle" type="button" title="Rotate subtitles" aria-label="Rotate subtitles" data-subtitle-rotate>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.6 8.2A7.5 7.5 0 1 0 19.5 14h-2.2a5.4 5.4 0 1 1-.5-4.2L14 12h7V5l-2.4 3.2Z"/></svg>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -930,9 +954,11 @@ function setupEditor(project: EditorProject): void {
   const projectTitleInput = queryElement<HTMLInputElement>("#projectTitleInput");
   const subtitleFontSizeInput = queryElement<HTMLInputElement>("#subtitleFontSizeInput");
   const media = queryElement<HTMLVideoElement>("#editorMedia");
+  const previewStage = queryElement<HTMLDivElement>(".preview-stage");
   const audioPreview = queryElement<HTMLDivElement>("#audioPreview");
   const audioPreviewTitle = queryElement<HTMLElement>("#audioPreview strong");
   const subtitleList = queryElement<HTMLDivElement>("#subtitleList");
+  const subtitleTransformBox = queryElement<HTMLDivElement>("#subtitleTransformBox");
   const overlay = queryElement<HTMLDivElement>("#subtitleOverlay");
   const timelineContent = queryElement<HTMLDivElement>("#timelineContent");
   const timelineShell = queryElement<HTMLDivElement>("#timelineShell");
@@ -949,11 +975,35 @@ function setupEditor(project: EditorProject): void {
   let activeCueId: string | null = null;
   let previousSidebarWidth = 350;
   let previousTimelineHeight = 300;
+  const subtitleTransform: SubtitleTransform = {
+    x: project.subtitleTransform?.x ?? 50,
+    y: project.subtitleTransform?.y ?? 82,
+    width: project.subtitleTransform?.width ?? 82,
+    height: project.subtitleTransform?.height ?? 22,
+    rotation: project.subtitleTransform?.rotation ?? 0,
+  };
 
   media.src = project.mediaUrl;
   media.style.display = project.mediaType === "video" ? "block" : "none";
   audioPreview.classList.toggle("is-visible", project.mediaType === "audio");
   overlay.style.fontSize = `${project.subtitleFontSize || 30}px`;
+
+  const persistSubtitleTransform = (): void => {
+    project.subtitleTransform = { ...subtitleTransform };
+    saveEditorProject(project);
+  };
+
+  const applySubtitleTransform = (): void => {
+    subtitleTransformBox.style.left = `${subtitleTransform.x}%`;
+    subtitleTransformBox.style.top = `${subtitleTransform.y}%`;
+    subtitleTransformBox.style.width = `${subtitleTransform.width}%`;
+    subtitleTransformBox.style.height = `${subtitleTransform.height}%`;
+    subtitleTransformBox.style.transform = (
+      `translate(-50%, -50%) rotate(${subtitleTransform.rotation}deg)`
+    );
+  };
+
+  applySubtitleTransform();
 
   const getTimelineWidth = (): number => Math.max(900, Math.ceil(duration * zoom));
   const pixelsPerSecond = (): number => getTimelineWidth() / duration;
@@ -1246,6 +1296,173 @@ function setupEditor(project: EditorProject): void {
     project.subtitleFontSize = fontSize;
     overlay.style.fontSize = `${fontSize}px`;
     saveEditorProject(project);
+  });
+
+  const selectSubtitleTransformBox = (): void => {
+    subtitleTransformBox.classList.add("is-selected");
+    subtitleTransformBox.focus({ preventScroll: true });
+  };
+
+  const rotateVector = (x: number, y: number, angleDegrees: number): {
+    x: number;
+    y: number;
+  } => {
+    const angle = angleDegrees * Math.PI / 180;
+    return {
+      x: x * Math.cos(angle) - y * Math.sin(angle),
+      y: x * Math.sin(angle) + y * Math.cos(angle),
+    };
+  };
+
+  const beginSubtitleTransform = (
+    event: PointerEvent,
+    mode: "move" | "resize" | "rotate",
+    resizeDirection = "",
+  ): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    selectSubtitleTransformBox();
+
+    const stageBounds = previewStage.getBoundingClientRect();
+    const original = { ...subtitleTransform };
+    const originalCenter = {
+      x: stageBounds.width * original.x / 100,
+      y: stageBounds.height * original.y / 100,
+    };
+    const originalSize = {
+      width: stageBounds.width * original.width / 100,
+      height: stageBounds.height * original.height / 100,
+    };
+    const startPointer = {
+      x: event.clientX - stageBounds.left,
+      y: event.clientY - stageBounds.top,
+    };
+    const startRotationAngle = Math.atan2(
+      startPointer.y - originalCenter.y,
+      startPointer.x - originalCenter.x,
+    ) * 180 / Math.PI;
+
+    const onMove = (moveEvent: PointerEvent): void => {
+      const pointer = {
+        x: moveEvent.clientX - stageBounds.left,
+        y: moveEvent.clientY - stageBounds.top,
+      };
+
+      if (mode === "move") {
+        subtitleTransform.x = clamp(
+          (originalCenter.x + pointer.x - startPointer.x) / stageBounds.width * 100,
+          0,
+          100,
+        );
+        subtitleTransform.y = clamp(
+          (originalCenter.y + pointer.y - startPointer.y) / stageBounds.height * 100,
+          0,
+          100,
+        );
+      } else if (mode === "rotate") {
+        const currentAngle = Math.atan2(
+          pointer.y - originalCenter.y,
+          pointer.x - originalCenter.x,
+        ) * 180 / Math.PI;
+        subtitleTransform.rotation = (
+          (original.rotation + currentAngle - startRotationAngle + 540) % 360 - 180
+        );
+      } else {
+        const pointerDelta = rotateVector(
+          pointer.x - startPointer.x,
+          pointer.y - startPointer.y,
+          -original.rotation,
+        );
+        let left = -originalSize.width / 2;
+        let right = originalSize.width / 2;
+        let top = -originalSize.height / 2;
+        let bottom = originalSize.height / 2;
+
+        if (resizeDirection.includes("w")) {
+          left = Math.min(left + pointerDelta.x, right - 48);
+        }
+        if (resizeDirection.includes("e")) {
+          right = Math.max(right + pointerDelta.x, left + 48);
+        }
+        if (resizeDirection.includes("n")) {
+          top = Math.min(top + pointerDelta.y, bottom - 32);
+        }
+        if (resizeDirection.includes("s")) {
+          bottom = Math.max(bottom + pointerDelta.y, top + 32);
+        }
+
+        const localCenterShift = {
+          x: (left + right) / 2,
+          y: (top + bottom) / 2,
+        };
+        const centerShift = rotateVector(
+          localCenterShift.x,
+          localCenterShift.y,
+          original.rotation,
+        );
+        subtitleTransform.x = clamp(
+          (originalCenter.x + centerShift.x) / stageBounds.width * 100,
+          0,
+          100,
+        );
+        subtitleTransform.y = clamp(
+          (originalCenter.y + centerShift.y) / stageBounds.height * 100,
+          0,
+          100,
+        );
+        subtitleTransform.width = clamp(
+          (right - left) / stageBounds.width * 100,
+          5,
+          120,
+        );
+        subtitleTransform.height = clamp(
+          (bottom - top) / stageBounds.height * 100,
+          5,
+          100,
+        );
+      }
+
+      applySubtitleTransform();
+    };
+
+    const onUp = (): void => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      persistSubtitleTransform();
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  subtitleTransformBox.addEventListener("pointerdown", event => {
+    const target = event.target as HTMLElement;
+    const resizeHandle = target.closest<HTMLElement>("[data-subtitle-resize]");
+    if (resizeHandle?.dataset.subtitleResize) {
+      beginSubtitleTransform(event, "resize", resizeHandle.dataset.subtitleResize);
+      return;
+    }
+    if (target.closest("[data-subtitle-rotate]")) {
+      beginSubtitleTransform(event, "rotate");
+      return;
+    }
+    beginSubtitleTransform(event, "move");
+  });
+
+  subtitleTransformBox.addEventListener("dblclick", event => {
+    event.stopPropagation();
+    if (!selectedCueId) {
+      return;
+    }
+    subtitleList
+      .querySelector<HTMLTextAreaElement>(`[data-cue-text="${CSS.escape(selectedCueId)}"]`)
+      ?.focus();
+  });
+
+  previewStage.addEventListener("pointerdown", event => {
+    if (!(event.target as HTMLElement).closest("#subtitleTransformBox")) {
+      subtitleTransformBox.classList.remove("is-selected");
+    }
   });
 
   queryElement<HTMLButtonElement>("#exportVttButton").addEventListener("click", () => {
