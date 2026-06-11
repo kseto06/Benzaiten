@@ -34,6 +34,7 @@ type EditorProject = {
   mediaUrl: string;
   subtitleUrl?: string;
   mediaType: "video" | "audio";
+  subtitleFontSize?: number;
 };
 
 type SubtitleCue = {
@@ -831,7 +832,10 @@ function renderEditor(project: EditorProject): void {
     <div class="editor-page">
       <header class="editor-header">
         <button class="editor-back" id="backButton" type="button"><span>&larr;</span> Projects</button>
-        <div class="editor-project-title">${escapeHtml(project.title)}</div>
+        <label class="editor-project-title">
+          <span class="sr-only">Project title</span>
+          <input id="projectTitleInput" value="${escapeHtml(project.title)}" aria-label="Project title" />
+        </label>
         <div class="editor-actions">
           <button class="button button-quiet" id="exportVttButton">Export VTT</button>
         </div>
@@ -845,6 +849,11 @@ function renderEditor(project: EditorProject): void {
           </div>
           <div class="subtitle-toolbar">
             <button class="button button-quiet" id="addSubtitleButton">+ Add subtitle</button>
+            <label class="font-size-control" for="subtitleFontSizeInput">
+              <span>Font</span>
+              <input id="subtitleFontSizeInput" type="number" min="12" max="72" step="1" value="${project.subtitleFontSize || 30}" />
+              <span>px</span>
+            </label>
           </div>
           <div class="subtitle-list" id="subtitleList">
             <div class="empty-subtitles">Loading subtitle cues from GCS...</div>
@@ -867,6 +876,12 @@ function renderEditor(project: EditorProject): void {
               </div>
               <div class="subtitle-overlay" id="subtitleOverlay"></div>
             </div>
+          </div>
+
+          <div class="timeline-resizer" id="timelineResizer" role="separator" aria-label="Resize timeline panel" aria-orientation="horizontal">
+            <button class="timeline-collapse-button" id="timelineCollapseButton" type="button" title="Collapse timeline" aria-label="Collapse timeline">
+              <span aria-hidden="true">&darr;</span>
+            </button>
           </div>
 
           <div class="transport-bar">
@@ -906,11 +921,17 @@ function renderEditor(project: EditorProject): void {
 
 function setupEditor(project: EditorProject): void {
   const editorMain = queryElement<HTMLElement>(".editor-main");
+  const editorWorkspace = queryElement<HTMLElement>(".editor-workspace");
   const subtitlePanel = queryElement<HTMLElement>("#subtitlePanel");
   const panelResizer = queryElement<HTMLDivElement>("#panelResizer");
   const panelCollapseButton = queryElement<HTMLButtonElement>("#panelCollapseButton");
+  const timelineResizer = queryElement<HTMLDivElement>("#timelineResizer");
+  const timelineCollapseButton = queryElement<HTMLButtonElement>("#timelineCollapseButton");
+  const projectTitleInput = queryElement<HTMLInputElement>("#projectTitleInput");
+  const subtitleFontSizeInput = queryElement<HTMLInputElement>("#subtitleFontSizeInput");
   const media = queryElement<HTMLVideoElement>("#editorMedia");
   const audioPreview = queryElement<HTMLDivElement>("#audioPreview");
+  const audioPreviewTitle = queryElement<HTMLElement>("#audioPreview strong");
   const subtitleList = queryElement<HTMLDivElement>("#subtitleList");
   const overlay = queryElement<HTMLDivElement>("#subtitleOverlay");
   const timelineContent = queryElement<HTMLDivElement>("#timelineContent");
@@ -927,10 +948,12 @@ function setupEditor(project: EditorProject): void {
   let selectedSourceId: string | null = null;
   let activeCueId: string | null = null;
   let previousSidebarWidth = 350;
+  let previousTimelineHeight = 300;
 
   media.src = project.mediaUrl;
   media.style.display = project.mediaType === "video" ? "block" : "none";
   audioPreview.classList.toggle("is-visible", project.mediaType === "audio");
+  overlay.style.fontSize = `${project.subtitleFontSize || 30}px`;
 
   const getTimelineWidth = (): number => Math.max(900, Math.ceil(duration * zoom));
   const pixelsPerSecond = (): number => getTimelineWidth() / duration;
@@ -1017,12 +1040,13 @@ function setupEditor(project: EditorProject): void {
     if (!context) {
       return;
     }
-    const width = Math.min(6000, getTimelineWidth());
-    const height = 46;
+    const bounds = canvas.getBoundingClientRect();
+    const width = Math.max(120, Math.min(6000, Math.round(bounds.width || getTimelineWidth())));
+    const height = Math.max(36, Math.round(bounds.height || 46));
     canvas.width = width;
     canvas.height = height;
     context.clearRect(0, 0, width, height);
-    context.fillStyle = "rgba(19, 104, 153, 0.6)";
+    context.fillStyle = "rgba(255, 255, 255, 0.62)";
     const center = height / 2;
     const bars = Math.min(900, Math.floor(width / 3));
 
@@ -1039,7 +1063,7 @@ function setupEditor(project: EditorProject): void {
       } else {
         amplitude = 0.22 + Math.abs(Math.sin(index * 0.37) * 0.55);
       }
-      const barHeight = Math.max(2, amplitude * (height - 5));
+      const barHeight = Math.min(height - 2, Math.max(2, amplitude * (height - 6) * 1.2));
       const x = (index / bars) * width;
       context.fillRect(x, center - barHeight / 2, Math.max(1, width / bars - 1), barHeight);
     }
@@ -1060,15 +1084,15 @@ function setupEditor(project: EditorProject): void {
     const sourceRows = sources.map(source => {
       const sourceClass = source.type === "video" ? "video-clip" : "audio-clip";
       return `
-        <div class="track-row">
+        <div class="track-row ${source.type === "audio" ? "audio-track" : ""}">
           <div class="track-label">${source.type === "video" ? "Video" : "Audio"}</div>
           <div class="track-lane" style="width:${width}px">
-            ${source.type === "audio" ? `<canvas class="waveform" data-waveform="${source.id}"></canvas>` : ""}
             <div
               class="clip ${sourceClass} ${source.id === selectedSourceId ? "is-selected" : ""}"
               data-source-id="${source.id}"
               style="left:${source.start * pixelsPerSecond()}px;width:${Math.max(20, source.duration * pixelsPerSecond())}px"
             >
+              ${source.type === "audio" ? `<canvas class="waveform" data-waveform="${source.id}"></canvas>` : ""}
               <span class="resize-handle left" data-resize="left"></span>
               <span class="clip-label">${escapeHtml(source.name)}</span>
               <span class="resize-handle right" data-resize="right"></span>
@@ -1192,6 +1216,38 @@ function setupEditor(project: EditorProject): void {
     renderTimeline();
   });
 
+  projectTitleInput.addEventListener("input", () => {
+    const nextTitle = projectTitleInput.value.trim() || "Untitled project";
+    const previousTitle = project.title;
+    project.title = nextTitle;
+    document.title = `${nextTitle} | Benzaiten Editor`;
+    audioPreviewTitle.textContent = nextTitle;
+    for (const source of sources) {
+      if (!source.isPrimary) {
+        continue;
+      }
+      source.name = source.type === "audio" && project.mediaType === "video"
+        ? `${nextTitle} - program audio`
+        : nextTitle;
+    }
+    saveEditorProject(project);
+    if (previousTitle !== nextTitle) {
+      renderTimeline();
+    }
+  });
+  projectTitleInput.addEventListener("blur", () => {
+    if (!projectTitleInput.value.trim()) {
+      projectTitleInput.value = project.title;
+    }
+  });
+
+  subtitleFontSizeInput.addEventListener("input", () => {
+    const fontSize = clamp(Number(subtitleFontSizeInput.value) || 30, 12, 72);
+    project.subtitleFontSize = fontSize;
+    overlay.style.fontSize = `${fontSize}px`;
+    saveEditorProject(project);
+  });
+
   queryElement<HTMLButtonElement>("#exportVttButton").addEventListener("click", () => {
     const body = cues
       .sort((left, right) => left.start - right.start)
@@ -1273,12 +1329,10 @@ function setupEditor(project: EditorProject): void {
     }
     renderTimeline();
     updatePreview();
-    if (project.mediaType === "audio") {
-      void buildWaveform(project.mediaUrl).then(samples => {
-        waveformSamples = samples;
-        renderTimeline();
-      });
-    }
+    void buildWaveform(project.mediaUrl).then(samples => {
+      waveformSamples = samples;
+      renderTimeline();
+    });
   });
 
   const beginTimelineDrag = (
@@ -1451,6 +1505,55 @@ function setupEditor(project: EditorProject): void {
       panelCollapseButton.innerHTML = `<span aria-hidden="true">&rsaquo;</span>`;
     } else {
       setSidebarWidth(previousSidebarWidth);
+    }
+  });
+
+  const setTimelineHeight = (height: number): void => {
+    const maximum = Math.max(220, editorWorkspace.clientHeight * 0.7);
+    const clampedHeight = clamp(height, 150, maximum);
+    editorWorkspace.style.setProperty("--timeline-panel-height", `${clampedHeight}px`);
+    previousTimelineHeight = clampedHeight;
+    editorWorkspace.classList.remove("is-timeline-collapsed");
+    timelineCollapseButton.title = "Collapse timeline";
+    timelineCollapseButton.setAttribute("aria-label", "Collapse timeline");
+    timelineCollapseButton.innerHTML = `<span aria-hidden="true">&darr;</span>`;
+  };
+
+  timelineResizer.addEventListener("pointerdown", event => {
+    if ((event.target as HTMLElement).closest("button")) {
+      return;
+    }
+    event.preventDefault();
+    timelineResizer.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startHeight = timelineShell.getBoundingClientRect().height;
+
+    const onMove = (moveEvent: PointerEvent): void => {
+      setTimelineHeight(startHeight + startY - moveEvent.clientY);
+    };
+    const onUp = (): void => {
+      timelineResizer.removeEventListener("pointermove", onMove);
+      timelineResizer.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("is-resizing-timeline");
+    };
+
+    document.body.classList.add("is-resizing-timeline");
+    timelineResizer.addEventListener("pointermove", onMove);
+    timelineResizer.addEventListener("pointerup", onUp);
+  });
+
+  timelineCollapseButton.addEventListener("click", () => {
+    const isCollapsed = editorWorkspace.classList.toggle("is-timeline-collapsed");
+    if (isCollapsed) {
+      const currentHeight = timelineShell.getBoundingClientRect().height;
+      if (currentHeight > 100) {
+        previousTimelineHeight = currentHeight;
+      }
+      timelineCollapseButton.title = "Expand timeline";
+      timelineCollapseButton.setAttribute("aria-label", "Expand timeline");
+      timelineCollapseButton.innerHTML = `<span aria-hidden="true">&uarr;</span>`;
+    } else {
+      setTimelineHeight(previousTimelineHeight);
     }
   });
 
