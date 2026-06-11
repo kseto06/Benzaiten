@@ -1,4 +1,4 @@
-# do a k8 inference deployment
+# do a k8 inference deployment. NOTE: DEPRECATED
 apiVersion: apps/v1
 kind: Deployment
 metadata:

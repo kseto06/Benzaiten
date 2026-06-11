@@ -10,7 +10,7 @@ spec:
       restartPolicy: Never
 
       nodeSelector:
-        cloud.google.com/gke-nodepool: cpu-inference-pool
+        cloud.google.com/gke-nodepool: gpu-pool #cpu-inference-pool
 
       tolerations:
         - key: "inference"

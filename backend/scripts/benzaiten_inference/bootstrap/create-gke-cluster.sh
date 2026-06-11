@@ -1,9 +1,8 @@
 #!/bin/bash
 set -e
 
-PROJECT_ID=$(gcloud config get-value project)
-ZONE=northamerica-northeast2-b #a,b,c
-CLUSTER=benzaiten-inference-cluster-b #a,b,c
+ZONE=${ZONE:-northamerica-northeast2-b} #a,b,c
+CLUSTER=${CLUSTER:-benzaiten-inference-cluster-b} #a,b,c
 
 # enable apis
 gcloud services enable container.googleapis.com
@@ -17,6 +16,7 @@ gcloud container clusters create "${CLUSTER}" \
     --num-nodes 1 \
     --disk-type pd-balanced \
     --disk-size 50 \
+    --scopes=https://www.googleapis.com/auth/cloud-platform \
     --enable-ip-alias
 
 # credentials

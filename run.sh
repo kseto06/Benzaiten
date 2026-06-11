@@ -5,6 +5,7 @@ FRONTEND_DIR="$PROJECT_ROOT/frontend"
 
 cd "$PROJECT_ROOT" || exit 1
 
+# shellcheck source=/dev/null
 source "$PROJECT_ROOT/venv/bin/activate"
 
 # check if port 8080 already in use
@@ -18,8 +19,6 @@ docker run --platform linux/amd64 \
     -p 8080:8080 \
     -e GCS_BUCKET=benzaiten-outputs \
     benzaiten-inference:local &
-
-BACKEND_PID=$!
 
 # vite frontend init
 cd "$FRONTEND_DIR" || exit 1

@@ -9,14 +9,15 @@ const videoNameInput = document.getElementById("videoNameInput") as HTMLInputEle
 const loadButton = document.getElementById("loadButton") as HTMLButtonElement;
 
 const statusText = document.getElementById("statusText") as HTMLParagraphElement;
-const video = document.getElementById("videoPlayer") as HTMLVideoElement;
+const media = document.getElementById("videoPlayer") as HTMLMediaElement;
+const LOG_PREFIX = "[Benzaiten]";
 
-type FullInferenceResponse = {
-    status: string;
-    job_id: string;
-    video_url: string;
-    subtitle_url: string;
-}
+// type FullInferenceResponse = {
+//     status: string;
+//     job_id: string;
+//     video_url: string;
+//     subtitle_url: string;
+// }
 
 //inference k8s job types:
 type JobStartResponse = {
@@ -28,6 +29,7 @@ type JobStatusResponse = {
     status: "queued" | "running" | "completed" | "failed";
     job_id: string;
     video_url?: string;
+    audio_url?: string;
     subtitle_url?: string;
     error?: string;
 };
@@ -39,8 +41,19 @@ function setStatus(message: string) {
     Args: 
         message (string): The message to display in the status text
     */
-    console.log(message);
+    console.log(`${LOG_PREFIX} UI status: ${message}`);
     statusText.textContent = message;
+}
+
+async function getApiError(response: Response): Promise<string> {
+    const body = await response.text();
+
+    try {
+        const parsed = JSON.parse(body) as { detail?: string };
+        return parsed.detail || body || `Request failed with status ${response.status}`;
+    } catch {
+        return body || `Request failed with status ${response.status}`;
+    }
 }
 
 function buildGcsUrl(jobId: string, filename: string): string {
@@ -59,48 +72,48 @@ function buildGcsUrl(jobId: string, filename: string): string {
 /**
  * @deprecated Unused with the k8s job pipeline. Keep only for the old pipeline.
  */
-async function convertSubtitlesToVtt(jobId: string): Promise<string> {
+// async function convertSubtitlesToVtt(jobId: string): Promise<string> {
+//     /*
+//     This function sends a POST request to the backend to convert the subtitles for a given job ID to VTT format
+
+//     Args:
+//         jobId (string): The ID of the job for which to convert subtitles
+//     Returns:
+//         Promise<string>: A promise that resolves to the URL of the converted VTT file
+//     */
+//     const res = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/convert_to_vtt`, {
+//         method: "POST",
+//     });
+
+//     if (!res.ok) {
+//         throw new Error(await res.text());
+//     }
+
+//     const data = await res.json();
+
+//     console.log("VTT conversion response:", data);
+
+//     return data.vtt_url;
+// }
+
+function setMediaSources(mediaUrl: string, subtitleUrl?: string, mediaLabel = "Media") {
     /*
-    This function sends a POST request to the backend to convert the subtitles for a given job ID to VTT format
-
-    Args:
-        jobId (string): The ID of the job for which to convert subtitles
-    Returns:
-        Promise<string>: A promise that resolves to the URL of the converted VTT file
-    */
-    const res = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/convert_to_vtt`, {
-        method: "POST",
-    });
-
-    if (!res.ok) {
-        throw new Error(await res.text());
-    }
-
-    const data = await res.json();
-
-    console.log("VTT conversion response:", data);
-
-    return data.vtt_url;
-}
-
-function setVideoSources(videoUrl: string, subtitleUrl?: string) {
-    /*
-    This function sets the video source and subtitle track for the video player
+    This function sets the media source and subtitle track for the player
     
     Args:
-        videoUrl (string): The URL of the video file to play
+        mediaUrl (string): The URL of the video or audio file to play
         subtitleUrl (string, optional): The URL of the subtitle file to use (if available)
     */
-    setStatus("Setting video source...");
+    setStatus(`Setting ${mediaLabel.toLowerCase()} source...`);
 
-    console.log("Video URL:", videoUrl);
+    console.log("Media URL:", mediaUrl);
     console.log("Subtitle URL:", subtitleUrl);
 
-    // set video src directly
-    video.src = `${videoUrl}?t=${Date.now()}`;
+    // set media src directly
+    media.src = `${mediaUrl}?t=${Date.now()}`;
 
     // remove old tracks
-    const oldTracks = video.querySelectorAll("track");
+    const oldTracks = media.querySelectorAll("track");
     oldTracks.forEach((track) => track.remove());
 
     // if subtitle exists, add it as a track
@@ -115,8 +128,8 @@ function setVideoSources(videoUrl: string, subtitleUrl?: string) {
         track.onload = () => {
             setStatus("Subtitle track loaded");
 
-            for (let i = 0; i < video.textTracks.length; i++) {
-                video.textTracks[i].mode = "showing";
+            for (let i = 0; i < media.textTracks.length; i++) {
+                media.textTracks[i].mode = "showing";
             }
         };
 
@@ -125,23 +138,23 @@ function setVideoSources(videoUrl: string, subtitleUrl?: string) {
             console.error("Subtitle failed:", track.src);
         };
 
-        video.appendChild(track);
+        media.appendChild(track);
     }
 
-    video.load();
+    media.load();
 
-    video.onloadedmetadata = () => {
-        setStatus(`Video metadata loaded, duration: ${video.duration}s`);
+    media.onloadedmetadata = () => {
+        setStatus(`${mediaLabel} metadata loaded, duration: ${media.duration}s`);
     };
 
-    video.oncanplay = () => {
-        setStatus("Video ready:");
+    media.oncanplay = () => {
+        setStatus(`${mediaLabel} ready`);
     };
 
-    video.onerror = () => {
-        setStatus("Video failed to load");
-        console.error("Video error:", video.error);
-        console.error("Attempted video src:", video.src);
+    media.onerror = () => {
+        setStatus(`${mediaLabel} failed to load`);
+        console.error("Media error:", media.error);
+        console.error("Attempted media src:", media.src);
     };
 }
 
@@ -166,14 +179,14 @@ async function loadVideo() {
         // const videoUrl = buildGcsUrl(jobId, `${videoName}.mp4`);
         // const subtitleUrl = await convertSubtitlesToVtt(jobId);
         // setStatus("Subtitle conversion done. Loading video...");
-        // setVideoSources(videoUrl, subtitleUrl);
+        // setMediaSources(videoUrl, subtitleUrl, "Video");
 
         //k8 job pipeline:
         const videoUrl = buildGcsUrl(jobId, `${videoName}.mp4`);
         const subtitleUrl = buildGcsUrl(jobId, "vocals.vtt");
 
         setStatus("Loading video...");
-        setVideoSources(videoUrl, subtitleUrl);
+        setMediaSources(videoUrl, subtitleUrl, "Video");
     } catch (err) {
         setStatus("Failed to convert subtitles or load video.");
         console.error(err);
@@ -185,44 +198,44 @@ async function loadVideo() {
 /**
  * @deprecated Unused with the k8s job pipeline. Keep only for the old pipeline.
  */
-async function runFullInference(
-    file: File,
-    language: string,
-    shouldDecrowd: boolean,
-): Promise<FullInferenceResponse> {
-    /*
-    This function sends a POST request to the backend to run full inference on the provided video file
+// async function runFullInference(
+//     file: File,
+//     language: string,
+//     shouldDecrowd: boolean,
+// ): Promise<FullInferenceResponse> {
+//     /*
+//     This function sends a POST request to the backend to run full inference on the provided video file
 
-    Args:
-        file (File): The video file to process
-    Returns:
-        Promise<FullInferenceResponse>: A promise that resolves to the response from the backend containing job ID, video URL, and subtitle URL
-    */
-    const formData = new FormData();
+//     Args:
+//         file (File): The video file to process
+//     Returns:
+//         Promise<FullInferenceResponse>: A promise that resolves to the response from the backend containing job ID, video URL, and subtitle URL
+//     */
+//     const formData = new FormData();
 
-    formData.append("file", file);
-    formData.append("language", language);
-    formData.append("should_decrowd", shouldDecrowd ? "true" : "false");
+//     formData.append("file", file);
+//     formData.append("language", language);
+//     formData.append("should_decrowd", shouldDecrowd ? "true" : "false");
 
-    setStatus("Running inference...");
+//     setStatus("Running inference...");
 
-    const res = await fetch(`${API_BASE_URL}/jobs`, { //await fetch(`${API_BASE_URL}/full_inference`, {
-        method: "POST",
-        body: formData,
-    });
+//     const res = await fetch(`${API_BASE_URL}/jobs`, { //await fetch(`${API_BASE_URL}/full_inference`, {
+//         method: "POST",
+//         body: formData,
+//     });
 
-    if (!res.ok) {
-        throw new Error(await res.text());
-    }
+//     if (!res.ok) {
+//         throw new Error(await res.text());
+//     }
 
-    const data: FullInferenceResponse = await res.json();
-    console.log("Inference response:", data);
+//     const data: FullInferenceResponse = await res.json();
+//     console.log("Inference response:", data);
 
-    localStorage.setItem("job_id", data.job_id);
-    localStorage.setItem("video_url", data.video_url);
+//     localStorage.setItem("job_id", data.job_id);
+//     localStorage.setItem("video_url", data.video_url);
     
-    return data;
-}
+//     return data;
+// }
 
 async function handleRunFullInference() {
     /*
@@ -231,14 +244,21 @@ async function handleRunFullInference() {
     const fileInput = document.getElementById("fileInput") as HTMLInputElement;
     const languageInput = document.getElementById("languageInput") as HTMLInputElement;
     const shouldDecrowdInput = document.getElementById("shouldDecrowdInput") as HTMLInputElement;
+    const fastDecrowdInput = document.getElementById("fastDecrowdInput") as HTMLInputElement;
     const runInferenceButton = document.getElementById("runInferenceButton") as HTMLButtonElement;
     
     const file = fileInput.files?.[0];
     const language = languageInput.value.trim();
     const shouldDecrowd = shouldDecrowdInput.checked;
+    const fastDecrowd = shouldDecrowd && fastDecrowdInput.checked;
 
     if (!file) {
         setStatus("Select a file.")
+        return;
+    }
+
+    if (!file.type.startsWith("video/") && !file.type.startsWith("audio/")) {
+        setStatus("Select a video or audio file.");
         return;
     }
 
@@ -254,7 +274,7 @@ async function handleRunFullInference() {
     //     setStatus("Converting subtitles...");
     //     const subtitleUrl = await convertSubtitlesToVtt(data.job_id);
     //     setStatus("Inference and subtitle conversion done. Loading video...");
-    //     setVideoSources(data.video_url, subtitleUrl);
+    //     setMediaSources(data.video_url, subtitleUrl, "Video");
     //     jobIdInput.value = data.job_id;
     // } catch (err) {
     //     setStatus("Failed to run inference or convert subtitles.");
@@ -264,11 +284,29 @@ async function handleRunFullInference() {
     // }
 
     try {
-        const startData = await startInferenceJob(file, language, shouldDecrowd);
+        console.log(`${LOG_PREFIX} Starting inference`, {
+            apiBaseUrl: API_BASE_URL,
+            file: {
+                name: file.name,
+                type: file.type,
+                sizeBytes: file.size,
+            },
+            language,
+            shouldDecrowd,
+            fastDecrowd,
+        });
+
+        const startData = await startInferenceJob(
+            file,
+            language,
+            shouldDecrowd,
+            fastDecrowd,
+        );
 
         localStorage.setItem("job_id", startData.job_id);
         jobIdInput.value = startData.job_id;
 
+        console.log(`${LOG_PREFIX} Inference job accepted`, startData);
         setStatus("Inference job started...");
 
         const completedJob = await pollJobStatus(startData.job_id);
@@ -277,17 +315,22 @@ async function handleRunFullInference() {
             throw new Error(completedJob.error || "Inference job failed");
         }
 
-        if (!completedJob.video_url || !completedJob.subtitle_url) {
+        const mediaUrl = completedJob.video_url || completedJob.audio_url;
+        const mediaLabel = completedJob.video_url ? "Video" : "Audio";
+
+        if (!mediaUrl || !completedJob.subtitle_url) {
             throw new Error("Job completed but output URLs are missing");
         }
 
-        localStorage.setItem("video_url", completedJob.video_url);
+        console.log(`${LOG_PREFIX} Inference job completed`, completedJob);
+        localStorage.setItem("media_url", mediaUrl);
 
-        setStatus("Inference done. Loading video...");
-        setVideoSources(completedJob.video_url, completedJob.subtitle_url);
+        setStatus(`Inference done. Loading ${mediaLabel.toLowerCase()}...`);
+        setMediaSources(mediaUrl, completedJob.subtitle_url, mediaLabel);
     } catch (err) {
-        setStatus("Failed to run inference.");
-        console.error(err);
+        const message = err instanceof Error ? err.message : String(err);
+        setStatus(`Failed to run inference: ${message}`);
+        console.error(`${LOG_PREFIX} Inference flow failed`, err);
     } finally {
         runInferenceButton.disabled = false;
     }
@@ -297,36 +340,97 @@ async function startInferenceJob(
     file: File,
     language: string,
     shouldDecrowd: boolean,
+    fastDecrowd: boolean,
 ): Promise<JobStartResponse> {
     const formData = new FormData();
 
     formData.append("file", file);
     formData.append("language", language);
     formData.append("should_decrowd", shouldDecrowd ? "true" : "false");
+    formData.append("fast_decrowd", fastDecrowd ? "true" : "false");
 
-    setStatus("Uploading video and starting inference job...");
+    setStatus("Uploading media and starting inference job...");
 
-    const res = await fetch(`${API_BASE_URL}/jobs`, {
+    const requestUrl = `${API_BASE_URL}/jobs`;
+    const requestStartedAt = performance.now();
+
+    console.log(`${LOG_PREFIX} POST ${requestUrl}`, {
+        fileName: file.name,
+        fileType: file.type,
+        fileSizeBytes: file.size,
+        language,
+        shouldDecrowd,
+        fastDecrowd,
+    });
+
+    const res = await fetch(requestUrl, {
         method: "POST",
         body: formData,
     });
 
+    console.log(`${LOG_PREFIX} POST ${requestUrl} response`, {
+        status: res.status,
+        ok: res.ok,
+        durationMs: Math.round(performance.now() - requestStartedAt),
+    });
+
     if (!res.ok) {
-        throw new Error(await res.text());
+        const error = await getApiError(res);
+        console.error(`${LOG_PREFIX} Job submission rejected`, {
+            status: res.status,
+            error,
+        });
+        throw new Error(error);
     }
 
-    return await res.json();
+    const data: JobStartResponse = await res.json();
+    console.log(`${LOG_PREFIX} Job submission response`, data);
+    return data;
 }
 
 async function pollJobStatus(jobId: string): Promise<JobStatusResponse> {
+    const requestUrl = `${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`;
+    const pollingStartedAt = performance.now();
+    let pollAttempt = 0;
+    let previousStatus: JobStatusResponse["status"] | undefined;
+
+    console.log(`${LOG_PREFIX} Polling job`, { jobId, requestUrl });
+
     while (true) {
-        const res = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`);
+        pollAttempt += 1;
+        const requestStartedAt = performance.now();
+        const res = await fetch(requestUrl);
 
         if (!res.ok) {
-            throw new Error(await res.text());
+            const error = await getApiError(res);
+            console.error(`${LOG_PREFIX} Job status request failed`, {
+                jobId,
+                pollAttempt,
+                status: res.status,
+                durationMs: Math.round(performance.now() - requestStartedAt),
+                error,
+            });
+            throw new Error(error);
         }
 
         const data: JobStatusResponse = await res.json();
+
+        console.log(`${LOG_PREFIX} Job status response`, {
+            jobId,
+            pollAttempt,
+            requestDurationMs: Math.round(performance.now() - requestStartedAt),
+            elapsedMs: Math.round(performance.now() - pollingStartedAt),
+            data,
+        });
+
+        if (data.status !== previousStatus) {
+            console.log(`${LOG_PREFIX} Job status changed`, {
+                jobId,
+                previousStatus,
+                status: data.status,
+            });
+            previousStatus = data.status;
+        }
 
         if (data.status === "completed" || data.status === "failed") {
             return data;
@@ -341,3 +445,16 @@ const runInferenceButton = document.getElementById("runInferenceButton") as HTML
 runInferenceButton.addEventListener("click", handleRunFullInference);
 
 loadButton.addEventListener("click", loadVideo);
+
+const shouldDecrowdInput = document.getElementById("shouldDecrowdInput") as HTMLInputElement;
+const fastDecrowdInput = document.getElementById("fastDecrowdInput") as HTMLInputElement;
+
+function syncFastDecrowdAvailability() {
+    fastDecrowdInput.disabled = !shouldDecrowdInput.checked;
+    if (fastDecrowdInput.disabled) {
+        fastDecrowdInput.checked = false;
+    }
+}
+
+shouldDecrowdInput.addEventListener("change", syncFastDecrowdAvailability);
+syncFastDecrowdAvailability();
