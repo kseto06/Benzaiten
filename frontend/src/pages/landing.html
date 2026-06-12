@@ -156,32 +156,158 @@
           <p class="section-kicker">Workflow</p>
           <h2 class="section-title">Cloud processing, browser editing.</h2>
           <p class="section-description">
-            The pipeline handles orchestration and model inference at every stage to turn source media into high-quality karaoke videos.
+            Follow media through four coordinated inference stages, from the first
+            GKE job to a project ready for editing.
           </p>
         </div>
-        <div class="feature-grid">
-          <article class="feature-card">
-            <span>01</span>
-            <h3>Orchestrate</h3>
-            <p>
-              Track source separation, crowd reduction, transcription, and composition
-              as they complete.
-            </p>
-          </article>
-          <article class="feature-card">
-            <span>02</span>
-            <h3>Edit subtitles</h3>
-            <p>
-              Adjust multiline text, timing, and cue order alongside the video timeline.
-            </p>
-          </article>
-          <article class="feature-card">
-            <span>03</span>
-            <h3>Arrange media</h3>
-            <p>
-              Drop additional local video or audio, then drag and trim clips in the browser.
-            </p>
-          </article>
+
+        <div class="workflow-dag">
+          <div class="workflow-dag-header">
+            <div>
+              <p class="workflow-dag-title">
+                <span class="workflow-status-dot" aria-hidden="true"></span>
+                benzaiten-orchestration
+              </p>
+              <p class="workflow-dag-subtitle">GKE inference job graph</p>
+            </div>
+            <div class="workflow-legend" aria-label="Workflow services">
+              <span><i class="legend-dot legend-dot-gke"></i>GKE compute</span>
+              <span><i class="legend-dot legend-dot-gcs"></i>GCS assets</span>
+              <span><i class="legend-dot legend-dot-browser"></i>Browser</span>
+            </div>
+          </div>
+
+          <div
+            class="workflow-canvas-shell"
+            role="region"
+            aria-label="Benzaiten inference workflow diagram"
+            tabindex="0"
+          >
+            <div class="workflow-canvas">
+              <svg
+                class="workflow-connectors"
+                viewBox="0 0 1260 470"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              >
+                <defs>
+                  <marker
+                    id="workflow-arrow"
+                    markerWidth="4"
+                    markerHeight="4"
+                    refX="0"
+                    refY="2"
+                    orient="auto"
+                  >
+                    <path d="M0,0 L4,2 L0,4 Z"></path>
+                  </marker>
+                </defs>
+
+                <g class="workflow-edge edge-upload-source">
+                  <path class="workflow-edge-base" d="M225 240 H258"></path>
+                  <path class="workflow-edge-flow" d="M225 240 H258"></path>
+                </g>
+                <g class="workflow-edge edge-source-decrowd">
+                  <path class="workflow-edge-base" d="M480 240 C510 240 500 130 518 130"></path>
+                  <path class="workflow-edge-flow" d="M480 240 C510 240 500 130 518 130"></path>
+                </g>
+                <g class="workflow-edge edge-source-transcription">
+                  <path class="workflow-edge-base" d="M480 240 C510 240 500 350 518 350"></path>
+                  <path class="workflow-edge-flow" d="M480 240 C510 240 500 350 518 350"></path>
+                </g>
+                <g class="workflow-edge edge-decrowd-build">
+                  <path class="workflow-edge-base" d="M750 130 C780 130 760 240 778 240"></path>
+                  <path class="workflow-edge-flow" d="M750 130 C780 130 760 240 778 240"></path>
+                </g>
+                <g class="workflow-edge edge-transcription-build">
+                  <path class="workflow-edge-base" d="M750 350 C780 350 760 240 778 240"></path>
+                  <path class="workflow-edge-flow" d="M750 350 C780 350 760 240 778 240"></path>
+                </g>
+                <g class="workflow-edge edge-build-editor">
+                  <path class="workflow-edge-base" d="M1010 240 H1028"></path>
+                  <path class="workflow-edge-flow" d="M1010 240 H1028"></path>
+                </g>
+              </svg>
+
+              <article class="workflow-node node-upload" tabindex="0">
+                <div class="workflow-node-heading">
+                  <span class="workflow-node-icon">IN</span>
+                  <span class="workflow-node-type">Trigger</span>
+                </div>
+                <h3>Media upload</h3>
+                <p>Store source media and start orchestration.</p>
+                <div class="workflow-node-tags">
+                  <span class="tag-api">API</span>
+                  <span class="tag-gcs">GCS</span>
+                </div>
+              </article>
+
+              <article class="workflow-node node-source" tabindex="0">
+                <div class="workflow-node-heading">
+                  <span class="workflow-node-icon">01</span>
+                  <span class="workflow-node-type">Inference</span>
+                </div>
+                <h3>Source separation</h3>
+                <p>Split vocals and accompaniment into isolated tracks.</p>
+                <div class="workflow-node-tags">
+                  <span class="tag-gke">GKE GPU</span>
+                  <span class="tag-gcs">GCS</span>
+                </div>
+              </article>
+
+              <article class="workflow-node node-decrowd" tabindex="0">
+                <div class="workflow-node-heading">
+                  <span class="workflow-node-icon">02</span>
+                  <span class="workflow-node-type">Optional</span>
+                </div>
+                <h3>Crowd reduction</h3>
+                <p>Reduce audience noise from live recordings.</p>
+                <div class="workflow-node-tags">
+                  <span class="tag-gke">GKE GPU</span>
+                  <span class="tag-gcs">GCS</span>
+                </div>
+              </article>
+
+              <article class="workflow-node node-transcription" tabindex="0">
+                <div class="workflow-node-heading">
+                  <span class="workflow-node-icon">03</span>
+                  <span class="workflow-node-type">Inference</span>
+                </div>
+                <h3>Transcription & Translaton</h3>
+                <p>Transcribe, translate, and generate timestamped lyrics and subtitle cues.</p>
+                <div class="workflow-node-tags">
+                  <span class="tag-gke">GKE GPU</span>
+                  <span class="tag-gcs">GCS</span>
+                </div>
+              </article>
+
+              <article class="workflow-node node-build" tabindex="0">
+                <div class="workflow-node-heading">
+                  <span class="workflow-node-icon">04</span>
+                  <span class="workflow-node-type">Compose</span>
+                </div>
+                <h3>Build video</h3>
+                <p>Combine media, karaoke audio, and timed subtitles.</p>
+                <div class="workflow-node-tags">
+                  <span class="tag-gke">GKE</span>
+                  <span class="tag-gcs">GCS</span>
+                </div>
+              </article>
+
+              <article class="workflow-node node-editor" tabindex="0">
+                <div class="workflow-node-heading">
+                  <span class="workflow-node-icon workflow-node-icon-editor">BE</span>
+                  <span class="workflow-node-type">Output</span>
+                </div>
+                <h3>Benzaiten Video Editor</h3>
+                <p>Fine-tune subtitles, timing, audio, and layout.</p>
+                <div class="workflow-node-tags">
+                  <span class="tag-browser">Browser</span>
+                  <span class="tag-gcs">GCS</span>
+                </div>
+              </article>
+            </div>
+          </div>
         </div>
       </div>
     </section>

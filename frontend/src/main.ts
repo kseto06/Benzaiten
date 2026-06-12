@@ -271,6 +271,7 @@ function setupLandingInteractions(): void {
   const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
   const searchInput = queryElement<HTMLInputElement>("#videoNameInput");
   const searchButton = queryElement<HTMLButtonElement>("#loadButton");
+  setupWorkflowZoom();
 
   const showSelectedFile = (): void => {
     const file = fileInput.files?.[0];
@@ -313,6 +314,111 @@ function setupLandingInteractions(): void {
       void handleLibrarySearch();
     }
   });
+}
+
+function setupWorkflowZoom(): void {
+  const shell = queryElement<HTMLDivElement>(".workflow-canvas-shell");
+  const canvas = queryElement<HTMLDivElement>(".workflow-canvas", shell);
+  const zoomSurface = document.createElement("div");
+  const baseWidth = 1260;
+  const baseHeight = 470;
+  const minimumScale = 0.5;
+  const maximumScale = 1.75;
+  let scale = 1;
+  let panStart: {
+    pointerId: number;
+    x: number;
+    y: number;
+    scrollLeft: number;
+    scrollTop: number;
+  } | null = null;
+
+  zoomSurface.className = "workflow-canvas-zoom-surface";
+  canvas.replaceWith(zoomSurface);
+  zoomSurface.append(canvas);
+
+  const setBoundedScroll = (left: number, top: number): void => {
+    const maximumLeft = Math.max(0, shell.scrollWidth - shell.clientWidth);
+    const maximumTop = Math.max(0, shell.scrollHeight - shell.clientHeight);
+    shell.scrollLeft = clamp(left, 0, maximumLeft);
+    shell.scrollTop = clamp(top, 0, maximumTop);
+  };
+
+  const applyScale = (nextScale: number, clientX: number, clientY: number): void => {
+    const clampedScale = clamp(nextScale, minimumScale, maximumScale);
+    if (clampedScale === scale) {
+      return;
+    }
+
+    const shellRect = shell.getBoundingClientRect();
+    const pointerX = clientX - shellRect.left;
+    const pointerY = clientY - shellRect.top;
+    const contentX = (shell.scrollLeft + pointerX) / scale;
+    const contentY = (shell.scrollTop + pointerY) / scale;
+
+    scale = clampedScale;
+    zoomSurface.style.width = `${baseWidth * scale}px`;
+    zoomSurface.style.height = `${baseHeight * scale}px`;
+    canvas.style.transform = `scale(${scale})`;
+    setBoundedScroll(
+      contentX * scale - pointerX,
+      contentY * scale - pointerY,
+    );
+    shell.setAttribute(
+      "aria-label",
+      `Benzaiten inference workflow diagram, ${Math.round(scale * 100)}% zoom`,
+    );
+  };
+
+  shell.addEventListener("wheel", event => {
+    event.preventDefault();
+    const zoomFactor = Math.exp(-event.deltaY * 0.0015);
+    applyScale(scale * zoomFactor, event.clientX, event.clientY);
+  }, { passive: false });
+
+  shell.addEventListener("pointerdown", event => {
+    if (
+      event.button !== 0
+      || (event.target as Element).closest(".workflow-node")
+    ) {
+      return;
+    }
+
+    panStart = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      scrollLeft: shell.scrollLeft,
+      scrollTop: shell.scrollTop,
+    };
+    shell.setPointerCapture(event.pointerId);
+    shell.classList.add("is-panning");
+    event.preventDefault();
+  });
+
+  shell.addEventListener("pointermove", event => {
+    if (!panStart || event.pointerId !== panStart.pointerId) {
+      return;
+    }
+    setBoundedScroll(
+      panStart.scrollLeft - (event.clientX - panStart.x),
+      panStart.scrollTop - (event.clientY - panStart.y),
+    );
+  });
+
+  const stopPanning = (event: PointerEvent): void => {
+    if (!panStart || event.pointerId !== panStart.pointerId) {
+      return;
+    }
+    if (shell.hasPointerCapture(event.pointerId)) {
+      shell.releasePointerCapture(event.pointerId);
+    }
+    panStart = null;
+    shell.classList.remove("is-panning");
+  };
+
+  shell.addEventListener("pointerup", stopPanning);
+  shell.addEventListener("pointercancel", stopPanning);
 }
 
 function renderPipelineStages(stages: PipelineStage[], activeIndex: number): void {
