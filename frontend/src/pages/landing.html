@@ -1,0 +1,193 @@
+<div class="app-shell">
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="Benzaiten home">
+      <span class="brand-mark">B</span>
+      <span>Benzaiten</span>
+    </a>
+    <nav class="header-nav" aria-label="Main navigation">
+      <a href="#create">Create</a>
+      <a href="#library">Library</a>
+      <a href="#workflow">Workflow</a>
+      <a class="button button-quiet" href="#create">Start a project</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero-section" id="top">
+      <div class="hero-content">
+        <div class="eyebrow">
+          <span class="eyebrow-dot"></span>
+          Browser-based karaoke studio
+        </div>
+        <h1 class="hero-title">Benzaiten</h1>
+        <p class="hero-subtitle">Karaoke Orchestration Video Maker</p>
+        <p class="hero-copy">
+          Turn a performance into separated audio, timed lyrics, and an editable
+          karaoke video. Build in the cloud, then refine every cue in the browser.
+        </p>
+        <div class="hero-actions">
+          <a class="button" href="#create">Create karaoke video</a>
+          <a class="button button-secondary" href="#library">Open existing project</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="content-section" id="create">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="section-kicker">Create</p>
+          <h2 class="section-title">From source media to an editable timeline.</h2>
+          <p class="section-description">
+            Upload a performance and Benzaiten will orchestrate source separation,
+            optional crowd reduction, transcription, and final composition.
+          </p>
+        </div>
+
+        <div class="workspace-grid">
+          <section class="panel">
+            <div class="panel-body">
+              <div class="panel-heading">
+                <div>
+                  <h3>New inference</h3>
+                  <p>Submit media to the existing orchestration API.</p>
+                </div>
+                <span class="number-badge">01</span>
+              </div>
+
+              <div class="upload-zone" id="uploadZone">
+                <input id="fileInput" type="file" accept="video/*,audio/*" />
+                <div>
+                  <div class="upload-icon">+</div>
+                  <div class="upload-title">Drop a video here or browse</div>
+                  <div class="upload-help">MP4, MOV, WebM, MP3, or WAV</div>
+                </div>
+              </div>
+              <div class="selected-file" id="selectedFile"></div>
+
+              <div class="form-grid">
+                <div class="field">
+                  <label for="languageInput">Audio language</label>
+                  <input
+                    class="input"
+                    id="languageInput"
+                    value="ko"
+                    placeholder="e.g. en, ko, ja"
+                  />
+                </div>
+                <div class="field">
+                  <label for="projectNameInput">Project name</label>
+                  <input
+                    class="input"
+                    id="projectNameInput"
+                    placeholder="Uses the uploaded filename"
+                  />
+                </div>
+                <label class="toggle-row field-wide">
+                  <input id="shouldDecrowdInput" type="checkbox" />
+                  <span class="toggle-copy">
+                    Reduce audience noise
+                    <span>Useful for live performances and concert recordings.</span>
+                  </span>
+                </label>
+                <label class="toggle-row field-wide">
+                  <input id="fastDecrowdInput" type="checkbox" disabled />
+                  <span class="toggle-copy">
+                    Fast crowd reduction
+                    <span>Only processes the first and last 30 seconds.</span>
+                  </span>
+                </label>
+              </div>
+
+              <div class="form-actions">
+                <button class="button" id="runInferenceButton">Run orchestration</button>
+              </div>
+
+              <div class="progress-panel" id="progressPanel">
+                <div class="progress-header">
+                  <div>
+                    <h4 id="progressTitle">Preparing your project</h4>
+                    <p id="progressDetail">Uploading media to the pipeline.</p>
+                  </div>
+                  <span class="progress-number" id="progressNumber">0%</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="stage-list" id="stageList"></div>
+              </div>
+
+              <p class="status-message" id="statusText" aria-live="polite"></p>
+            </div>
+          </section>
+
+          <section class="panel" id="library">
+            <div class="panel-body">
+              <div class="panel-heading">
+                <div>
+                  <h3>Project library</h3>
+                  <p>Search completed GCS outputs without a job ID.</p>
+                </div>
+                <span class="number-badge">02</span>
+              </div>
+              <div class="field">
+                <label for="videoNameInput">Song or project title</label>
+                <div class="search-wrap">
+                  <input
+                    class="input"
+                    id="videoNameInput"
+                    placeholder="e.g. Practice Love"
+                  />
+                  <button class="button" id="loadButton">Find project</button>
+                </div>
+              </div>
+              <div class="library-note">
+                Search is Unicode-aware and accepts partial or close matches. For example,
+                an English fragment can match a title that also contains foreign characters.
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="content-section features-section" id="workflow">
+      <div class="section-inner">
+        <div class="section-heading">
+          <p class="section-kicker">Workflow</p>
+          <h2 class="section-title">Cloud processing, browser editing.</h2>
+          <p class="section-description">
+            The pipeline handles orchestration and model inference at every stage to turn source media into high-quality karaoke videos.
+          </p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <span>01</span>
+            <h3>Orchestrate</h3>
+            <p>
+              Track source separation, crowd reduction, transcription, and composition
+              as they complete.
+            </p>
+          </article>
+          <article class="feature-card">
+            <span>02</span>
+            <h3>Edit subtitles</h3>
+            <p>
+              Adjust multiline text, timing, and cue order alongside the video timeline.
+            </p>
+          </article>
+          <article class="feature-card">
+            <span>03</span>
+            <h3>Arrange media</h3>
+            <p>
+              Drop additional local video or audio, then drag and trim clips in the browser.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>Benzaiten karaoke orchestration studio</span>
+  </footer>
+</div>
