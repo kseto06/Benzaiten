@@ -1398,10 +1398,11 @@ button:disabled {
 }
 
 .editor-header {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 18px;
+  justify-content: space-between;
+  gap: 20px;
   padding: 0 18px;
   border-bottom: 1px solid var(--line);
   background: #fff;
@@ -1418,9 +1419,13 @@ button:disabled {
 }
 
 .editor-project-title {
+  position: absolute;
+  left: 50%;
   display: flex;
+  width: min(42vw, 580px);
   justify-content: center;
   overflow: hidden;
+  transform: translateX(-50%);
 }
 
 .editor-project-title input {
@@ -1452,6 +1457,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 9px;
+  margin-left: auto;
 }
 
 .editor-save-status {
@@ -2355,15 +2361,24 @@ body.is-resizing-timeline {
   }
 
   .editor-header {
-    grid-template-columns: auto 1fr;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 64px;
+    padding-top: 10px;
   }
 
   .editor-project-title {
+    position: static;
+    width: auto;
+    min-width: 0;
+    flex: 1;
     text-align: left;
+    transform: none;
   }
 
   .editor-actions {
-    grid-column: 1 / -1;
+    width: 100%;
+    justify-content: flex-end;
     padding-bottom: 10px;
   }
 
