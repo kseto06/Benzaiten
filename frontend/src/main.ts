@@ -1322,6 +1322,7 @@ function setupEditor(project: EditorProject): void {
   let selectedCueId: string | null = null;
   let selectedSourceId: string | null = null;
   let activeCueId: string | null = null;
+  let timelineSnapTime: number | null = null;
   let previousSidebarWidth = 350;
   let previousTimelineHeight = 300;
   let mediaReady = false;
@@ -1446,6 +1447,124 @@ function setupEditor(project: EditorProject): void {
     cues.find(cue => time >= cue.start && time <= cue.end)
   );
 
+  const subtitleMinimumDuration = 0.1;
+  const timelineSnapThresholdPixels = 6;
+
+  const normalizeSubtitleTiming = (): void => {
+    cues.sort((left, right) => left.start - right.start);
+    for (let index = 1; index < cues.length; index += 1) {
+      const previousCue = cues[index - 1];
+      const cue = cues[index];
+      if (previousCue.end <= cue.start) {
+        continue;
+      }
+      if (cue.start - previousCue.start >= subtitleMinimumDuration) {
+        previousCue.end = cue.start;
+      } else {
+        cue.start = previousCue.end;
+        cue.end = Math.max(cue.end, cue.start + subtitleMinimumDuration);
+      }
+    }
+  };
+
+  const getSubtitleNeighborBounds = (cue: SubtitleCue): {
+    previousEnd: number;
+    nextStart: number;
+  } => {
+    const cueIndex = cues.findIndex(item => item.id === cue.id);
+    return {
+      previousEnd: cueIndex > 0 ? cues[cueIndex - 1].end : 0,
+      nextStart: cueIndex >= 0 && cueIndex < cues.length - 1
+        ? cues[cueIndex + 1].start
+        : duration,
+    };
+  };
+
+  const getTimelineSnapCandidates = (
+    excludedCueId?: string,
+    excludedSourceId?: string,
+  ): number[] => {
+    const candidates = new Set<number>([0, duration, media.currentTime]);
+    for (const cue of cues) {
+      if (cue.id !== excludedCueId) {
+        candidates.add(cue.start);
+        candidates.add(cue.end);
+      }
+    }
+    for (const source of sources) {
+      if (source.id !== excludedSourceId) {
+        candidates.add(source.start);
+        candidates.add(source.start + source.duration);
+      }
+    }
+    return [...candidates];
+  };
+
+  const snapTimelineValue = (
+    value: number,
+    candidates: number[],
+    minimum: number,
+    maximum: number,
+    snappingDisabled: boolean,
+  ): { value: number; snapTime: number | null } => {
+    const clampedValue = clamp(value, minimum, maximum);
+    if (snappingDisabled) {
+      return { value: clampedValue, snapTime: null };
+    }
+    const thresholdSeconds = timelineSnapThresholdPixels / pixelsPerSecond();
+    let closest: number | null = null;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      if (candidate < minimum || candidate > maximum) {
+        continue;
+      }
+      const distance = Math.abs(candidate - clampedValue);
+      if (distance <= thresholdSeconds && distance < closestDistance) {
+        closest = candidate;
+        closestDistance = distance;
+      }
+    }
+    return {
+      value: closest ?? clampedValue,
+      snapTime: closest,
+    };
+  };
+
+  const snapTimelineRange = (
+    start: number,
+    rangeDuration: number,
+    candidates: number[],
+    minimumStart: number,
+    maximumStart: number,
+    snappingDisabled: boolean,
+  ): { start: number; snapTime: number | null } => {
+    const clampedStart = clamp(start, minimumStart, maximumStart);
+    if (snappingDisabled) {
+      return { start: clampedStart, snapTime: null };
+    }
+    const thresholdSeconds = timelineSnapThresholdPixels / pixelsPerSecond();
+    let snappedStart = clampedStart;
+    let snapTime: number | null = null;
+    let closestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      for (const edge of [clampedStart, clampedStart + rangeDuration]) {
+        const distance = Math.abs(candidate - edge);
+        const adjustedStart = clampedStart + candidate - edge;
+        if (
+          distance <= thresholdSeconds
+          && distance < closestDistance
+          && adjustedStart >= minimumStart
+          && adjustedStart <= maximumStart
+        ) {
+          snappedStart = adjustedStart;
+          snapTime = candidate;
+          closestDistance = distance;
+        }
+      }
+    }
+    return { start: snappedStart, snapTime };
+  };
+
   const setVideoLoading = (isLoading: boolean): void => {
     videoLoadingSpinner.hidden = !isLoading || project.mediaType !== "video";
   };
@@ -1531,19 +1650,40 @@ function setupEditor(project: EditorProject): void {
       return;
     }
 
-    subtitleList.innerHTML = cues.map(cue => `
-      <article class="subtitle-card ${cue.id === selectedCueId ? "is-active" : ""}" data-cue-id="${cue.id}">
-        <div class="subtitle-time-row">
-          <div class="subtitle-time">
-            <input class="time-input" data-time="start" value="${cue.start.toFixed(2)}" aria-label="Start seconds" />
-            <span>to</span>
-            <input class="time-input" data-time="end" value="${cue.end.toFixed(2)}" aria-label="End seconds" />
+    subtitleList.innerHTML = cues.map(cue => {
+      const { previousEnd, nextStart } = getSubtitleNeighborBounds(cue);
+      return `
+        <article class="subtitle-card ${cue.id === selectedCueId ? "is-active" : ""}" data-cue-id="${cue.id}">
+          <div class="subtitle-time-row">
+            <div class="subtitle-time">
+              <input
+                class="time-input"
+                data-time="start"
+                type="number"
+                min="${previousEnd.toFixed(2)}"
+                max="${Math.max(previousEnd, cue.end - subtitleMinimumDuration).toFixed(2)}"
+                step="0.01"
+                value="${cue.start.toFixed(2)}"
+                aria-label="Start seconds"
+              />
+              <span>to</span>
+              <input
+                class="time-input"
+                data-time="end"
+                type="number"
+                min="${(cue.start + subtitleMinimumDuration).toFixed(2)}"
+                max="${nextStart.toFixed(2)}"
+                step="0.01"
+                value="${cue.end.toFixed(2)}"
+                aria-label="End seconds"
+              />
+            </div>
+            <button class="icon-button" data-delete-cue="${cue.id}" title="Delete subtitle">x</button>
           </div>
-          <button class="icon-button" data-delete-cue="${cue.id}" title="Delete subtitle">x</button>
-        </div>
-        <textarea data-cue-text="${cue.id}" aria-label="Subtitle text">${escapeHtml(cue.text)}</textarea>
-      </article>
-    `).join("");
+          <textarea data-cue-text="${cue.id}" aria-label="Subtitle text">${escapeHtml(cue.text)}</textarea>
+        </article>
+      `;
+    }).join("");
     syncSubtitleSelection();
   };
 
@@ -1636,6 +1776,12 @@ function setupEditor(project: EditorProject): void {
         <div class="track-lane" style="width:${width}px">${subtitleClips}</div>
       </div>
       ${sourceRows}
+      ${timelineSnapTime === null ? "" : `
+        <div
+          class="timeline-snap-guide"
+          style="left:${118 + timelineSnapTime * pixelsPerSecond()}px"
+        ></div>
+      `}
       <div class="playhead" style="left:${118 + media.currentTime * pixelsPerSecond()}px"></div>
     `;
 
@@ -1705,20 +1851,62 @@ function setupEditor(project: EditorProject): void {
     if (target.dataset.cueText) {
       cue.text = target.value;
     } else if (target.dataset.time === "start") {
-      cue.start = clamp(Number(target.value) || 0, 0, Math.max(0, cue.end - 0.1));
+      const { previousEnd } = getSubtitleNeighborBounds(cue);
+      const enteredValue = Number(target.value);
+      if (!Number.isFinite(enteredValue)) {
+        return;
+      }
+      cue.start = clamp(
+        enteredValue,
+        previousEnd,
+        cue.end - subtitleMinimumDuration,
+      );
+      if (cue.start !== enteredValue) {
+        target.value = cue.start.toFixed(2);
+      }
+      const endInput = card?.querySelector<HTMLInputElement>('[data-time="end"]');
+      if (endInput) {
+        endInput.min = (cue.start + subtitleMinimumDuration).toFixed(2);
+      }
     } else if (target.dataset.time === "end") {
-      cue.end = clamp(Number(target.value) || cue.start + 0.1, cue.start + 0.1, duration);
+      const { nextStart } = getSubtitleNeighborBounds(cue);
+      const enteredValue = Number(target.value);
+      if (!Number.isFinite(enteredValue)) {
+        return;
+      }
+      cue.end = clamp(
+        enteredValue,
+        cue.start + subtitleMinimumDuration,
+        nextStart,
+      );
+      if (cue.end !== enteredValue) {
+        target.value = cue.end.toFixed(2);
+      }
+      const startInput = card?.querySelector<HTMLInputElement>('[data-time="start"]');
+      if (startInput) {
+        startInput.max = (cue.end - subtitleMinimumDuration).toFixed(2);
+      }
     }
     renderTimeline();
     updatePreview();
   });
 
   queryElement<HTMLButtonElement>("#addSubtitleButton").addEventListener("click", () => {
-    const start = clamp(media.currentTime, 0, Math.max(0, duration - 1));
+    let start = clamp(media.currentTime, 0, Math.max(0, duration - subtitleMinimumDuration));
+    for (const existingCue of cues) {
+      if (start >= existingCue.start && start < existingCue.end) {
+        start = existingCue.end;
+      }
+    }
+    const nextCue = cues.find(existingCue => existingCue.start >= start);
+    const availableEnd = Math.min(duration, nextCue?.start ?? duration);
+    if (availableEnd - start < subtitleMinimumDuration) {
+      return;
+    }
     const cue: SubtitleCue = {
       id: crypto.randomUUID(),
       start,
-      end: Math.min(duration, start + 3),
+      end: Math.min(availableEnd, start + 3),
       text: "New subtitle",
     };
     cues.push(cue);
@@ -2220,7 +2408,9 @@ function setupEditor(project: EditorProject): void {
     }
     const originalStart = cue?.start ?? source?.start ?? 0;
     const originalEnd = cue?.end ?? ((source?.start || 0) + (source?.duration || 0));
+    const cueNeighborBounds = cue ? getSubtitleNeighborBounds(cue) : undefined;
     const dragPixelsPerSecond = pixelsPerSecond();
+    const snapCandidates = getTimelineSnapCandidates(cue?.id, source?.id);
     if (cue) {
       selectedCueId = cue.id;
       syncSubtitleSelection(true);
@@ -2231,36 +2421,80 @@ function setupEditor(project: EditorProject): void {
 
     const onMove = (moveEvent: PointerEvent): void => {
       const deltaSeconds = (moveEvent.clientX - startX) / dragPixelsPerSecond;
+      timelineSnapTime = null;
       if (cue) {
         const cueDuration = originalEnd - originalStart;
+        const previousEnd = cueNeighborBounds?.previousEnd ?? 0;
+        const nextStart = cueNeighborBounds?.nextStart ?? duration;
         if (mode === "move") {
-          cue.start = clamp(originalStart + deltaSeconds, 0, duration - cueDuration);
+          const snapped = snapTimelineRange(
+            originalStart + deltaSeconds,
+            cueDuration,
+            snapCandidates,
+            previousEnd,
+            nextStart - cueDuration,
+            moveEvent.altKey,
+          );
+          cue.start = snapped.start;
           cue.end = cue.start + cueDuration;
+          timelineSnapTime = snapped.snapTime;
         } else if (mode === "left") {
-          cue.start = clamp(originalStart + deltaSeconds, 0, cue.end - 0.1);
+          const snapped = snapTimelineValue(
+            originalStart + deltaSeconds,
+            snapCandidates,
+            previousEnd,
+            cue.end - subtitleMinimumDuration,
+            moveEvent.altKey,
+          );
+          cue.start = snapped.value;
+          timelineSnapTime = snapped.snapTime;
         } else {
-          cue.end = clamp(originalEnd + deltaSeconds, cue.start + 0.1, duration);
+          const snapped = snapTimelineValue(
+            originalEnd + deltaSeconds,
+            snapCandidates,
+            cue.start + subtitleMinimumDuration,
+            nextStart,
+            moveEvent.altKey,
+          );
+          cue.end = snapped.value;
+          timelineSnapTime = snapped.snapTime;
         }
         selectedCueId = cue.id;
       }
       if (source) {
         if (mode === "move") {
-          source.start = Math.max(0, originalStart + deltaSeconds);
+          const snapped = snapTimelineRange(
+            originalStart + deltaSeconds,
+            source.duration,
+            snapCandidates,
+            0,
+            Number.POSITIVE_INFINITY,
+            moveEvent.altKey,
+          );
+          source.start = snapped.start;
+          timelineSnapTime = snapped.snapTime;
           duration = Math.max(duration, source.start + source.duration);
         } else if (mode === "left") {
-          const newStart = clamp(
+          const snapped = snapTimelineValue(
             originalStart + deltaSeconds,
+            snapCandidates,
             0,
             originalEnd - 0.25,
+            moveEvent.altKey,
           );
-          source.duration = originalEnd - newStart;
-          source.start = newStart;
+          source.duration = originalEnd - snapped.value;
+          source.start = snapped.value;
+          timelineSnapTime = snapped.snapTime;
         } else {
-          source.duration = clamp(
-            originalEnd + deltaSeconds - source.start,
-            0.25,
-            duration - source.start,
+          const snapped = snapTimelineValue(
+            originalEnd + deltaSeconds,
+            snapCandidates,
+            source.start + 0.25,
+            duration,
+            moveEvent.altKey,
           );
+          source.duration = snapped.value - source.start;
+          timelineSnapTime = snapped.snapTime;
         }
         selectedSourceId = source.id;
       }
@@ -2270,6 +2504,7 @@ function setupEditor(project: EditorProject): void {
     const onUp = (): void => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      timelineSnapTime = null;
       renderSubtitleList();
       renderTimeline();
     };
@@ -2553,6 +2788,7 @@ function setupEditor(project: EditorProject): void {
         throw new Error(`Subtitle request returned ${response.status}`);
       }
       cues = parseSubtitleFile(await response.text());
+      normalizeSubtitleTiming();
       selectedCueId = cues[0]?.id || null;
       subtitlesReady = true;
       updateSaveAvailability();

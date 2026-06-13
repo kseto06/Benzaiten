@@ -2393,6 +2393,17 @@ body.is-resizing-timeline {
   pointer-events: none;
 }
 
+.timeline-snap-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 6;
+  width: 1px;
+  background: rgba(87, 184, 232, 0.95);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.55);
+  pointer-events: none;
+}
+
 .playhead::before {
   position: absolute;
   top: 0;
