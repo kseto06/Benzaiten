@@ -368,7 +368,7 @@ function setLandingStatus(message: string, isError = false): void {
 }
 
 function renderLanding(): void {
-  document.title = "Benzaiten | Karaoke Orchestration Video Maker";
+  document.title = "Benzaiten | AI-Powered Karaoke Orchestration Video Studio";
   app.innerHTML = landingPageHtml;
   setupLandingInteractions();
 }
