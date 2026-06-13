@@ -219,6 +219,52 @@ def build_video(
     return output_path
 
 
+def render_video_with_ass_subtitles(
+    video_path: str,
+    ass_path: str,
+    output_path: str,
+) -> Path:
+    """
+    Re-encode a video with the edited ASS subtitle track burned into its frames.
+    """
+    video_path = Path(video_path)
+    ass_path = Path(ass_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    escaped_ass_path = str(ass_path).replace("\\", "\\\\").replace(":", "\\:")
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-vf",
+        f"ass='{escaped_ass_path}'",
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        "-c:a",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffmpeg edited video rendering failed: {e}") from e
+
+    return output_path
+
+
 def convert_srt_to_vtt(srt_path: str, vtt_path: str) -> Path:
     vtt_path = Path(vtt_path)
     vtt_path.parent.mkdir(parents=True, exist_ok=True)

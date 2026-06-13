@@ -6,6 +6,7 @@ const GCS_BUCKET = "benzaiten-outputs";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 const PROJECT_STORAGE_KEY = "benzaiten-editor-project";
 const LOG_PREFIX = "[Benzaiten]";
+let landingDocumentListeners: AbortController | null = null;
 
 type JobStartResponse = {
   status: "queued";
@@ -21,8 +22,37 @@ type JobStatusResponse = {
   error?: string;
 };
 
+type SaveProjectResponse = {
+  status: "saved";
+  title: string;
+  media_object_name: string;
+  media_url: string;
+  render_source_object_name: string;
+  render_source_url: string;
+  subtitle_object_name: string;
+  subtitle_url: string;
+  generation: number;
+  cleanup_warning?: string;
+};
+
+type RenameProjectResponse = {
+  status: "renamed";
+  title: string;
+  media_object_name: string;
+  media_url: string;
+};
+
+type DeleteProjectResponse = {
+  status: "deleted";
+  job_id: string;
+  deleted_objects: number;
+};
+
 type GcsObject = {
   name: string;
+  updated?: string;
+  size?: string;
+  contentType?: string;
 };
 
 type GcsObjectListResponse = {
@@ -32,12 +62,23 @@ type GcsObjectListResponse = {
 
 type EditorProject = {
   title: string;
+  originalTitle?: string;
   jobId?: string;
   mediaUrl: string;
+  mediaObjectName?: string;
   subtitleUrl?: string;
+  subtitleObjectName?: string;
   mediaType: "video" | "audio";
   subtitleFontSize?: number;
   subtitleTransform?: SubtitleTransform;
+};
+
+type LibraryProject = {
+  title: string;
+  jobId: string;
+  mediaObject: GcsObject;
+  renderSourceObject?: GcsObject;
+  subtitleObject?: GcsObject;
 };
 
 type SubtitleTransform = {
@@ -117,6 +158,22 @@ function buildGcsObjectUrl(objectName: string): string {
     .map(segment => encodeURIComponent(segment))
     .join("/");
   return `https://storage.googleapis.com/${GCS_BUCKET}/${encodedName}`;
+}
+
+function getGcsObjectName(url?: string): string | undefined {
+  if (!url) {
+    return undefined;
+  }
+  try {
+    const parsedUrl = new URL(url);
+    const prefix = `/${GCS_BUCKET}/`;
+    if (!parsedUrl.pathname.startsWith(prefix)) {
+      return undefined;
+    }
+    return decodeURIComponent(parsedUrl.pathname.slice(prefix.length));
+  } catch {
+    return undefined;
+  }
 }
 
 function getObjectFilename(objectName: string): string {
@@ -204,7 +261,7 @@ async function listGcsObjects(prefix = "outputs/"): Promise<GcsObject[]> {
     const params = new URLSearchParams({
       prefix,
       maxResults: "1000",
-      fields: "items(name),nextPageToken",
+      fields: "items(name,updated,size,contentType),nextPageToken",
     });
     if (pageToken) {
       params.set("pageToken", pageToken);
@@ -223,6 +280,58 @@ async function listGcsObjects(prefix = "outputs/"): Promise<GcsObject[]> {
   } while (pageToken);
 
   return objects;
+}
+
+function getLibraryProjects(objects: GcsObject[]): LibraryProject[] {
+  return objects
+    .filter(object => (
+      isSearchableMediaObject(object.name)
+      && object.name.toLocaleLowerCase().endsWith(".mp4")
+    ))
+    .map(mediaObject => {
+      const jobId = mediaObject.name.split("/")[1];
+      const subtitleObjects = objects
+        .filter(object => (
+          object.name.startsWith(`outputs/${jobId}/`)
+          && object.name.toLocaleLowerCase().endsWith(".vtt")
+        ))
+        .sort((left, right) => {
+          const editorPriority = Number(right.name.includes("/editor/"))
+            - Number(left.name.includes("/editor/"));
+          return editorPriority || (
+            Date.parse(right.updated || "") - Date.parse(left.updated || "")
+          );
+        });
+      return {
+        title: filenameWithoutExtension(getObjectFilename(mediaObject.name)),
+        jobId,
+        mediaObject,
+        renderSourceObject: objects.find(
+          object => object.name === `outputs/${jobId}/editor/source.mp4`,
+        ),
+        subtitleObject: subtitleObjects[0],
+      };
+    })
+    .sort((left, right) => (
+      Date.parse(right.mediaObject.updated || "") - Date.parse(left.mediaObject.updated || "")
+    ));
+}
+
+function openLibraryProject(project: LibraryProject): void {
+  openEditor({
+    title: project.title,
+    originalTitle: project.title,
+    jobId: project.jobId,
+    mediaUrl: buildGcsObjectUrl(
+      project.renderSourceObject?.name || project.mediaObject.name,
+    ),
+    mediaObjectName: project.mediaObject.name,
+    subtitleUrl: project.subtitleObject
+      ? buildGcsObjectUrl(project.subtitleObject.name)
+      : undefined,
+    subtitleObjectName: project.subtitleObject?.name,
+    mediaType: "video",
+  });
 }
 
 function saveEditorProject(project: EditorProject): void {
@@ -263,6 +372,9 @@ function renderLanding(): void {
 }
 
 function setupLandingInteractions(): void {
+  landingDocumentListeners?.abort();
+  landingDocumentListeners = new AbortController();
+  const documentListenerOptions = { signal: landingDocumentListeners.signal };
   const fileInput = queryElement<HTMLInputElement>("#fileInput");
   const uploadZone = queryElement<HTMLDivElement>("#uploadZone");
   const selectedFile = queryElement<HTMLDivElement>("#selectedFile");
@@ -271,7 +383,28 @@ function setupLandingInteractions(): void {
   const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
   const searchInput = queryElement<HTMLInputElement>("#videoNameInput");
   const searchButton = queryElement<HTMLButtonElement>("#loadButton");
+  const libraryToggle = queryElement<HTMLButtonElement>("#libraryToggle");
+  const libraryGallery = queryElement<HTMLDivElement>("#libraryGallery");
+  const libraryStatus = queryElement<HTMLDivElement>("#libraryGalleryStatus");
+  const libraryGrid = queryElement<HTMLDivElement>("#libraryVideoGrid");
+  const deleteDialog = queryElement<HTMLDialogElement>("#deleteProjectDialog");
+  const deleteProjectName = queryElement<HTMLElement>("#deleteProjectName");
+  const cancelProjectDelete = queryElement<HTMLButtonElement>("#cancelProjectDelete");
+  const confirmProjectDelete = queryElement<HTMLButtonElement>("#confirmProjectDelete");
+  let libraryProjects: LibraryProject[] | null = null;
+  let pendingDelete: { project: LibraryProject; index: number } | null = null;
   setupWorkflowZoom();
+
+  const closeLibraryMenus = (): void => {
+    for (const openMenu of libraryGrid.querySelectorAll<HTMLDivElement>(
+      ".library-video-menu:not([hidden])",
+    )) {
+      openMenu.hidden = true;
+      openMenu.parentElement
+        ?.querySelector<HTMLButtonElement>('[data-library-action="menu"]')
+        ?.setAttribute("aria-expanded", "false");
+    }
+  };
 
   const showSelectedFile = (): void => {
     const file = fileInput.files?.[0];
@@ -314,6 +447,402 @@ function setupLandingInteractions(): void {
       void handleLibrarySearch();
     }
   });
+
+  const renderLibrary = (projects: LibraryProject[]): void => {
+    libraryStatus.hidden = projects.length > 0;
+    if (!projects.length) {
+      libraryStatus.textContent = "No completed videos were found.";
+    }
+    libraryGrid.innerHTML = projects.map((project, index) => `
+      <article
+        class="library-video-card"
+        data-library-project="${index}"
+      >
+        <div class="library-video-thumbnail">
+          <button
+            class="library-video-open"
+            type="button"
+            data-library-action="edit"
+            aria-label="Open ${escapeHtml(project.title)} in the editor"
+          >
+            <video
+              src="${buildGcsObjectUrl(project.mediaObject.name)}"
+              preload="metadata"
+              muted
+              playsinline
+            ></video>
+          </button>
+          <span class="library-video-duration">--:--</span>
+          <div class="library-video-actions">
+            <a
+              class="library-video-action"
+              href="${API_BASE_URL}/projects/download?source_blob_name=${
+                encodeURIComponent(project.mediaObject.name)
+              }"
+              aria-label="Download ${escapeHtml(project.title)} as MP4"
+              title="Download MP4"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3v11m0 0 4-4m-4 4-4-4M5 18v2h14v-2"></path>
+              </svg>
+            </a>
+            <button
+              class="library-video-action"
+              type="button"
+              data-library-action="menu"
+              aria-label="More options for ${escapeHtml(project.title)}"
+              aria-expanded="false"
+              aria-haspopup="menu"
+              title="More options"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="5" r="1.5"></circle>
+                <circle cx="12" cy="12" r="1.5"></circle>
+                <circle cx="12" cy="19" r="1.5"></circle>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <span class="library-video-title">${escapeHtml(project.title)}</span>
+        <div class="library-video-rename" hidden>
+          <input
+            class="library-video-rename-input"
+            type="text"
+            value="${escapeHtml(project.title)}"
+            maxlength="180"
+            aria-label="New project name"
+          />
+          <button
+            type="button"
+            data-library-action="rename-save"
+            aria-label="Save project name"
+            title="Save"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m5 12 4 4L19 6"></path>
+            </svg>
+          </button>
+          <button
+            type="button"
+            data-library-action="rename-cancel"
+            aria-label="Cancel rename"
+            title="Cancel"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m6 6 12 12M18 6 6 18"></path>
+            </svg>
+          </button>
+        </div>
+        <span class="library-video-meta">${
+          project.mediaObject.updated
+            ? `Updated ${new Date(project.mediaObject.updated).toLocaleDateString()}`
+            : "Ready to edit"
+        }</span>
+        <div class="library-video-menu" hidden>
+          <button type="button" data-library-action="edit">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="6" cy="7" r="3"></circle>
+              <circle cx="6" cy="17" r="3"></circle>
+              <path d="m8.5 8.5 10 8M8.5 15.5l10-8"></path>
+            </svg>
+            Edit
+          </button>
+          <button type="button" data-library-action="rename">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m4 20 4.5-1 10-10-3.5-3.5-10 10L4 20Z"></path>
+              <path d="m13.5 6.5 3.5 3.5"></path>
+            </svg>
+            Rename
+          </button>
+          <button class="is-danger" type="button" data-library-action="delete">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7"></path>
+              <path d="M10 11v5m4-5v5"></path>
+            </svg>
+            Delete
+          </button>
+        </div>
+      </article>
+    `).join("");
+
+    for (const video of libraryGrid.querySelectorAll<HTMLVideoElement>("video")) {
+      video.addEventListener("loadedmetadata", () => {
+        const durationLabel = video.closest(".library-video-thumbnail")
+          ?.querySelector<HTMLElement>(".library-video-duration");
+        if (durationLabel && Number.isFinite(video.duration)) {
+          durationLabel.textContent = formatTime(video.duration);
+        }
+        video.currentTime = Math.min(1, Math.max(0, video.duration * 0.08));
+      }, { once: true });
+    }
+  };
+
+  const cancelInlineRename = (card: HTMLElement): void => {
+    const projectIndex = Number(card.dataset.libraryProject);
+    const project = libraryProjects?.[projectIndex];
+    const title = card.querySelector<HTMLElement>(".library-video-title");
+    const editor = card.querySelector<HTMLDivElement>(".library-video-rename");
+    const input = card.querySelector<HTMLInputElement>(".library-video-rename-input");
+    if (!project || !title || !editor || !input || editor.hidden) {
+      return;
+    }
+    input.value = project.title;
+    input.disabled = false;
+    for (const button of editor.querySelectorAll<HTMLButtonElement>("button")) {
+      button.disabled = false;
+    }
+    editor.hidden = true;
+    title.hidden = false;
+    card.classList.remove("is-renaming");
+  };
+
+  const submitInlineRename = async (
+    card: HTMLElement,
+    project: LibraryProject,
+  ): Promise<void> => {
+    const editor = queryElement<HTMLDivElement>(".library-video-rename", card);
+    const input = queryElement<HTMLInputElement>(".library-video-rename-input", editor);
+    const nextTitle = input.value.trim();
+    if (!nextTitle || nextTitle === project.title) {
+      cancelInlineRename(card);
+      return;
+    }
+
+    input.disabled = true;
+    for (const button of editor.querySelectorAll<HTMLButtonElement>("button")) {
+      button.disabled = true;
+    }
+    setLandingStatus(`Renaming "${project.title}"...`);
+    try {
+      const response = await fetch(`${API_BASE_URL}/projects/rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_blob_name: project.mediaObject.name,
+          title: nextTitle,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await getApiError(response));
+      }
+      const renamed = await response.json() as RenameProjectResponse;
+      project.title = renamed.title;
+      project.mediaObject = {
+        ...project.mediaObject,
+        name: renamed.media_object_name,
+        updated: new Date().toISOString(),
+      };
+      renderLibrary(libraryProjects || []);
+      setLandingStatus(`Renamed project to "${renamed.title}".`);
+    } catch (error) {
+      input.disabled = false;
+      for (const button of editor.querySelectorAll<HTMLButtonElement>("button")) {
+        button.disabled = false;
+      }
+      input.focus();
+      input.select();
+      const message = error instanceof Error ? error.message : String(error);
+      setLandingStatus(`Rename failed: ${message}`, true);
+    }
+  };
+
+  const closeDeleteDialog = (): void => {
+    pendingDelete = null;
+    if (deleteDialog.open) {
+      deleteDialog.close();
+    }
+  };
+
+  const deletePendingProject = async (): Promise<void> => {
+    if (!pendingDelete) {
+      return;
+    }
+    const { project, index: removedIndex } = pendingDelete;
+    pendingDelete = null;
+    deleteDialog.close();
+
+    libraryProjects = (libraryProjects || []).filter(
+      item => item.jobId !== project.jobId,
+    );
+    renderLibrary(libraryProjects);
+    setLandingStatus(`Deleting "${project.title}" and its related assets...`);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/projects/${encodeURIComponent(project.jobId)}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) {
+        throw new Error(await getApiError(response));
+      }
+      const deleted = await response.json() as DeleteProjectResponse;
+      setLandingStatus(
+        `Deleted "${project.title}" and ${deleted.deleted_objects} related assets.`,
+      );
+    } catch (error) {
+      const restoredProjects = [...(libraryProjects || [])];
+      if (!restoredProjects.some(item => item.jobId === project.jobId)) {
+        restoredProjects.splice(
+          Math.min(removedIndex, restoredProjects.length),
+          0,
+          project,
+        );
+      }
+      libraryProjects = restoredProjects;
+      renderLibrary(libraryProjects);
+      const message = error instanceof Error ? error.message : String(error);
+      setLandingStatus(`Delete failed: ${message}`, true);
+    }
+  };
+
+  cancelProjectDelete.addEventListener("click", closeDeleteDialog);
+  confirmProjectDelete.addEventListener("click", () => {
+    void deletePendingProject();
+  });
+  deleteDialog.addEventListener("click", event => {
+    if (event.target === deleteDialog) {
+      closeDeleteDialog();
+    }
+  });
+  deleteDialog.addEventListener("cancel", event => {
+    event.preventDefault();
+    closeDeleteDialog();
+  });
+
+  libraryToggle.addEventListener("click", async () => {
+    const isOpening = libraryToggle.getAttribute("aria-expanded") !== "true";
+    libraryToggle.setAttribute("aria-expanded", String(isOpening));
+    libraryGallery.hidden = !isOpening;
+    if (!isOpening || libraryProjects) {
+      return;
+    }
+
+    libraryStatus.hidden = false;
+    libraryStatus.classList.remove("is-error");
+    libraryStatus.textContent = "Loading videos from GCS...";
+    try {
+      libraryProjects = getLibraryProjects(await listGcsObjects());
+      libraryStatus.textContent = libraryProjects.length
+        ? ""
+        : "No completed videos were found.";
+      renderLibrary(libraryProjects);
+    } catch (error) {
+      libraryStatus.classList.add("is-error");
+      libraryStatus.textContent = error instanceof Error
+        ? error.message
+        : "Unable to load the project library.";
+    }
+  });
+
+  libraryGrid.addEventListener("click", async event => {
+    const target = event.target as HTMLElement;
+    const card = target.closest<HTMLElement>("[data-library-project]");
+    const projectIndex = Number(card?.dataset.libraryProject);
+    const project = libraryProjects?.[projectIndex];
+    const actionElement = target.closest<HTMLElement>("[data-library-action]");
+    const action = actionElement?.dataset.libraryAction;
+    if (!project || !card || !action) {
+      return;
+    }
+
+    if (action === "menu") {
+      const menu = queryElement<HTMLDivElement>(".library-video-menu", card);
+      const menuButton = actionElement as HTMLButtonElement;
+      const shouldOpen = menu.hidden;
+      closeLibraryMenus();
+      menu.hidden = !shouldOpen;
+      menuButton.setAttribute("aria-expanded", String(shouldOpen));
+      return;
+    }
+
+    if (action === "edit") {
+      openLibraryProject(project);
+      return;
+    }
+
+    if (action === "rename") {
+      closeLibraryMenus();
+      for (const otherCard of libraryGrid.querySelectorAll<HTMLElement>(
+        ".library-video-card.is-renaming",
+      )) {
+        cancelInlineRename(otherCard);
+      }
+      const title = queryElement<HTMLElement>(".library-video-title", card);
+      const editor = queryElement<HTMLDivElement>(".library-video-rename", card);
+      const input = queryElement<HTMLInputElement>(".library-video-rename-input", editor);
+      title.hidden = true;
+      editor.hidden = false;
+      card.classList.add("is-renaming");
+      input.value = project.title;
+      input.focus();
+      input.select();
+      return;
+    }
+
+    if (action === "rename-save") {
+      await submitInlineRename(card, project);
+      return;
+    }
+
+    if (action === "rename-cancel") {
+      cancelInlineRename(card);
+      return;
+    }
+
+    if (action === "delete") {
+      closeLibraryMenus();
+      pendingDelete = { project, index: projectIndex };
+      deleteProjectName.textContent = `"${project.title}"`;
+      deleteDialog.showModal();
+      cancelProjectDelete.focus();
+    }
+  });
+
+  libraryGrid.addEventListener("keydown", event => {
+    const input = (event.target as HTMLElement).closest<HTMLInputElement>(
+      ".library-video-rename-input",
+    );
+    const card = input?.closest<HTMLElement>("[data-library-project]");
+    const project = libraryProjects?.[Number(card?.dataset.libraryProject)];
+    if (!input || !card || !project) {
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void submitInlineRename(card, project);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelInlineRename(card);
+    }
+  });
+
+  document.addEventListener("click", event => {
+    const target = event.target as Element;
+    if (
+      target.closest(".library-video-menu")
+      || target.closest('[data-library-action="menu"]')
+      || target.closest(".library-video-rename")
+    ) {
+      return;
+    }
+    closeLibraryMenus();
+    for (const card of libraryGrid.querySelectorAll<HTMLElement>(
+      ".library-video-card.is-renaming",
+    )) {
+      cancelInlineRename(card);
+    }
+  }, documentListenerOptions);
+
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      closeLibraryMenus();
+      for (const card of libraryGrid.querySelectorAll<HTMLElement>(
+        ".library-video-card.is-renaming",
+      )) {
+        cancelInlineRename(card);
+      }
+    }
+  }, documentListenerOptions);
 }
 
 function setupWorkflowZoom(): void {
@@ -608,9 +1137,12 @@ async function handleRunInference(): Promise<void> {
     await new Promise(resolve => window.setTimeout(resolve, 650));
     openEditor({
       title: projectNameInput.value.trim() || filenameWithoutExtension(file.name),
+      originalTitle: projectNameInput.value.trim() || filenameWithoutExtension(file.name),
       jobId: startData.job_id,
       mediaUrl,
+      mediaObjectName: getGcsObjectName(mediaUrl),
       subtitleUrl: completed.subtitle_url,
+      subtitleObjectName: getGcsObjectName(completed.subtitle_url),
       mediaType: completed.video_url ? "video" : "audio",
     });
   } catch (error) {
@@ -657,12 +1189,11 @@ async function handleLibrarySearch(): Promise<void> {
   button.disabled = true;
   setLandingStatus(`Searching the project library for "${query}"...`);
   try {
-    const objects = await listGcsObjects();
-    const matches = objects
-      .filter(object => isSearchableMediaObject(object.name))
-      .map(object => ({
-        object,
-        score: getFuzzyMatchScore(query, getObjectFilename(object.name)),
+    const projects = getLibraryProjects(await listGcsObjects());
+    const matches = projects
+      .map(project => ({
+        project,
+        score: getFuzzyMatchScore(query, project.title),
       }))
       .sort((left, right) => right.score - left.score);
     const match = matches[0];
@@ -670,27 +1201,13 @@ async function handleLibrarySearch(): Promise<void> {
       throw new Error(`No close match was found for "${query}"`);
     }
 
-    const jobId = match.object.name.split("/")[1];
-    const subtitle = objects.find(object => (
-      object.name.startsWith(`outputs/${jobId}/`)
-      && object.name.endsWith("/vocals.vtt")
-    ));
-    const filename = getObjectFilename(match.object.name);
-    const isVideo = filename.toLocaleLowerCase().endsWith(".mp4");
     console.log(`${LOG_PREFIX} Library match`, {
       query,
       score: match.score,
-      media: match.object.name,
-      subtitle: subtitle?.name,
+      media: match.project.mediaObject.name,
+      subtitle: match.project.subtitleObject?.name,
     });
-
-    openEditor({
-      title: filenameWithoutExtension(filename),
-      jobId,
-      mediaUrl: buildGcsObjectUrl(match.object.name),
-      subtitleUrl: subtitle ? buildGcsObjectUrl(subtitle.name) : undefined,
-      mediaType: isVideo ? "video" : "audio",
-    });
+    openLibraryProject(match.project);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setLandingStatus(message, true);
@@ -782,6 +1299,8 @@ function setupEditor(project: EditorProject): void {
   const timelineResizer = queryElement<HTMLDivElement>("#timelineResizer");
   const timelineCollapseButton = queryElement<HTMLButtonElement>("#timelineCollapseButton");
   const projectTitleInput = queryElement<HTMLInputElement>("#projectTitleInput");
+  const saveChangesButton = queryElement<HTMLButtonElement>("#saveChangesButton");
+  const editorSaveStatus = queryElement<HTMLSpanElement>("#editorSaveStatus");
   const subtitleFontSizeInput = queryElement<HTMLInputElement>("#subtitleFontSizeInput");
   const media = queryElement<HTMLVideoElement>("#editorMedia");
   const previewStage = queryElement<HTMLDivElement>(".preview-stage");
@@ -805,6 +1324,8 @@ function setupEditor(project: EditorProject): void {
   let activeCueId: string | null = null;
   let previousSidebarWidth = 350;
   let previousTimelineHeight = 300;
+  let mediaReady = false;
+  let subtitlesReady = false;
   const subtitleTransform: SubtitleTransform = {
     x: project.subtitleTransform?.x ?? 50,
     y: project.subtitleTransform?.y ?? 82,
@@ -817,6 +1338,14 @@ function setupEditor(project: EditorProject): void {
   media.style.display = project.mediaType === "video" ? "block" : "none";
   audioPreview.classList.toggle("is-visible", project.mediaType === "audio");
   overlay.style.fontSize = `${project.subtitleFontSize || 30}px`;
+
+  const updateSaveAvailability = (): void => {
+    saveChangesButton.disabled = (
+      project.mediaType !== "video"
+      || !mediaReady
+      || !subtitlesReady
+    );
+  };
 
   const persistSubtitleTransform = (): void => {
     project.subtitleTransform = { ...subtitleTransform };
@@ -1310,6 +1839,76 @@ function setupEditor(project: EditorProject): void {
     URL.revokeObjectURL(link.href);
   });
 
+  saveChangesButton.addEventListener("click", async () => {
+    const sourceBlobName = project.mediaObjectName || getGcsObjectName(project.mediaUrl);
+    const hasAddedMedia = sources.some(source => !source.isPrimary);
+    const hasTimelineMediaChanges = sources.some(source => (
+      source.isPrimary
+      && (Math.abs(source.start) > 0.01 || Math.abs(source.duration - media.duration) > 0.05)
+    ));
+
+    editorSaveStatus.classList.remove("is-error");
+    if (project.mediaType !== "video" || !sourceBlobName) {
+      editorSaveStatus.textContent = "Only GCS video projects can currently be saved.";
+      editorSaveStatus.classList.add("is-error");
+      return;
+    }
+    if (hasAddedMedia || hasTimelineMediaChanges) {
+      editorSaveStatus.textContent = (
+        "Saving added or trimmed media tracks is not supported yet. "
+        + "Reset those tracks before saving."
+      );
+      editorSaveStatus.classList.add("is-error");
+      return;
+    }
+
+    saveChangesButton.disabled = true;
+    saveChangesButton.textContent = "Saving...";
+    editorSaveStatus.textContent = "";
+    try {
+      const response = await fetch(`${API_BASE_URL}/projects/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_blob_name: sourceBlobName,
+          title: project.title,
+          cues: cues.map(cue => ({
+            start: cue.start,
+            end: cue.end,
+            text: cue.text,
+          })),
+          subtitle_font_size: project.subtitleFontSize || 30,
+          subtitle_transform: subtitleTransform,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await getApiError(response));
+      }
+
+      const saved = await response.json() as SaveProjectResponse;
+      project.title = saved.title;
+      project.originalTitle = saved.title;
+      project.mediaObjectName = saved.media_object_name;
+      project.mediaUrl = saved.render_source_url;
+      project.subtitleObjectName = saved.subtitle_object_name;
+      project.subtitleUrl = saved.subtitle_url;
+      projectTitleInput.value = saved.title;
+      document.title = `${saved.title} | Benzaiten Editor`;
+      saveEditorProject(project);
+      editorSaveStatus.textContent = saved.cleanup_warning || "Changes saved!";
+      editorSaveStatus.classList.toggle("is-error", Boolean(saved.cleanup_warning));
+    } catch (error) {
+      editorSaveStatus.textContent = error instanceof Error
+        ? error.message
+        : "Unable to save changes.";
+      editorSaveStatus.classList.add("is-error");
+      console.error(`${LOG_PREFIX} Project save failed`, error);
+    } finally {
+      updateSaveAvailability();
+      saveChangesButton.textContent = "Save changes";
+    }
+  });
+
   queryElement<HTMLButtonElement>("#backButton").addEventListener("click", () => {
     window.location.hash = "";
   });
@@ -1353,6 +1952,8 @@ function setupEditor(project: EditorProject): void {
   media.addEventListener("seeked", updatePreview);
   media.addEventListener("loadedmetadata", () => {
     duration = Number.isFinite(media.duration) ? media.duration : duration;
+    mediaReady = true;
+    updateSaveAvailability();
     const primarySource: TimelineSource = {
       id: crypto.randomUUID(),
       name: project.title,
@@ -1664,6 +2265,8 @@ function setupEditor(project: EditorProject): void {
   async function loadSubtitles(): Promise<void> {
     if (!project.subtitleUrl) {
       cues = [];
+      subtitlesReady = true;
+      updateSaveAvailability();
       renderSubtitleList();
       renderTimeline();
       return;
@@ -1675,9 +2278,14 @@ function setupEditor(project: EditorProject): void {
       }
       cues = parseSubtitleFile(await response.text());
       selectedCueId = cues[0]?.id || null;
+      subtitlesReady = true;
+      updateSaveAvailability();
     } catch (error) {
       console.error(`${LOG_PREFIX} Could not load subtitles`, error);
       cues = [];
+      subtitlesReady = false;
+      editorSaveStatus.textContent = "Subtitles could not be loaded; saving is disabled.";
+      editorSaveStatus.classList.add("is-error");
     }
     renderSubtitleList();
     renderTimeline();
