@@ -71,6 +71,8 @@ type EditorProject = {
   mediaType: "video" | "audio";
   subtitleFontSize?: number;
   subtitleTransform?: SubtitleTransform;
+  volumePercent?: number;
+  playbackRate?: number;
 };
 
 type LibraryProject = {
@@ -1289,6 +1291,8 @@ function setupEditor(project: EditorProject): void {
   const editorSaveStatus = queryElement<HTMLSpanElement>("#editorSaveStatus");
   const subtitleFontSizeInput = queryElement<HTMLInputElement>("#subtitleFontSizeInput");
   const media = queryElement<HTMLVideoElement>("#editorMedia");
+  const previewArea = queryElement<HTMLDivElement>(".preview-area");
+  const previewStack = queryElement<HTMLDivElement>(".preview-stack");
   const previewStage = queryElement<HTMLDivElement>(".preview-stage");
   const audioPreview = queryElement<HTMLDivElement>("#audioPreview");
   const audioPreviewTitle = queryElement<HTMLElement>("#audioPreview strong");
@@ -1301,6 +1305,15 @@ function setupEditor(project: EditorProject): void {
   const playButton = queryElement<HTMLButtonElement>("#playButton");
   const timeDisplay = queryElement<HTMLSpanElement>("#timeDisplay");
   const zoomInput = queryElement<HTMLInputElement>("#zoomInput");
+  const mediaAdjustments = queryElement<HTMLDivElement>("#mediaAdjustments");
+  const volumeButton = queryElement<HTMLButtonElement>("#volumeButton");
+  const speedButton = queryElement<HTMLButtonElement>("#speedButton");
+  const volumePopover = queryElement<HTMLDivElement>("#volumePopover");
+  const speedPopover = queryElement<HTMLDivElement>("#speedPopover");
+  const volumeSlider = queryElement<HTMLInputElement>("#volumeSlider");
+  const volumeInput = queryElement<HTMLInputElement>("#volumeInput");
+  const speedSlider = queryElement<HTMLInputElement>("#speedSlider");
+  const speedInput = queryElement<HTMLInputElement>("#speedInput");
   let cues: SubtitleCue[] = [];
   let sources: TimelineSource[] = [];
   let duration = 120;
@@ -1312,6 +1325,11 @@ function setupEditor(project: EditorProject): void {
   let previousTimelineHeight = 300;
   let mediaReady = false;
   let subtitlesReady = false;
+  let volumePercent = clamp(project.volumePercent ?? 100, 0, 200);
+  let playbackRate = clamp(project.playbackRate ?? 1, 0.25, 2);
+  let audioContext: AudioContext | null = null;
+  let mediaGain: GainNode | null = null;
+  const previewReferenceWidth = 960;
   const subtitleTransform: SubtitleTransform = {
     x: project.subtitleTransform?.x ?? 50,
     y: project.subtitleTransform?.y ?? 82,
@@ -1323,7 +1341,65 @@ function setupEditor(project: EditorProject): void {
   media.src = project.mediaUrl;
   media.style.display = project.mediaType === "video" ? "block" : "none";
   audioPreview.classList.toggle("is-visible", project.mediaType === "audio");
-  overlay.style.fontSize = `${project.subtitleFontSize || 30}px`;
+  volumeSlider.value = String(volumePercent);
+  volumeInput.value = String(Math.round(volumePercent));
+  speedSlider.value = playbackRate.toFixed(2);
+  speedInput.value = playbackRate.toFixed(2);
+
+  const ensureMediaGain = (): GainNode | null => {
+    if (mediaGain) {
+      return mediaGain;
+    }
+    try {
+      audioContext = new AudioContext();
+      const source = audioContext.createMediaElementSource(media);
+      mediaGain = audioContext.createGain();
+      source.connect(mediaGain).connect(audioContext.destination);
+      media.volume = 1;
+      return mediaGain;
+    } catch (error) {
+      console.error(`${LOG_PREFIX} Could not initialize amplified volume control`, error);
+      return null;
+    }
+  };
+
+  const applyVolume = (value: number, syncNumberInput = true): void => {
+    volumePercent = clamp(Math.round(value), 0, 200);
+    const gain = ensureMediaGain();
+    if (gain) {
+      gain.gain.value = volumePercent / 100;
+      void audioContext?.resume();
+    } else {
+      media.volume = Math.min(1, volumePercent / 100);
+    }
+    for (const source of sources) {
+      if (source.element) {
+        source.element.volume = Math.min(1, volumePercent / 100);
+      }
+    }
+    volumeSlider.value = String(volumePercent);
+    if (syncNumberInput) {
+      volumeInput.value = String(volumePercent);
+    }
+    project.volumePercent = volumePercent;
+    saveEditorProject(project);
+  };
+
+  const applyPlaybackRate = (value: number, syncNumberInput = true): void => {
+    playbackRate = Math.round(clamp(value, 0.25, 2) * 100) / 100;
+    media.playbackRate = playbackRate;
+    for (const source of sources) {
+      if (source.element) {
+        source.element.playbackRate = playbackRate;
+      }
+    }
+    speedSlider.value = playbackRate.toFixed(2);
+    if (syncNumberInput) {
+      speedInput.value = playbackRate.toFixed(2);
+    }
+    project.playbackRate = playbackRate;
+    saveEditorProject(project);
+  };
 
   const updateSaveAvailability = (): void => {
     saveChangesButton.disabled = (
@@ -1348,7 +1424,18 @@ function setupEditor(project: EditorProject): void {
     );
   };
 
+  const updateSubtitlePreviewRendering = (): void => {
+    const previewScale = Math.max(
+      0.1,
+      previewStage.getBoundingClientRect().width / previewReferenceWidth,
+    );
+    const fontSize = project.subtitleFontSize || 30;
+    overlay.style.setProperty("--subtitle-preview-scale", String(previewScale));
+    overlay.style.fontSize = `${fontSize * previewScale}px`;
+  };
+
   applySubtitleTransform();
+  updateSubtitlePreviewRendering();
 
   const getTimelineWidth = (): number => Math.max(900, Math.ceil(duration * zoom));
   const pixelsPerSecond = (): number => getTimelineWidth() / duration;
@@ -1393,6 +1480,8 @@ function setupEditor(project: EditorProject): void {
       }
       const sourceTime = currentTime - source.start;
       const shouldPlay = sourceTime >= 0 && sourceTime <= source.duration && !media.paused;
+      source.element.playbackRate = playbackRate;
+      source.element.volume = Math.min(1, volumePercent / 100);
       if (shouldPlay) {
         if (Math.abs(source.element.currentTime - sourceTime) > 0.35) {
           source.element.currentTime = sourceTime;
@@ -1639,7 +1728,7 @@ function setupEditor(project: EditorProject): void {
   subtitleFontSizeInput.addEventListener("input", () => {
     const fontSize = clamp(Number(subtitleFontSizeInput.value) || 30, 12, 72);
     project.subtitleFontSize = fontSize;
-    overlay.style.fontSize = `${fontSize}px`;
+    updateSubtitlePreviewRendering();
     saveEditorProject(project);
   });
 
@@ -1935,6 +2024,8 @@ function setupEditor(project: EditorProject): void {
 
   playButton.addEventListener("click", () => {
     if (media.paused) {
+      applyVolume(volumePercent);
+      applyPlaybackRate(playbackRate);
       void media.play();
     } else {
       media.pause();
@@ -1946,6 +2037,60 @@ function setupEditor(project: EditorProject): void {
   queryElement<HTMLButtonElement>("#skipForwardButton").addEventListener("click", () => {
     media.currentTime = Math.min(duration, media.currentTime + 5);
   });
+
+  const closeMediaPopovers = (): void => {
+    volumePopover.hidden = true;
+    speedPopover.hidden = true;
+    volumeButton.setAttribute("aria-expanded", "false");
+    speedButton.setAttribute("aria-expanded", "false");
+  };
+
+  volumeButton.addEventListener("click", event => {
+    event.stopPropagation();
+    const shouldOpen = volumePopover.hidden;
+    closeMediaPopovers();
+    volumePopover.hidden = !shouldOpen;
+    volumeButton.setAttribute("aria-expanded", String(shouldOpen));
+  });
+  speedButton.addEventListener("click", event => {
+    event.stopPropagation();
+    const shouldOpen = speedPopover.hidden;
+    closeMediaPopovers();
+    speedPopover.hidden = !shouldOpen;
+    speedButton.setAttribute("aria-expanded", String(shouldOpen));
+  });
+  mediaAdjustments.addEventListener("click", event => {
+    event.stopPropagation();
+  });
+  volumeSlider.addEventListener("input", () => {
+    applyVolume(Number(volumeSlider.value));
+  });
+  volumeInput.addEventListener("input", () => {
+    if (volumeInput.value !== "") {
+      applyVolume(Number(volumeInput.value), false);
+    }
+  });
+  volumeInput.addEventListener("change", () => {
+    applyVolume(Number(volumeInput.value) || 0);
+  });
+  speedSlider.addEventListener("input", () => {
+    applyPlaybackRate(Number(speedSlider.value));
+  });
+  speedInput.addEventListener("input", () => {
+    if (speedInput.value !== "") {
+      applyPlaybackRate(Number(speedInput.value), false);
+    }
+  });
+  speedInput.addEventListener("change", () => {
+    applyPlaybackRate(Number(speedInput.value) || 1);
+  });
+  document.addEventListener("click", closeMediaPopovers);
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      closeMediaPopovers();
+    }
+  });
+
   zoomInput.addEventListener("input", () => {
     zoom = Number(zoomInput.value);
     renderTimeline();
@@ -1964,6 +2109,7 @@ function setupEditor(project: EditorProject): void {
   media.addEventListener("seeked", updatePreview);
   media.addEventListener("loadedmetadata", () => {
     duration = Number.isFinite(media.duration) ? media.duration : duration;
+    media.playbackRate = playbackRate;
     mediaReady = true;
     updateSaveAvailability();
     const primarySource: TimelineSource = {
@@ -2130,6 +2276,32 @@ function setupEditor(project: EditorProject): void {
     panelCollapseButton.innerHTML = `<span aria-hidden="true">&lsaquo;</span>`;
   };
 
+  const fitPreviewToAvailableSpace = (): void => {
+    const previewStyles = window.getComputedStyle(previewArea);
+    const horizontalPadding = (
+      Number.parseFloat(previewStyles.paddingLeft)
+      + Number.parseFloat(previewStyles.paddingRight)
+    );
+    const verticalPadding = (
+      Number.parseFloat(previewStyles.paddingTop)
+      + Number.parseFloat(previewStyles.paddingBottom)
+    );
+    const stackGap = Number.parseFloat(window.getComputedStyle(previewStack).rowGap) || 0;
+    const controlsHeight = mediaAdjustments.getBoundingClientRect().height;
+    const availableWidth = Math.max(240, previewArea.clientWidth - horizontalPadding);
+    const availableVideoHeight = Math.max(
+      180,
+      previewArea.clientHeight - verticalPadding - stackGap - controlsHeight,
+    );
+    const fittedWidth = Math.min(availableWidth, availableVideoHeight * 16 / 9);
+    previewStage.style.width = `${fittedWidth}px`;
+    updateSubtitlePreviewRendering();
+  };
+
+  window.requestAnimationFrame(fitPreviewToAvailableSpace);
+  const previewResizeObserver = new ResizeObserver(updateSubtitlePreviewRendering);
+  previewResizeObserver.observe(previewStage);
+
   panelResizer.addEventListener("pointerdown", event => {
     if ((event.target as HTMLElement).closest("button")) {
       return;
@@ -2169,10 +2341,37 @@ function setupEditor(project: EditorProject): void {
   });
 
   const setTimelineHeight = (height: number): void => {
-    const maximum = Math.max(220, editorWorkspace.clientHeight * 0.7);
+    const workspaceHeight = editorWorkspace.clientHeight;
+    const transportHeight = queryElement<HTMLDivElement>(
+      ".transport-bar",
+      editorWorkspace,
+    ).getBoundingClientRect().height;
+    const resizerHeight = timelineResizer.getBoundingClientRect().height;
+    const previewStyles = window.getComputedStyle(previewArea);
+    const previewVerticalPadding = (
+      Number.parseFloat(previewStyles.paddingTop)
+      + Number.parseFloat(previewStyles.paddingBottom)
+    );
+    const mediaControlsHeight = mediaAdjustments.getBoundingClientRect().height;
+    const stackGap = Number.parseFloat(window.getComputedStyle(previewStack).rowGap) || 0;
+    const minimumVideoHeight = Math.min(
+      280,
+      Math.max(180, previewStage.getBoundingClientRect().width * 9 / 16 * 0.45),
+    );
+    const minimumPreviewHeight = (
+      previewVerticalPadding
+      + minimumVideoHeight
+      + stackGap
+      + mediaControlsHeight
+    );
+    const maximum = Math.max(
+      150,
+      workspaceHeight - transportHeight - resizerHeight - minimumPreviewHeight,
+    );
     const clampedHeight = clamp(height, 150, maximum);
     editorWorkspace.style.setProperty("--timeline-panel-height", `${clampedHeight}px`);
     previousTimelineHeight = clampedHeight;
+    window.requestAnimationFrame(fitPreviewToAvailableSpace);
     editorWorkspace.classList.remove("is-timeline-collapsed");
     timelineCollapseButton.title = "Collapse timeline";
     timelineCollapseButton.setAttribute("aria-label", "Collapse timeline");
@@ -2216,6 +2415,8 @@ function setupEditor(project: EditorProject): void {
       setTimelineHeight(previousTimelineHeight);
     }
   });
+
+  window.addEventListener("resize", fitPreviewToAvailableSpace);
 
   for (const eventName of ["dragenter", "dragover"]) {
     timelineShell.addEventListener(eventName, event => {
