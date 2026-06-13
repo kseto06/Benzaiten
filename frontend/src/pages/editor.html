@@ -68,6 +68,13 @@
         <div class="preview-stack">
           <div class="preview-stage">
             <video id="editorMedia" crossorigin="anonymous" preload="metadata"></video>
+            <div
+              class="video-loading-spinner"
+              id="videoLoadingSpinner"
+              role="status"
+              aria-label="Video loading"
+              hidden
+            ></div>
             <div class="audio-preview" id="audioPreview">
               <div class="audio-disc">B</div>
               <strong>{{PROJECT_TITLE}}</strong>
