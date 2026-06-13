@@ -20,10 +20,13 @@
           Browser-based karaoke studio
         </div>
         <h1 class="hero-title">Benzaiten</h1>
-        <p class="hero-subtitle">Karaoke Orchestration Video Maker</p>
+        <p class="hero-subtitle">Karaoke Video Studio by AI-Powered Orchestration </p>
         <p class="hero-copy">
-          Turn a performance into separated audio, timed lyrics, and an editable
-          karaoke video. Build in the cloud, then refine every cue in the browser.
+          Turn performances into separated audio, timed lyrics, and editable
+          karaoke videos.
+          <br>
+          Run powerful AI models in the cloud to generate karaoke videos, 
+          then refine them in our video editing browser.
         </p>
         <div class="hero-actions">
           <a class="button" href="#create">Create karaoke video</a>
@@ -39,7 +42,8 @@
           <h2 class="section-title">From source media to an editable timeline.</h2>
           <p class="section-description">
             Upload a performance and Benzaiten will orchestrate source separation,
-            optional crowd reduction, transcription, and final composition.
+            crowd reduction, transcription, and final composition 
+            to output a high-quality karaoke video version.
           </p>
         </div>
 
@@ -79,7 +83,7 @@
                   <input
                     class="input"
                     id="projectNameInput"
-                    placeholder="Uses the uploaded filename"
+                    placeholder="Enter project name..."
                   />
                 </div>
                 <label class="toggle-row field-wide">
@@ -125,7 +129,7 @@
               <div class="panel-heading">
                 <div>
                   <h3>Project library</h3>
-                  <p>Search completed GCS outputs without a job ID.</p>
+                  <p>Search for saved projects:</p>
                 </div>
                 <span class="number-badge">02</span>
               </div>
@@ -135,14 +139,13 @@
                   <input
                     class="input"
                     id="videoNameInput"
-                    placeholder="e.g. Practice Love"
+                    placeholder="Search for a project name..."
                   />
                   <button class="button" id="loadButton">Find project</button>
                 </div>
               </div>
               <div class="library-note">
-                Search is Unicode-aware and accepts partial or close matches. For example,
-                an English fragment can match a title that also contains foreign characters.
+                Search accepts partial or close matches.
               </div>
               <button
                 class="library-toggle"
@@ -156,7 +159,7 @@
               </button>
               <div class="library-gallery" id="libraryGallery" hidden>
                 <div class="library-gallery-status" id="libraryGalleryStatus">
-                  Open the library to load available GCS videos.
+                  Open the library to load existing videos.
                 </div>
                 <div class="library-video-grid" id="libraryVideoGrid"></div>
               </div>
@@ -274,7 +277,7 @@
               <article class="workflow-node node-decrowd" tabindex="0">
                 <div class="workflow-node-heading">
                   <span class="workflow-node-icon">02</span>
-                  <span class="workflow-node-type">Optional</span>
+                  <span class="workflow-node-type">Inference</span>
                 </div>
                 <h3>Crowd reduction</h3>
                 <p>Reduce audience noise from live recordings.</p>
