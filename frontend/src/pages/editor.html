@@ -23,7 +23,7 @@
     <aside class="subtitle-panel" id="subtitlePanel">
       <div class="subtitle-panel-header">
         <h2>Subtitles</h2>
-        <p>Edit multiline cues and timing. Changes stay in this browser session.</p>
+        <p>Edit multiline cues and timing.</p>
       </div>
       <div class="subtitle-toolbar">
         <button class="button button-quiet" id="addSubtitleButton">+ Add subtitle</button>
@@ -65,72 +65,80 @@
 
     <section class="editor-workspace">
       <div class="preview-area">
-        <div class="preview-stage">
-          <video id="editorMedia" crossorigin="anonymous" preload="metadata"></video>
-          <div class="audio-preview" id="audioPreview">
-            <div class="audio-disc">B</div>
-            <strong>{{PROJECT_TITLE}}</strong>
-          </div>
-          <div
-            class="subtitle-transform-box"
-            id="subtitleTransformBox"
-            tabindex="0"
-            aria-label="Subtitle text box"
-          >
-            <div class="subtitle-overlay" id="subtitleOverlay"></div>
-            <span class="subtitle-box-outline" aria-hidden="true"></span>
-            <span
-              class="subtitle-transform-handle handle-nw"
-              data-subtitle-resize="nw"
-              aria-hidden="true"
-            ></span>
-            <span
-              class="subtitle-transform-handle handle-n"
-              data-subtitle-resize="n"
-              aria-hidden="true"
-            ></span>
-            <span
-              class="subtitle-transform-handle handle-ne"
-              data-subtitle-resize="ne"
-              aria-hidden="true"
-            ></span>
-            <span
-              class="subtitle-transform-handle handle-e"
-              data-subtitle-resize="e"
-              aria-hidden="true"
-            ></span>
-            <span
-              class="subtitle-transform-handle handle-se"
-              data-subtitle-resize="se"
-              aria-hidden="true"
-            ></span>
-            <span
-              class="subtitle-transform-handle handle-s"
-              data-subtitle-resize="s"
-              aria-hidden="true"
-            ></span>
-            <span
-              class="subtitle-transform-handle handle-sw"
-              data-subtitle-resize="sw"
-              aria-hidden="true"
-            ></span>
-            <span
-              class="subtitle-transform-handle handle-w"
-              data-subtitle-resize="w"
-              aria-hidden="true"
-            ></span>
-            <span class="subtitle-rotation-stem" aria-hidden="true"></span>
-            <button
-              class="subtitle-rotation-handle"
-              type="button"
-              title="Rotate subtitles"
-              aria-label="Rotate subtitles"
-              data-subtitle-rotate
+        <div class="preview-stack">
+          <div class="preview-stage">
+            <video id="editorMedia" crossorigin="anonymous" preload="metadata"></video>
+            <div class="audio-preview" id="audioPreview">
+              <div class="audio-disc">B</div>
+              <strong>{{PROJECT_TITLE}}</strong>
+            </div>
+            <div
+              class="subtitle-transform-box"
+              id="subtitleTransformBox"
+              tabindex="0"
+              aria-label="Subtitle text box"
             >
+              <div class="subtitle-overlay" id="subtitleOverlay"></div>
+              <span class="subtitle-box-outline" aria-hidden="true"></span>
+              <span class="subtitle-transform-handle handle-nw" data-subtitle-resize="nw" aria-hidden="true"></span>
+              <span class="subtitle-transform-handle handle-n" data-subtitle-resize="n" aria-hidden="true"></span>
+              <span class="subtitle-transform-handle handle-ne" data-subtitle-resize="ne" aria-hidden="true"></span>
+              <span class="subtitle-transform-handle handle-e" data-subtitle-resize="e" aria-hidden="true"></span>
+              <span class="subtitle-transform-handle handle-se" data-subtitle-resize="se" aria-hidden="true"></span>
+              <span class="subtitle-transform-handle handle-s" data-subtitle-resize="s" aria-hidden="true"></span>
+              <span class="subtitle-transform-handle handle-sw" data-subtitle-resize="sw" aria-hidden="true"></span>
+              <span class="subtitle-transform-handle handle-w" data-subtitle-resize="w" aria-hidden="true"></span>
+              <span class="subtitle-rotation-stem" aria-hidden="true"></span>
+              <button
+                class="subtitle-rotation-handle"
+                type="button"
+                title="Rotate subtitles"
+                aria-label="Rotate subtitles"
+                data-subtitle-rotate
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M18.6 8.2A7.5 7.5 0 1 0 19.5 14h-2.2a5.4 5.4 0 1 1-.5-4.2L14 12h7V5l-2.4 3.2Z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="media-adjustments" id="mediaAdjustments">
+            <button class="media-adjustment-button" id="volumeButton" type="button" aria-expanded="false">
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M18.6 8.2A7.5 7.5 0 1 0 19.5 14h-2.2a5.4 5.4 0 1 1-.5-4.2L14 12h7V5l-2.4 3.2Z"/>
+                <path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5a5 5 0 0 1 0 7M18.5 6a9 9 0 0 1 0 12"></path>
               </svg>
+              Volume
             </button>
+            <button class="media-adjustment-button" id="speedButton" type="button" aria-expanded="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 17a8 8 0 1 1 14 0M12 13l4-4"></path>
+                <circle cx="12" cy="17" r="1"></circle>
+              </svg>
+              Speed
+            </button>
+
+            <div class="media-adjustment-popover" id="volumePopover" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5a5 5 0 0 1 0 7"></path>
+              </svg>
+              <input id="volumeSlider" type="range" min="0" max="200" step="1" value="100" />
+              <label>
+                <input id="volumeInput" type="number" min="0" max="200" step="1" value="100" />
+                <span>%</span>
+              </label>
+            </div>
+
+            <div class="media-adjustment-popover" id="speedPopover" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 17a8 8 0 1 1 14 0M12 13l4-4"></path>
+              </svg>
+              <input id="speedSlider" type="range" min="0.25" max="2" step="0.01" value="1" />
+              <label>
+                <input id="speedInput" type="number" min="0.25" max="2" step="0.01" value="1.00" />
+                <span>x</span>
+              </label>
+            </div>
           </div>
         </div>
       </div>
@@ -155,6 +163,9 @@
 
       <div class="transport-bar">
         <div class="transport-left">
+          <span class="time-display" id="timeDisplay">00:00 / 00:00</span>
+        </div>
+        <div class="transport-center">
           <button
             class="transport-button"
             id="skipBackButton"
@@ -187,9 +198,6 @@
               <text x="7.5" y="14.3">5</text>
             </svg>
           </button>
-        </div>
-        <div class="transport-center">
-          <span class="time-display" id="timeDisplay">00:00 / 00:00</span>
         </div>
         <div class="transport-right">
           <span title="Use the slider, Ctrl/Cmd + mouse wheel, or a touchpad pinch">
