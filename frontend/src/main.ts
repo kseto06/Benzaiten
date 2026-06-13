@@ -721,7 +721,7 @@ function setupLandingInteractions(): void {
 
     libraryStatus.hidden = false;
     libraryStatus.classList.remove("is-error");
-    libraryStatus.textContent = "Loading videos from GCS...";
+    libraryStatus.textContent = "Loading saved videos...";
     try {
       libraryProjects = getLibraryProjects(await listGcsObjects());
       libraryStatus.textContent = libraryProjects.length
@@ -1294,6 +1294,7 @@ function setupEditor(project: EditorProject): void {
   const previewArea = queryElement<HTMLDivElement>(".preview-area");
   const previewStack = queryElement<HTMLDivElement>(".preview-stack");
   const previewStage = queryElement<HTMLDivElement>(".preview-stage");
+  const videoLoadingSpinner = queryElement<HTMLDivElement>("#videoLoadingSpinner");
   const audioPreview = queryElement<HTMLDivElement>("#audioPreview");
   const audioPreviewTitle = queryElement<HTMLElement>("#audioPreview strong");
   const subtitleList = queryElement<HTMLDivElement>("#subtitleList");
@@ -1327,6 +1328,7 @@ function setupEditor(project: EditorProject): void {
   let subtitlesReady = false;
   let volumePercent = clamp(project.volumePercent ?? 100, 0, 200);
   let playbackRate = clamp(project.playbackRate ?? 1, 0.25, 2);
+  let playbackRequested = false;
   let audioContext: AudioContext | null = null;
   let mediaGain: GainNode | null = null;
   const previewReferenceWidth = 960;
@@ -1444,6 +1446,30 @@ function setupEditor(project: EditorProject): void {
     cues.find(cue => time >= cue.start && time <= cue.end)
   );
 
+  const setVideoLoading = (isLoading: boolean): void => {
+    videoLoadingSpinner.hidden = !isLoading || project.mediaType !== "video";
+  };
+
+  const requestPlayback = (
+    element: HTMLMediaElement,
+    label: string,
+  ): void => {
+    void element.play().catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        if (element === media && playbackRequested) {
+          setVideoLoading(true);
+        }
+        return;
+      }
+      if (element === media) {
+        playbackRequested = false;
+        setVideoLoading(false);
+        setPlayButtonState(false);
+      }
+      console.error(`${LOG_PREFIX} Could not play ${label}`, error);
+    });
+  };
+
   const syncSubtitleSelection = (scrollIntoView = false): void => {
     for (const card of subtitleList.querySelectorAll<HTMLElement>(".subtitle-card")) {
       card.classList.toggle("is-active", card.dataset.cueId === selectedCueId);
@@ -1486,7 +1512,9 @@ function setupEditor(project: EditorProject): void {
         if (Math.abs(source.element.currentTime - sourceTime) > 0.35) {
           source.element.currentTime = sourceTime;
         }
-        void source.element.play().catch(() => undefined);
+        if (source.element.paused) {
+          requestPlayback(source.element, source.name);
+        }
       } else {
         source.element.pause();
       }
@@ -2023,11 +2051,15 @@ function setupEditor(project: EditorProject): void {
   };
 
   playButton.addEventListener("click", () => {
-    if (media.paused) {
+    if (!playbackRequested && media.paused) {
+      playbackRequested = true;
+      setVideoLoading(media.readyState < HTMLMediaElement.HAVE_FUTURE_DATA);
       applyVolume(volumePercent);
       applyPlaybackRate(playbackRate);
-      void media.play();
+      requestPlayback(media, "editor preview");
     } else {
+      playbackRequested = false;
+      setVideoLoading(false);
       media.pause();
     }
   });
@@ -2097,16 +2129,47 @@ function setupEditor(project: EditorProject): void {
   });
 
   media.addEventListener("play", () => {
+    playbackRequested = true;
     setPlayButtonState(true);
+  });
+  media.addEventListener("playing", () => {
+    setVideoLoading(false);
+  });
+  media.addEventListener("waiting", () => {
+    if (playbackRequested) {
+      setVideoLoading(true);
+    }
+  });
+  media.addEventListener("stalled", () => {
+    if (playbackRequested) {
+      setVideoLoading(true);
+    }
+  });
+  media.addEventListener("canplay", () => {
+    setVideoLoading(false);
   });
   media.addEventListener("pause", () => {
     setPlayButtonState(false);
+    if (!playbackRequested) {
+      setVideoLoading(false);
+    }
     for (const source of sources) {
       source.element?.pause();
     }
   });
+  media.addEventListener("ended", () => {
+    playbackRequested = false;
+    setVideoLoading(false);
+  });
+  media.addEventListener("error", () => {
+    playbackRequested = false;
+    setVideoLoading(false);
+  });
   media.addEventListener("timeupdate", updatePreview);
-  media.addEventListener("seeked", updatePreview);
+  media.addEventListener("seeked", () => {
+    setVideoLoading(false);
+    updatePreview();
+  });
   media.addEventListener("loadedmetadata", () => {
     duration = Number.isFinite(media.duration) ? media.duration : duration;
     media.playbackRate = playbackRate;

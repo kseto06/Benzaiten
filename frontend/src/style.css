@@ -1862,6 +1862,32 @@ body.is-resizing-panel {
   object-fit: contain;
 }
 
+.video-loading-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 8;
+  width: 46px;
+  height: 46px;
+  border: 4px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  filter: drop-shadow(0 2px 6px rgba(15, 35, 50, 0.45));
+  transform: translate(-50%, -50%);
+  animation: video-loading-spin 750ms linear infinite;
+  pointer-events: none;
+}
+
+.video-loading-spinner[hidden] {
+  display: none;
+}
+
+@keyframes video-loading-spin {
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
 .audio-preview {
   display: none;
   color: #fff;
