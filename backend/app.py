@@ -1,15 +1,25 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from google.cloud import storage
 
 import json
 import os
+import re
+import shutil
 import uuid
 import warnings
-from typing import Tuple, Dict, Union
+from typing import List, Optional, Tuple, Dict, Union
 from pathlib import Path
+from urllib.parse import quote
 
-from backend.scripts.ffmpeg import split_sources, build_video, convert_srt_to_vtt
+from backend.scripts.ffmpeg import (
+    split_sources,
+    build_video,
+    convert_srt_to_vtt,
+    render_video_with_ass_subtitles,
+)
 from backend.gcp_utils.gcs_bucket import (
     upload_file_to_gcs,
     download_file_from_gcs,
@@ -29,6 +39,157 @@ IMAGE = os.environ.get(
     "northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest",
 )
 K8S_NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
+
+
+class EditorSubtitleCue(BaseModel):
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    text: str = Field(min_length=1, max_length=10000)
+
+
+class EditorSubtitleTransform(BaseModel):
+    x: float = Field(ge=0, le=100)
+    y: float = Field(ge=0, le=100)
+    width: float = Field(ge=5, le=120)
+    height: float = Field(ge=5, le=100)
+    rotation: float = Field(ge=-180, le=180)
+
+
+class SaveEditorProjectRequest(BaseModel):
+    source_blob_name: str
+    title: str = Field(min_length=1, max_length=180)
+    cues: List[EditorSubtitleCue]
+    subtitle_font_size: int = Field(ge=12, le=72)
+    subtitle_transform: EditorSubtitleTransform
+
+
+class RenameProjectRequest(BaseModel):
+    source_blob_name: str
+    title: str = Field(min_length=1, max_length=180)
+
+
+def _public_gcs_url(blob_name: str) -> str:
+    encoded_name = "/".join(quote(part, safe="") for part in blob_name.split("/"))
+    return f"https://storage.googleapis.com/{GCS_BUCKET}/{encoded_name}"
+
+
+def _validated_project_video_blob_name(blob_name: str) -> str:
+    clean_blob_name = blob_name.strip()
+    if (
+        not re.fullmatch(r"outputs/[^/]+/.+\.mp4", clean_blob_name, re.IGNORECASE)
+        or ".." in Path(clean_blob_name).parts
+    ):
+        raise HTTPException(status_code=400, detail="Invalid project video object.")
+    return clean_blob_name
+
+
+def _clean_project_title(title: str) -> str:
+    clean_title = re.sub(r"[/\\\x00-\x1f]+", "-", title).strip(" .")
+    clean_title = re.sub(r"\.mp4$", "", clean_title, flags=re.IGNORECASE).strip()
+    if not clean_title:
+        raise HTTPException(status_code=400, detail="Project title is invalid.")
+    return clean_title
+
+
+def _validated_job_id(job_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", job_id):
+        raise HTTPException(status_code=400, detail="Invalid project job ID.")
+    return job_id
+
+
+def _format_ass_timestamp(seconds: float) -> str:
+    centiseconds = max(0, round(seconds * 100))
+    hours, remainder = divmod(centiseconds, 360000)
+    minutes, remainder = divmod(remainder, 6000)
+    whole_seconds, fraction = divmod(remainder, 100)
+    return f"{hours}:{minutes:02d}:{whole_seconds:02d}.{fraction:02d}"
+
+
+def _format_vtt_timestamp(seconds: float) -> str:
+    milliseconds = max(0, round(seconds * 1000))
+    hours, remainder = divmod(milliseconds, 3600000)
+    minutes, remainder = divmod(remainder, 60000)
+    whole_seconds, fraction = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{fraction:03d}"
+
+
+def _escape_ass_text(text: str) -> str:
+    return (
+        text.replace("\\", r"\\")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+        .replace("\r", "")
+        .replace("\n", r"\N")
+    )
+
+
+def _write_editor_subtitles(
+    request: SaveEditorProjectRequest,
+    ass_path: Path,
+    vtt_path: Path,
+) -> None:
+    transform = request.subtitle_transform
+    margin = round((100 - transform.width) / 200 * 1920)
+    position_x = round(transform.x / 100 * 1920)
+    position_y = round(transform.y / 100 * 1080)
+    ass_lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "PlayResX: 1920",
+        "PlayResY: 1080",
+        "WrapStyle: 2",
+        "",
+        "[V4+ Styles]",
+        (
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+            "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding"
+        ),
+        (
+            f"Style: Default,Arial,{request.subtitle_font_size},&H00FFFFFF,"
+            "&H000000FF,&H00101A24,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,"
+            f"5,{margin},{margin},0,1"
+        ),
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    vtt_lines = ["WEBVTT", ""]
+
+    for index, cue in enumerate(
+        sorted(request.cues, key=lambda item: item.start), start=1
+    ):
+        if cue.end <= cue.start:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Subtitle cue {index} must end after it starts.",
+            )
+        ass_text = _escape_ass_text(cue.text)
+        overrides = (
+            rf"{{\an5\pos({position_x},{position_y})"
+            rf"\frz{transform.rotation:.2f}}}"
+        )
+        ass_lines.append(
+            "Dialogue: 0,"
+            f"{_format_ass_timestamp(cue.start)},"
+            f"{_format_ass_timestamp(cue.end)},"
+            f"Default,,0,0,0,,{overrides}{ass_text}"
+        )
+        vtt_lines.extend(
+            [
+                str(index),
+                (
+                    f"{_format_vtt_timestamp(cue.start)} --> "
+                    f"{_format_vtt_timestamp(cue.end)}"
+                ),
+                cue.text,
+                "",
+            ]
+        )
+
+    ass_path.write_text("\n".join(ass_lines) + "\n", encoding="utf-8")
+    vtt_path.write_text("\n".join(vtt_lines), encoding="utf-8")
 
 
 @app.get("/")
@@ -514,6 +675,305 @@ async def create_orchestration_inference_pipeline_job(
             status_code=500,
             detail=f"inference orchestration job creation failed: {str(e)}",
         )
+
+
+@app.post("/projects/save")
+def save_editor_project(request: SaveEditorProjectRequest) -> Dict[str, object]:
+    """
+    Render editor subtitle changes and publish them without deleting the source first.
+    """
+    source_blob_name = _validated_project_video_blob_name(request.source_blob_name)
+    clean_title = _clean_project_title(request.title)
+
+    source_parent = source_blob_name.rsplit("/", 1)[0]
+    destination_blob_name = f"{source_parent}/{clean_title}.mp4"
+    save_id = uuid.uuid4().hex
+    subtitle_blob_name = (
+        f"{source_blob_name.split('/')[0]}/{source_blob_name.split('/')[1]}"
+        f"/editor/{clean_title}-{save_id}.vtt"
+    )
+    staging_prefix = (
+        f"{source_blob_name.split('/')[0]}/{source_blob_name.split('/')[1]}"
+        f"/.editor-staging/{save_id}"
+    )
+    staging_video_name = f"{staging_prefix}.mp4"
+    staging_vtt_name = f"{staging_prefix}.vtt"
+    render_source_blob_name = (
+        f"{source_blob_name.split('/')[0]}/{source_blob_name.split('/')[1]}"
+        "/editor/source.mp4"
+    )
+    work_dir = Path(f"/tmp/benzaiten-editor-{save_id}")
+    source_path = work_dir / "source.mp4"
+    ass_path = work_dir / "subtitles.ass"
+    vtt_path = work_dir / "subtitles.vtt"
+    rendered_path = work_dir / "rendered.mp4"
+    client = storage.Client()
+    bucket = client.bucket(GCS_BUCKET)
+    source_blob = bucket.get_blob(source_blob_name)
+    published_vtt = None
+    cleanup_warning: Optional[str] = None
+
+    if source_blob is None:
+        raise HTTPException(
+            status_code=404, detail="The source video no longer exists."
+        )
+    source_generation = source_blob.generation
+
+    if destination_blob_name != source_blob_name and bucket.get_blob(
+        destination_blob_name
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="A video with that project title already exists.",
+        )
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        render_source_blob = bucket.get_blob(render_source_blob_name)
+        if render_source_blob is None:
+            try:
+                render_source_blob = bucket.copy_blob(
+                    source_blob,
+                    bucket,
+                    render_source_blob_name,
+                    source_generation=source_generation,
+                    if_generation_match=0,
+                    if_source_generation_match=source_generation,
+                )
+            except Exception:
+                render_source_blob = bucket.get_blob(render_source_blob_name)
+                if render_source_blob is None:
+                    raise
+        render_source_blob.reload()
+        render_source_blob.download_to_filename(
+            str(source_path),
+            if_generation_match=render_source_blob.generation,
+        )
+        _write_editor_subtitles(request, ass_path, vtt_path)
+        render_video_with_ass_subtitles(
+            video_path=str(source_path),
+            ass_path=str(ass_path),
+            output_path=str(rendered_path),
+        )
+        if not rendered_path.exists() or rendered_path.stat().st_size == 0:
+            raise RuntimeError("The rendered video is empty.")
+
+        staging_video = bucket.blob(staging_video_name)
+        staging_video.upload_from_filename(str(rendered_path), content_type="video/mp4")
+        staging_video.reload()
+        if staging_video.size != rendered_path.stat().st_size:
+            raise RuntimeError("The staged video failed size verification.")
+
+        staging_vtt = bucket.blob(staging_vtt_name)
+        staging_vtt.upload_from_filename(str(vtt_path), content_type="text/vtt")
+        staging_vtt.reload()
+        if staging_vtt.size != vtt_path.stat().st_size:
+            raise RuntimeError("The staged subtitle file failed size verification.")
+
+        published_vtt = bucket.copy_blob(
+            staging_vtt,
+            bucket,
+            subtitle_blob_name,
+            if_generation_match=0,
+        )
+        published_vtt.reload()
+
+        destination_generation_match = (
+            source_generation if destination_blob_name == source_blob_name else 0
+        )
+        published_video = bucket.copy_blob(
+            staging_video,
+            bucket,
+            destination_blob_name,
+            if_generation_match=destination_generation_match,
+        )
+        published_video.reload()
+        if published_video.size != staging_video.size:
+            raise RuntimeError("The published video failed size verification.")
+
+        if destination_blob_name != source_blob_name:
+            try:
+                source_blob.delete(if_generation_match=source_generation)
+            except Exception as error:
+                cleanup_warning = (
+                    "The edited video was saved, but the previous video could not be "
+                    f"removed safely: {error}"
+                )
+
+        return {
+            "status": "saved",
+            "title": clean_title,
+            "media_object_name": destination_blob_name,
+            "media_url": _public_gcs_url(destination_blob_name),
+            "render_source_object_name": render_source_blob_name,
+            "render_source_url": _public_gcs_url(render_source_blob_name),
+            "subtitle_object_name": subtitle_blob_name,
+            "subtitle_url": _public_gcs_url(subtitle_blob_name),
+            "generation": published_video.generation,
+            "cleanup_warning": cleanup_warning,
+        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        if published_vtt is not None:
+            try:
+                published_vtt.delete()
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=500,
+            detail=f"edited video save failed before replacing the original: {error}",
+        )
+    finally:
+        for blob_name in (staging_video_name, staging_vtt_name):
+            try:
+                bucket.blob(blob_name).delete()
+            except Exception:
+                pass
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.get("/projects/download")
+def download_project(source_blob_name: str) -> StreamingResponse:
+    source_blob_name = _validated_project_video_blob_name(source_blob_name)
+    bucket = storage.Client().bucket(GCS_BUCKET)
+    source_blob = bucket.get_blob(source_blob_name)
+    if source_blob is None:
+        raise HTTPException(
+            status_code=404, detail="The project video no longer exists."
+        )
+
+    source_blob.reload()
+    generation = source_blob.generation
+    filename = source_blob_name.rsplit("/", 1)[-1]
+
+    def stream_video():
+        with source_blob.open("rb", if_generation_match=generation) as source:
+            while chunk := source.read(1024 * 1024):
+                yield chunk
+
+    return StreamingResponse(
+        stream_video(),
+        media_type=source_blob.content_type or "video/mp4",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+            ),
+            "Content-Length": str(source_blob.size),
+        },
+    )
+
+
+@app.post("/projects/rename")
+def rename_project(request: RenameProjectRequest) -> Dict[str, object]:
+    source_blob_name = _validated_project_video_blob_name(request.source_blob_name)
+    clean_title = _clean_project_title(request.title)
+    source_parent = source_blob_name.rsplit("/", 1)[0]
+    destination_blob_name = f"{source_parent}/{clean_title}.mp4"
+    bucket = storage.Client().bucket(GCS_BUCKET)
+    source_blob = bucket.get_blob(source_blob_name)
+
+    if source_blob is None:
+        raise HTTPException(
+            status_code=404, detail="The project video no longer exists."
+        )
+    source_blob.reload()
+    source_generation = source_blob.generation
+
+    if destination_blob_name == source_blob_name:
+        return {
+            "status": "renamed",
+            "title": clean_title,
+            "media_object_name": source_blob_name,
+            "media_url": _public_gcs_url(source_blob_name),
+        }
+    if bucket.get_blob(destination_blob_name) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A video with that project title already exists.",
+        )
+
+    try:
+        renamed_blob = bucket.copy_blob(
+            source_blob,
+            bucket,
+            destination_blob_name,
+            source_generation=source_generation,
+            if_generation_match=0,
+            if_source_generation_match=source_generation,
+        )
+        renamed_blob.reload()
+        if renamed_blob.size != source_blob.size:
+            renamed_blob.delete(if_generation_match=renamed_blob.generation)
+            raise RuntimeError("The renamed video failed size verification.")
+        try:
+            source_blob.delete(if_generation_match=source_generation)
+        except Exception as error:
+            renamed_blob.delete(if_generation_match=renamed_blob.generation)
+            raise RuntimeError(
+                "The original video changed before rename could complete."
+            ) from error
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"project rename failed: {error}")
+
+    return {
+        "status": "renamed",
+        "title": clean_title,
+        "media_object_name": destination_blob_name,
+        "media_url": _public_gcs_url(destination_blob_name),
+    }
+
+
+@app.delete("/projects/{job_id}")
+def delete_project(job_id: str) -> Dict[str, object]:
+    job_id = _validated_job_id(job_id)
+    prefix = f"outputs/{job_id}/"
+    bucket = storage.Client().bucket(GCS_BUCKET)
+    blobs_by_name = {blob.name: blob for blob in bucket.list_blobs(prefix=prefix)}
+
+    for marker_name in (prefix, prefix.rstrip("/")):
+        marker_blob = bucket.get_blob(marker_name)
+        if marker_blob is not None:
+            blobs_by_name[marker_blob.name] = marker_blob
+
+    blobs = list(blobs_by_name.values())
+    if not blobs:
+        raise HTTPException(status_code=404, detail="The project no longer exists.")
+
+    deleted_objects = 0
+    try:
+        for blob in blobs:
+            blob.delete(if_generation_match=blob.generation)
+            deleted_objects += 1
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"project deletion stopped after {deleted_objects} objects: {error}"
+            ),
+        )
+
+    remaining_names = {blob.name for blob in bucket.list_blobs(prefix=prefix)}
+    for marker_name in (prefix, prefix.rstrip("/")):
+        if bucket.get_blob(marker_name) is not None:
+            remaining_names.add(marker_name)
+    if remaining_names:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "project deletion did not fully clear the GCS prefix; remaining objects: "
+                + ", ".join(sorted(remaining_names))
+            ),
+        )
+
+    return {
+        "status": "deleted",
+        "job_id": job_id,
+        "deleted_objects": deleted_objects,
+        "deleted_prefix": prefix,
+    }
 
 
 @app.get("/jobs/{job_id}")

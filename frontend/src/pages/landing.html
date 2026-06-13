@@ -66,7 +66,7 @@
 
               <div class="form-grid">
                 <div class="field">
-                  <label for="languageInput">Audio language</label>
+                  <label for="languageInput">Audio language code</label>
                   <input
                     class="input"
                     id="languageInput"
@@ -85,7 +85,7 @@
                 <label class="toggle-row field-wide">
                   <input id="shouldDecrowdInput" type="checkbox" />
                   <span class="toggle-copy">
-                    Reduce audience noise
+                    Decrowd: Remove audience noise
                     <span>Useful for live performances and concert recordings.</span>
                   </span>
                 </label>
@@ -93,7 +93,7 @@
                   <input id="fastDecrowdInput" type="checkbox" disabled />
                   <span class="toggle-copy">
                     Fast crowd reduction
-                    <span>Only processes the first and last 30 seconds.</span>
+                    <span>Only processes decrowding for the first and last 30 seconds, speeding up model inference.</span>
                   </span>
                 </label>
               </div>
@@ -143,6 +143,22 @@
               <div class="library-note">
                 Search is Unicode-aware and accepts partial or close matches. For example,
                 an English fragment can match a title that also contains foreign characters.
+              </div>
+              <button
+                class="library-toggle"
+                id="libraryToggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="libraryGallery"
+              >
+                <span>Video Library</span>
+                <span class="library-toggle-icon" aria-hidden="true">&darr;</span>
+              </button>
+              <div class="library-gallery" id="libraryGallery" hidden>
+                <div class="library-gallery-status" id="libraryGalleryStatus">
+                  Open the library to load available GCS videos.
+                </div>
+                <div class="library-video-grid" id="libraryVideoGrid"></div>
               </div>
             </div>
           </section>
@@ -316,4 +332,28 @@
   <footer class="site-footer">
     <span>Benzaiten karaoke orchestration studio</span>
   </footer>
+
+  <dialog class="delete-project-dialog" id="deleteProjectDialog">
+    <div class="delete-project-dialog-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24">
+        <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7"></path>
+        <path d="M10 11v5m4-5v5"></path>
+      </svg>
+    </div>
+    <div class="delete-project-dialog-copy">
+      <p class="section-kicker">Delete project</p>
+      <h2>Remove this video?</h2>
+      <p>
+        All assets in <strong id="deleteProjectName"></strong> will be permanently deleted.
+      </p>
+    </div>
+    <div class="delete-project-dialog-actions">
+      <button class="button button-secondary" id="cancelProjectDelete" type="button">
+        Cancel
+      </button>
+      <button class="button delete-project-confirm" id="confirmProjectDelete" type="button">
+        Delete project
+      </button>
+    </div>
+  </dialog>
 </div>
