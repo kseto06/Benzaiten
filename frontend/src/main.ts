@@ -1268,20 +1268,6 @@ function formatTime(seconds: number, includeMilliseconds = false): string {
   return includeMilliseconds ? `${base}.${String(milliseconds).padStart(3, "0")}` : base;
 }
 
-function formatVttTimestamp(seconds: number): string {
-  const safeSeconds = Math.max(0, seconds);
-  const hours = Math.floor(safeSeconds / 3600);
-  const minutes = Math.floor((safeSeconds % 3600) / 60);
-  const wholeSeconds = Math.floor(safeSeconds % 60);
-  const milliseconds = Math.round((safeSeconds % 1) * 1000);
-  return (
-    `${String(hours).padStart(2, "0")}:`
-    + `${String(minutes).padStart(2, "0")}:`
-    + `${String(wholeSeconds).padStart(2, "0")}.`
-    + String(milliseconds).padStart(3, "0")
-  );
-}
-
 function renderEditor(project: EditorProject): void {
   document.title = `${project.title} | Benzaiten Editor`;
   app.innerHTML = editorPageHtml
@@ -1824,22 +1810,25 @@ function setupEditor(project: EditorProject): void {
     }
   });
 
-  queryElement<HTMLButtonElement>("#exportVttButton").addEventListener("click", () => {
-    const body = cues
-      .sort((left, right) => left.start - right.start)
-      .map((cue, index) => (
-        `${index + 1}\n${formatVttTimestamp(cue.start)} --> ${formatVttTimestamp(cue.end)}\n${cue.text}`
-      ))
-      .join("\n\n");
-    const blob = new Blob([`WEBVTT\n\n${body}\n`], { type: "text/vtt" });
+  queryElement<HTMLButtonElement>("#exportVideoButton").addEventListener("click", () => {
+    const sourceBlobName = project.mediaObjectName || getGcsObjectName(project.mediaUrl);
+    if (project.mediaType !== "video" || !sourceBlobName) {
+      editorSaveStatus.textContent = "Only GCS video projects can currently be exported.";
+      editorSaveStatus.classList.add("is-error");
+      return;
+    }
+
     const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `${project.title.replace(/[^\p{L}\p{N}]+/gu, "-") || "subtitles"}.vtt`;
+    link.href = (
+      `${API_BASE_URL}/projects/download?source_blob_name=${encodeURIComponent(sourceBlobName)}`
+    );
+    link.download = `${project.title || "benzaiten-video"}.mp4`;
+    document.body.append(link);
     link.click();
-    URL.revokeObjectURL(link.href);
+    link.remove();
   });
 
-  saveChangesButton.addEventListener("click", async () => {
+  const saveProjectChanges = async (background = false): Promise<boolean> => {
     const sourceBlobName = project.mediaObjectName || getGcsObjectName(project.mediaUrl);
     const hasAddedMedia = sources.some(source => !source.isPrimary);
     const hasTimelineMediaChanges = sources.some(source => (
@@ -1849,22 +1838,28 @@ function setupEditor(project: EditorProject): void {
 
     editorSaveStatus.classList.remove("is-error");
     if (project.mediaType !== "video" || !sourceBlobName) {
-      editorSaveStatus.textContent = "Only GCS video projects can currently be saved.";
-      editorSaveStatus.classList.add("is-error");
-      return;
+      if (!background) {
+        editorSaveStatus.textContent = "Only GCS video projects can currently be saved.";
+        editorSaveStatus.classList.add("is-error");
+      }
+      return false;
     }
     if (hasAddedMedia || hasTimelineMediaChanges) {
-      editorSaveStatus.textContent = (
-        "Saving added or trimmed media tracks is not supported yet. "
-        + "Reset those tracks before saving."
-      );
-      editorSaveStatus.classList.add("is-error");
-      return;
+      if (!background) {
+        editorSaveStatus.textContent = (
+          "Saving added or trimmed media tracks is not supported yet. "
+          + "Reset those tracks before saving."
+        );
+        editorSaveStatus.classList.add("is-error");
+      }
+      return false;
     }
 
     saveChangesButton.disabled = true;
     saveChangesButton.textContent = "Saving...";
-    editorSaveStatus.textContent = "";
+    if (!background) {
+      editorSaveStatus.textContent = "";
+    }
     try {
       const response = await fetch(`${API_BASE_URL}/projects/save`, {
         method: "POST",
@@ -1892,24 +1887,41 @@ function setupEditor(project: EditorProject): void {
       project.mediaUrl = saved.render_source_url;
       project.subtitleObjectName = saved.subtitle_object_name;
       project.subtitleUrl = saved.subtitle_url;
-      projectTitleInput.value = saved.title;
-      document.title = `${saved.title} | Benzaiten Editor`;
+      if (!background) {
+        projectTitleInput.value = saved.title;
+        document.title = `${saved.title} | Benzaiten Editor`;
+      }
       saveEditorProject(project);
-      editorSaveStatus.textContent = saved.cleanup_warning || "Changes saved!";
-      editorSaveStatus.classList.toggle("is-error", Boolean(saved.cleanup_warning));
+      if (!background) {
+        editorSaveStatus.textContent = saved.cleanup_warning || "Changes saved!";
+        editorSaveStatus.classList.toggle("is-error", Boolean(saved.cleanup_warning));
+      } else if (saved.cleanup_warning) {
+        console.warn(`${LOG_PREFIX} Background save warning: ${saved.cleanup_warning}`);
+      }
+      return true;
     } catch (error) {
-      editorSaveStatus.textContent = error instanceof Error
-        ? error.message
-        : "Unable to save changes.";
-      editorSaveStatus.classList.add("is-error");
+      if (!background) {
+        editorSaveStatus.textContent = error instanceof Error
+          ? error.message
+          : "Unable to save changes.";
+        editorSaveStatus.classList.add("is-error");
+      }
       console.error(`${LOG_PREFIX} Project save failed`, error);
+      return false;
     } finally {
       updateSaveAvailability();
       saveChangesButton.textContent = "Save changes";
     }
+  };
+
+  saveChangesButton.addEventListener("click", () => {
+    void saveProjectChanges();
   });
 
   queryElement<HTMLButtonElement>("#backButton").addEventListener("click", () => {
+    if (mediaReady && subtitlesReady && !saveChangesButton.disabled) {
+      void saveProjectChanges(true);
+    }
     window.location.hash = "";
   });
 
