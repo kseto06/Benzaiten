@@ -1794,23 +1794,35 @@ function setupEditor(project: EditorProject): void {
 
   const seekToCue = (cue: SubtitleCue): void => {
     selectedCueId = cue.id;
+    selectedSourceId = null;
     media.currentTime = cue.start;
     updatePreview();
     renderTimeline();
     syncSubtitleSelection(true);
   };
 
+  const deleteSubtitleCue = (cueId: string): void => {
+    const cueIndex = cues.findIndex(cue => cue.id === cueId);
+    if (cueIndex < 0) {
+      return;
+    }
+    cues.splice(cueIndex, 1);
+    if (selectedCueId === cueId) {
+      selectedCueId = cues[Math.min(cueIndex, cues.length - 1)]?.id || null;
+    }
+    if (activeCueId === cueId) {
+      activeCueId = null;
+    }
+    renderSubtitleList();
+    renderTimeline();
+    updatePreview();
+  };
+
   subtitleList.addEventListener("click", event => {
     const target = event.target as HTMLElement;
     const deleteId = target.dataset.deleteCue;
     if (deleteId) {
-      cues = cues.filter(cue => cue.id !== deleteId);
-      if (selectedCueId === deleteId) {
-        selectedCueId = null;
-      }
-      renderSubtitleList();
-      renderTimeline();
-      updatePreview();
+      deleteSubtitleCue(deleteId);
       return;
     }
     if (target.matches("textarea, input, button")) {
@@ -2308,7 +2320,21 @@ function setupEditor(project: EditorProject): void {
   document.addEventListener("keydown", event => {
     if (event.key === "Escape") {
       closeMediaPopovers();
+      return;
     }
+    if (event.key !== "Delete" && event.key !== "Backspace") {
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (
+      target?.matches("input, textarea, select")
+      || target?.isContentEditable
+      || !selectedCueId
+    ) {
+      return;
+    }
+    event.preventDefault();
+    deleteSubtitleCue(selectedCueId);
   });
 
   zoomInput.addEventListener("input", () => {
@@ -2413,10 +2439,13 @@ function setupEditor(project: EditorProject): void {
     const snapCandidates = getTimelineSnapCandidates(cue?.id, source?.id);
     if (cue) {
       selectedCueId = cue.id;
+      selectedSourceId = null;
       syncSubtitleSelection(true);
     }
     if (source) {
       selectedSourceId = source.id;
+      selectedCueId = null;
+      syncSubtitleSelection();
     }
 
     const onMove = (moveEvent: PointerEvent): void => {
