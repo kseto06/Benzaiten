@@ -68,6 +68,18 @@
         <div class="preview-stack">
           <div class="preview-stage">
             <video id="editorMedia" crossorigin="anonymous" preload="metadata"></video>
+            <button class="blank-editor-drop" id="blankEditorDrop" type="button" hidden>
+              <span class="blank-editor-drop-icon" aria-hidden="true">+</span>
+              <strong>Add media to this project</strong>
+              <span>Drop a video or audio file here, or browse</span>
+            </button>
+            <input
+              id="editorMediaInput"
+              type="file"
+              accept="video/*,audio/*"
+              multiple
+              hidden
+            />
             <div
               class="video-loading-spinner"
               id="videoLoadingSpinner"
