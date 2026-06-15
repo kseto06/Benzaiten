@@ -73,6 +73,8 @@ type EditorProject = {
   subtitleTransform?: SubtitleTransform;
   volumePercent?: number;
   playbackRate?: number;
+  isBlank?: boolean;
+  isLocalMedia?: boolean;
 };
 
 type LibraryProject = {
@@ -336,6 +338,16 @@ function openLibraryProject(project: LibraryProject): void {
   });
 }
 
+function openBlankEditor(): void {
+  openEditor({
+    title: "Untitled project",
+    mediaUrl: "",
+    mediaType: "video",
+    isBlank: true,
+    isLocalMedia: true,
+  });
+}
+
 function saveEditorProject(project: EditorProject): void {
   sessionStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(project));
 }
@@ -451,11 +463,24 @@ function setupLandingInteractions(): void {
   });
 
   const renderLibrary = (projects: LibraryProject[]): void => {
-    libraryStatus.hidden = projects.length > 0;
+    libraryStatus.hidden = true;
     if (!projects.length) {
-      libraryStatus.textContent = "No completed videos were found.";
+      libraryStatus.textContent = "";
     }
-    libraryGrid.innerHTML = projects.map((project, index) => `
+    libraryGrid.innerHTML = `
+      <article class="library-video-card library-create-card">
+        <button
+          class="library-create-open"
+          type="button"
+          data-library-action="create"
+          aria-label="Create a new blank video project"
+        >
+          <span class="library-create-plus" aria-hidden="true">+</span>
+          <strong>Create new project</strong>
+          <span>Start with a blank editor</span>
+        </button>
+      </article>
+    ` + projects.map((project, index) => `
       <article
         class="library-video-card"
         data-library-project="${index}"
@@ -738,11 +763,15 @@ function setupLandingInteractions(): void {
 
   libraryGrid.addEventListener("click", async event => {
     const target = event.target as HTMLElement;
+    const actionElement = target.closest<HTMLElement>("[data-library-action]");
+    const action = actionElement?.dataset.libraryAction;
+    if (action === "create") {
+      openBlankEditor();
+      return;
+    }
     const card = target.closest<HTMLElement>("[data-library-project]");
     const projectIndex = Number(card?.dataset.libraryProject);
     const project = libraryProjects?.[projectIndex];
-    const actionElement = target.closest<HTMLElement>("[data-library-action]");
-    const action = actionElement?.dataset.libraryAction;
     if (!project || !card || !action) {
       return;
     }
@@ -845,6 +874,36 @@ function setupLandingInteractions(): void {
       }
     }
   }, documentListenerOptions);
+
+  void (async () => {
+    renderLibrary([]);
+    libraryStatus.hidden = false;
+    libraryStatus.classList.remove("is-error");
+    libraryStatus.textContent = "Loading saved videos...";
+    try {
+      libraryProjects = getLibraryProjects(await listGcsObjects());
+      renderLibrary(libraryProjects);
+    } catch (error) {
+      libraryStatus.classList.add("is-error");
+      libraryStatus.textContent = error instanceof Error
+        ? error.message
+        : "Unable to load the project library.";
+      libraryGrid.innerHTML = `
+        <article class="library-video-card library-create-card">
+          <button
+            class="library-create-open"
+            type="button"
+            data-library-action="create"
+            aria-label="Create a new blank video project"
+          >
+            <span class="library-create-plus" aria-hidden="true">+</span>
+            <strong>Create new project</strong>
+            <span>Start with a blank editor</span>
+          </button>
+        </article>
+      `;
+    }
+  })();
 }
 
 function setupWorkflowZoom(): void {
@@ -1279,6 +1338,7 @@ function renderEditor(project: EditorProject): void {
 }
 
 function setupEditor(project: EditorProject): void {
+  const editorHeader = queryElement<HTMLElement>(".editor-header");
   const editorMain = queryElement<HTMLElement>(".editor-main");
   const editorWorkspace = queryElement<HTMLElement>(".editor-workspace");
   const subtitlePanel = queryElement<HTMLElement>("#subtitlePanel");
@@ -1286,7 +1346,10 @@ function setupEditor(project: EditorProject): void {
   const panelCollapseButton = queryElement<HTMLButtonElement>("#panelCollapseButton");
   const timelineResizer = queryElement<HTMLDivElement>("#timelineResizer");
   const timelineCollapseButton = queryElement<HTMLButtonElement>("#timelineCollapseButton");
+  const backButton = queryElement<HTMLButtonElement>("#backButton");
+  const projectTitle = queryElement<HTMLLabelElement>(".editor-project-title");
   const projectTitleInput = queryElement<HTMLInputElement>("#projectTitleInput");
+  const editorActions = queryElement<HTMLDivElement>(".editor-actions");
   const saveChangesButton = queryElement<HTMLButtonElement>("#saveChangesButton");
   const editorSaveStatus = queryElement<HTMLSpanElement>("#editorSaveStatus");
   const subtitleFontSizeInput = queryElement<HTMLInputElement>("#subtitleFontSizeInput");
@@ -1294,6 +1357,8 @@ function setupEditor(project: EditorProject): void {
   const previewArea = queryElement<HTMLDivElement>(".preview-area");
   const previewStack = queryElement<HTMLDivElement>(".preview-stack");
   const previewStage = queryElement<HTMLDivElement>(".preview-stage");
+  const blankEditorDrop = queryElement<HTMLButtonElement>("#blankEditorDrop");
+  const editorMediaInput = queryElement<HTMLInputElement>("#editorMediaInput");
   const videoLoadingSpinner = queryElement<HTMLDivElement>("#videoLoadingSpinner");
   const audioPreview = queryElement<HTMLDivElement>("#audioPreview");
   const audioPreviewTitle = queryElement<HTMLElement>("#audioPreview strong");
@@ -1304,6 +1369,9 @@ function setupEditor(project: EditorProject): void {
   const timelineShell = queryElement<HTMLDivElement>("#timelineShell");
   const timelineScroll = queryElement<HTMLDivElement>("#timelineScroll");
   const playButton = queryElement<HTMLButtonElement>("#playButton");
+  const skipBackButton = queryElement<HTMLButtonElement>("#skipBackButton");
+  const skipForwardButton = queryElement<HTMLButtonElement>("#skipForwardButton");
+  const exportVideoButton = queryElement<HTMLButtonElement>("#exportVideoButton");
   const timeDisplay = queryElement<HTMLSpanElement>("#timeDisplay");
   const zoomInput = queryElement<HTMLInputElement>("#zoomInput");
   const mediaAdjustments = queryElement<HTMLDivElement>("#mediaAdjustments");
@@ -1317,7 +1385,7 @@ function setupEditor(project: EditorProject): void {
   const speedInput = queryElement<HTMLInputElement>("#speedInput");
   let cues: SubtitleCue[] = [];
   let sources: TimelineSource[] = [];
-  let duration = 120;
+  let duration = project.isBlank ? 60 : 120;
   let zoom = Number(zoomInput.value);
   let selectedCueId: string | null = null;
   let selectedSourceId: string | null = null;
@@ -1341,13 +1409,49 @@ function setupEditor(project: EditorProject): void {
     rotation: project.subtitleTransform?.rotation ?? 0,
   };
 
-  media.src = project.mediaUrl;
-  media.style.display = project.mediaType === "video" ? "block" : "none";
-  audioPreview.classList.toggle("is-visible", project.mediaType === "audio");
+  if (project.mediaUrl) {
+    media.src = project.mediaUrl;
+  }
+  media.style.display = !project.isBlank && project.mediaType === "video" ? "block" : "none";
+  audioPreview.classList.toggle(
+    "is-visible",
+    !project.isBlank && project.mediaType === "audio",
+  );
+  blankEditorDrop.hidden = !project.isBlank;
+  playButton.disabled = Boolean(project.isBlank);
+  skipBackButton.disabled = Boolean(project.isBlank);
+  skipForwardButton.disabled = Boolean(project.isBlank);
+  exportVideoButton.disabled = Boolean(project.isBlank);
   volumeSlider.value = String(volumePercent);
   volumeInput.value = String(Math.round(volumePercent));
   speedSlider.value = playbackRate.toFixed(2);
   speedInput.value = playbackRate.toFixed(2);
+
+  const fitEditorTitle = (): void => {
+    if (window.getComputedStyle(projectTitle).position !== "absolute") {
+      projectTitle.style.removeProperty("width");
+      return;
+    }
+    const headerBounds = editorHeader.getBoundingClientRect();
+    const backBounds = backButton.getBoundingClientRect();
+    const actionsBounds = editorActions.getBoundingClientRect();
+    const center = headerBounds.left + headerBounds.width / 2;
+    const safeGap = 14;
+    const availableHalfWidth = Math.max(
+      0,
+      Math.min(
+        center - backBounds.right - safeGap,
+        actionsBounds.left - center - safeGap,
+      ),
+    );
+    projectTitle.style.width = `${Math.min(580, availableHalfWidth * 2)}px`;
+  };
+
+  const headerResizeObserver = new ResizeObserver(fitEditorTitle);
+  headerResizeObserver.observe(editorHeader);
+  headerResizeObserver.observe(backButton);
+  headerResizeObserver.observe(editorActions);
+  window.requestAnimationFrame(fitEditorTitle);
 
   const ensureMediaGain = (): GainNode | null => {
     if (mediaGain) {
@@ -1407,6 +1511,7 @@ function setupEditor(project: EditorProject): void {
   const updateSaveAvailability = (): void => {
     saveChangesButton.disabled = (
       project.mediaType !== "video"
+      || project.isLocalMedia
       || !mediaReady
       || !subtitlesReady
     );
@@ -1444,7 +1549,7 @@ function setupEditor(project: EditorProject): void {
   const pixelsPerSecond = (): number => getTimelineWidth() / duration;
 
   const activeCueAt = (time: number): SubtitleCue | undefined => (
-    cues.find(cue => time >= cue.start && time <= cue.end)
+    cues.find(cue => time >= cue.start && time < cue.end)
   );
 
   const subtitleMinimumDuration = 0.1;
@@ -1904,12 +2009,46 @@ function setupEditor(project: EditorProject): void {
   });
 
   queryElement<HTMLButtonElement>("#addSubtitleButton").addEventListener("click", () => {
-    let start = clamp(media.currentTime, 0, Math.max(0, duration - subtitleMinimumDuration));
-    for (const existingCue of cues) {
-      if (start >= existingCue.start && start < existingCue.end) {
-        start = existingCue.end;
+    const start = clamp(
+      media.currentTime,
+      0,
+      Math.max(0, duration - subtitleMinimumDuration),
+    );
+    const containingCueIndex = cues.findIndex(existingCue => (
+      start > existingCue.start
+      && start < existingCue.end
+    ));
+
+    if (containingCueIndex >= 0) {
+      const containingCue = cues[containingCueIndex];
+      const nextCue = cues[containingCueIndex + 1];
+      const availableEnd = Math.min(duration, nextCue?.start ?? duration);
+      const retainedDuration = start - containingCue.start;
+      const availableNewDuration = availableEnd - start;
+      if (
+        retainedDuration < subtitleMinimumDuration
+        || availableNewDuration < subtitleMinimumDuration
+      ) {
+        return;
       }
+
+      containingCue.end = start;
+      const splitCue: SubtitleCue = {
+        id: crypto.randomUUID(),
+        start,
+        end: Math.min(start + 3, availableEnd),
+        text: "New subtitle",
+      };
+      cues.splice(containingCueIndex + 1, 0, splitCue);
+      selectedCueId = splitCue.id;
+      activeCueId = splitCue.id;
+      renderSubtitleList();
+      renderTimeline();
+      updatePreview();
+      syncSubtitleSelection(true);
+      return;
     }
+
     const nextCue = cues.find(existingCue => existingCue.start >= start);
     const availableEnd = Math.min(duration, nextCue?.start ?? duration);
     if (availableEnd - start < subtitleMinimumDuration) {
@@ -2127,8 +2266,18 @@ function setupEditor(project: EditorProject): void {
     }
   });
 
-  queryElement<HTMLButtonElement>("#exportVideoButton").addEventListener("click", () => {
-    const sourceBlobName = project.mediaObjectName || getGcsObjectName(project.mediaUrl);
+  exportVideoButton.addEventListener("click", () => {
+    if (project.isLocalMedia && project.mediaType === "video" && project.mediaUrl) {
+      const link = document.createElement("a");
+      link.href = project.mediaUrl;
+      link.download = `${project.title || "benzaiten-video"}.mp4`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      return;
+    }
+
+    const sourceBlobName = project.mediaObjectName;
     if (project.mediaType !== "video" || !sourceBlobName) {
       editorSaveStatus.textContent = "Only GCS video projects can currently be exported.";
       editorSaveStatus.classList.add("is-error");
@@ -2146,7 +2295,7 @@ function setupEditor(project: EditorProject): void {
   });
 
   const saveProjectChanges = async (background = false): Promise<boolean> => {
-    const sourceBlobName = project.mediaObjectName || getGcsObjectName(project.mediaUrl);
+    const sourceBlobName = project.mediaObjectName;
     const hasAddedMedia = sources.some(source => !source.isPrimary);
     const hasTimelineMediaChanges = sources.some(source => (
       source.isPrimary
@@ -2154,9 +2303,11 @@ function setupEditor(project: EditorProject): void {
     ));
 
     editorSaveStatus.classList.remove("is-error");
-    if (project.mediaType !== "video" || !sourceBlobName) {
+    if (project.mediaType !== "video" || project.isLocalMedia || !sourceBlobName) {
       if (!background) {
-        editorSaveStatus.textContent = "Only GCS video projects can currently be saved.";
+        editorSaveStatus.textContent = (
+          "Local projects stay in this browser until media upload is supported."
+        );
         editorSaveStatus.classList.add("is-error");
       }
       return false;
@@ -2235,7 +2386,7 @@ function setupEditor(project: EditorProject): void {
     void saveProjectChanges();
   });
 
-  queryElement<HTMLButtonElement>("#backButton").addEventListener("click", () => {
+  backButton.addEventListener("click", () => {
     if (mediaReady && subtitlesReady && !saveChangesButton.disabled) {
       void saveProjectChanges(true);
     }
@@ -2263,10 +2414,10 @@ function setupEditor(project: EditorProject): void {
       media.pause();
     }
   });
-  queryElement<HTMLButtonElement>("#skipBackButton").addEventListener("click", () => {
+  skipBackButton.addEventListener("click", () => {
     media.currentTime = Math.max(0, media.currentTime - 5);
   });
-  queryElement<HTMLButtonElement>("#skipForwardButton").addEventListener("click", () => {
+  skipForwardButton.addEventListener("click", () => {
     media.currentTime = Math.min(duration, media.currentTime + 5);
   });
 
@@ -2388,6 +2539,12 @@ function setupEditor(project: EditorProject): void {
     duration = Number.isFinite(media.duration) ? media.duration : duration;
     media.playbackRate = playbackRate;
     mediaReady = true;
+    project.isBlank = false;
+    blankEditorDrop.hidden = true;
+    playButton.disabled = false;
+    skipBackButton.disabled = false;
+    skipForwardButton.disabled = false;
+    exportVideoButton.disabled = project.mediaType !== "video";
     updateSaveAvailability();
     const primarySource: TimelineSource = {
       id: crypto.randomUUID(),
@@ -2745,44 +2902,99 @@ function setupEditor(project: EditorProject): void {
 
   window.addEventListener("resize", fitPreviewToAvailableSpace);
 
-  for (const eventName of ["dragenter", "dragover"]) {
-    timelineShell.addEventListener(eventName, event => {
-      event.preventDefault();
-      timelineShell.classList.add("is-dragging");
-    });
-  }
-  for (const eventName of ["dragleave", "drop"]) {
-    timelineShell.addEventListener(eventName, event => {
-      event.preventDefault();
-      timelineShell.classList.remove("is-dragging");
-    });
-  }
-  timelineShell.addEventListener("drop", event => {
-    const files = [...(event.dataTransfer?.files || [])];
-    for (const file of files) {
-      if (!file.type.startsWith("video/") && !file.type.startsWith("audio/")) {
-        continue;
-      }
-      const url = URL.createObjectURL(file);
-      const element = document.createElement(file.type.startsWith("video/") ? "video" : "audio");
-      element.src = url;
-      element.preload = "metadata";
-      element.addEventListener("loadedmetadata", () => {
-        const sourceDuration = Number.isFinite(element.duration) ? element.duration : 10;
-        sources.push({
-          id: crypto.randomUUID(),
-          name: file.name,
-          type: file.type.startsWith("video/") ? "video" : "audio",
-          url,
-          start: clamp(media.currentTime, 0, duration),
-          duration: Math.min(sourceDuration, Math.max(0.25, duration - media.currentTime)),
-          isPrimary: false,
-          element,
-        });
-        renderTimeline();
-      }, { once: true });
+  const addSecondaryMedia = (file: File): void => {
+    const url = URL.createObjectURL(file);
+    const element = document.createElement(file.type.startsWith("video/") ? "video" : "audio");
+    element.src = url;
+    element.preload = "metadata";
+    element.addEventListener("loadedmetadata", () => {
+      const sourceDuration = Number.isFinite(element.duration) ? element.duration : 10;
+      sources.push({
+        id: crypto.randomUUID(),
+        name: file.name,
+        type: file.type.startsWith("video/") ? "video" : "audio",
+        url,
+        start: clamp(media.currentTime, 0, duration),
+        duration: Math.min(sourceDuration, Math.max(0.25, duration - media.currentTime)),
+        isPrimary: false,
+        element,
+      });
+      renderTimeline();
+    }, { once: true });
+  };
+
+  const addEditorMedia = (files: File[]): void => {
+    const mediaFiles = files.filter(file => (
+      file.type.startsWith("video/") || file.type.startsWith("audio/")
+    ));
+    if (!mediaFiles.length) {
+      return;
     }
+
+    let remainingFiles = mediaFiles;
+    if (!mediaReady && project.isBlank) {
+      const primaryFile = mediaFiles[0];
+      const primaryUrl = URL.createObjectURL(primaryFile);
+      project.title = filenameWithoutExtension(primaryFile.name) || "Untitled project";
+      project.mediaUrl = primaryUrl;
+      project.mediaType = primaryFile.type.startsWith("video/") ? "video" : "audio";
+      project.isBlank = false;
+      project.isLocalMedia = true;
+      projectTitleInput.value = project.title;
+      audioPreviewTitle.textContent = project.title;
+      document.title = `${project.title} | Benzaiten Editor`;
+      blankEditorDrop.hidden = true;
+      media.style.display = project.mediaType === "video" ? "block" : "none";
+      audioPreview.classList.toggle("is-visible", project.mediaType === "audio");
+      media.src = primaryUrl;
+      media.load();
+      saveEditorProject(project);
+      remainingFiles = mediaFiles.slice(1);
+      if (remainingFiles.length) {
+        media.addEventListener("loadedmetadata", () => {
+          for (const file of remainingFiles) {
+            addSecondaryMedia(file);
+          }
+        }, { once: true });
+      }
+      return;
+    }
+
+    for (const file of remainingFiles) {
+      addSecondaryMedia(file);
+    }
+  };
+
+  blankEditorDrop.addEventListener("click", () => {
+    editorMediaInput.click();
   });
+  editorMediaInput.addEventListener("change", () => {
+    addEditorMedia([...(editorMediaInput.files || [])]);
+    editorMediaInput.value = "";
+  });
+
+  for (const dropTarget of [previewArea, timelineShell]) {
+    for (const eventName of ["dragenter", "dragover"]) {
+      dropTarget.addEventListener(eventName, event => {
+        event.preventDefault();
+        timelineShell.classList.add("is-dragging");
+        if (project.isBlank) {
+          blankEditorDrop.classList.add("is-dragging");
+        }
+      });
+    }
+    for (const eventName of ["dragleave", "drop"]) {
+      dropTarget.addEventListener(eventName, event => {
+        event.preventDefault();
+        timelineShell.classList.remove("is-dragging");
+        blankEditorDrop.classList.remove("is-dragging");
+      });
+    }
+    dropTarget.addEventListener("drop", event => {
+      event.preventDefault();
+      addEditorMedia([...(event.dataTransfer?.files || [])]);
+    });
+  }
 
   async function buildWaveform(url: string): Promise<Float32Array | undefined> {
     try {
