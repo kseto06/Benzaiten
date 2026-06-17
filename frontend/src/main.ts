@@ -6,6 +6,7 @@ const GCS_BUCKET = "benzaiten-outputs";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 const PROJECT_STORAGE_KEY = "benzaiten-editor-project";
 const LOG_PREFIX = "[Benzaiten]";
+const DEFAULT_KARAOKE_HIGHLIGHT_COLOR = "#f4a6c1";
 let landingDocumentListeners: AbortController | null = null;
 
 type JobStartResponse = {
@@ -75,6 +76,8 @@ type EditorProject = {
   playbackRate?: number;
   isBlank?: boolean;
   isLocalMedia?: boolean;
+  karaokeEnabled?: boolean;
+  karaokeHighlightColor?: string;
 };
 
 type LibraryProject = {
@@ -118,6 +121,21 @@ type PipelineStage = {
   skipped?: boolean;
 };
 
+type KaraokeToken = {
+  text: string;
+  weight: number;
+  lineBreak?: false;
+};
+
+type KaraokeLineBreak = {
+  lineBreak: true;
+};
+
+type TimedKaraokeToken = KaraokeToken & {
+  start: number;
+  end: number;
+};
+
 const appRoot = document.querySelector<HTMLDivElement>("#app");
 if (!appRoot) {
   throw new Error("Application root is missing");
@@ -143,6 +161,78 @@ function queryElement<T extends Element>(selector: string, root: ParentNode = do
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function getKaraokeTokenWeight(text: string): number {
+  let weight = 0;
+  for (const character of Array.from(text.trim())) {
+    if (/\s/u.test(character)) {
+      continue;
+    }
+    weight += /\p{P}|\p{S}/u.test(character) ? 0.25 : 1;
+  }
+  return Math.max(0.25, weight);
+}
+
+function getKaraokeLineTokens(line: string): KaraokeToken[] {
+  if (!line) {
+    return [];
+  }
+  if (/\s/u.test(line.trim())) {
+    return (line.match(/\S+\s*/gu) || []).map(token => ({
+      text: token,
+      weight: getKaraokeTokenWeight(token),
+    }));
+  }
+  return Array.from(line).map(character => ({
+    text: character,
+    weight: getKaraokeTokenWeight(character),
+  }));
+}
+
+function getTimedKaraokeTokens(cue: SubtitleCue): Array<TimedKaraokeToken | KaraokeLineBreak> {
+  const lines = cue.text.replace(/\r/g, "").split("\n");
+  const cueDuration = Math.max(0.01, cue.end - cue.start);
+  const timedSegments: Array<TimedKaraokeToken | KaraokeLineBreak> = [];
+  for (const [lineIndex, line] of lines.entries()) {
+    if (lineIndex > 0) {
+      timedSegments.push({ lineBreak: true });
+    }
+    const lineTokens = getKaraokeLineTokens(line);
+    const lineWeight = lineTokens.reduce((total, segment) => total + segment.weight, 0);
+    let cursor = cue.start;
+    for (const segment of lineTokens) {
+      const segmentDuration = cueDuration * (segment.weight / Math.max(0.25, lineWeight));
+      const timedSegment: TimedKaraokeToken = {
+        ...segment,
+        start: cursor,
+        end: cursor + segmentDuration,
+      };
+      timedSegments.push(timedSegment);
+      cursor = timedSegment.end;
+    }
+  }
+  return timedSegments;
+}
+
+function renderKaraokeSubtitle(cue: SubtitleCue, time: number): string {
+  return getTimedKaraokeTokens(cue).map(segment => {
+    if (segment.lineBreak === true) {
+      return "\n";
+    }
+    const progress = clamp(
+      (time - segment.start) / Math.max(0.01, segment.end - segment.start),
+      0,
+      1,
+    );
+    const text = escapeHtml(segment.text);
+    return (
+      `<span class="karaoke-segment" style="--karaoke-progress:${(progress * 100).toFixed(2)}%">`
+      + `<span class="karaoke-segment-base">${text}</span>`
+      + `<span class="karaoke-segment-fill" aria-hidden="true">${text}</span>`
+      + "</span>"
+    );
+  }).join("");
 }
 
 function getApiError(response: Response): Promise<string> {
@@ -1353,6 +1443,7 @@ function setupEditor(project: EditorProject): void {
   const saveChangesButton = queryElement<HTMLButtonElement>("#saveChangesButton");
   const editorSaveStatus = queryElement<HTMLSpanElement>("#editorSaveStatus");
   const subtitleFontSizeInput = queryElement<HTMLInputElement>("#subtitleFontSizeInput");
+  const karaokeToggleInput = queryElement<HTMLInputElement>("#karaokeToggleInput");
   const media = queryElement<HTMLVideoElement>("#editorMedia");
   const previewArea = queryElement<HTMLDivElement>(".preview-area");
   const previewStack = queryElement<HTMLDivElement>(".preview-stack");
@@ -1397,7 +1488,10 @@ function setupEditor(project: EditorProject): void {
   let subtitlesReady = false;
   let volumePercent = clamp(project.volumePercent ?? 100, 0, 200);
   let playbackRate = clamp(project.playbackRate ?? 1, 0.25, 2);
+  let karaokeEnabled = project.karaokeEnabled ?? true;
+  const karaokeHighlightColor = project.karaokeHighlightColor || DEFAULT_KARAOKE_HIGHLIGHT_COLOR;
   let playbackRequested = false;
+  let previewAnimationId: number | null = null;
   let audioContext: AudioContext | null = null;
   let mediaGain: GainNode | null = null;
   const previewReferenceWidth = 960;
@@ -1426,6 +1520,8 @@ function setupEditor(project: EditorProject): void {
   volumeInput.value = String(Math.round(volumePercent));
   speedSlider.value = playbackRate.toFixed(2);
   speedInput.value = playbackRate.toFixed(2);
+  karaokeToggleInput.checked = karaokeEnabled;
+  overlay.style.setProperty("--karaoke-highlight-color", karaokeHighlightColor);
 
   const fitEditorTitle = (): void => {
     if (window.getComputedStyle(projectTitle).position !== "absolute") {
@@ -1710,7 +1806,11 @@ function setupEditor(project: EditorProject): void {
   const updatePreview = (): void => {
     const currentTime = media.currentTime || 0;
     const activeCue = activeCueAt(currentTime);
-    overlay.textContent = activeCue?.text || "";
+    overlay.innerHTML = activeCue
+      ? karaokeEnabled
+        ? renderKaraokeSubtitle(activeCue, currentTime)
+        : escapeHtml(activeCue.text)
+      : "";
     if (activeCue?.id !== activeCueId) {
       activeCueId = activeCue?.id || null;
       if (activeCue) {
@@ -1743,6 +1843,28 @@ function setupEditor(project: EditorProject): void {
         source.element.pause();
       }
     }
+  };
+
+  const stopPreviewLoop = (): void => {
+    if (previewAnimationId !== null) {
+      window.cancelAnimationFrame(previewAnimationId);
+      previewAnimationId = null;
+    }
+  };
+
+  const startPreviewLoop = (): void => {
+    if (previewAnimationId !== null) {
+      return;
+    }
+    const tick = (): void => {
+      updatePreview();
+      if (!media.paused && !media.ended) {
+        previewAnimationId = window.requestAnimationFrame(tick);
+      } else {
+        previewAnimationId = null;
+      }
+    };
+    previewAnimationId = window.requestAnimationFrame(tick);
   };
 
   const renderSubtitleList = (): void => {
@@ -2098,6 +2220,13 @@ function setupEditor(project: EditorProject): void {
     updateSubtitlePreviewRendering();
     saveEditorProject(project);
   });
+  karaokeToggleInput.addEventListener("change", () => {
+    karaokeEnabled = karaokeToggleInput.checked;
+    project.karaokeEnabled = karaokeEnabled;
+    project.karaokeHighlightColor = karaokeHighlightColor;
+    saveEditorProject(project);
+    updatePreview();
+  });
 
   const selectSubtitleTransformBox = (): void => {
     subtitleTransformBox.classList.add("is-selected");
@@ -2266,7 +2395,7 @@ function setupEditor(project: EditorProject): void {
     }
   });
 
-  exportVideoButton.addEventListener("click", () => {
+  exportVideoButton.addEventListener("click", async () => {
     if (project.isLocalMedia && project.mediaType === "video" && project.mediaUrl) {
       const link = document.createElement("a");
       link.href = project.mediaUrl;
@@ -2284,9 +2413,24 @@ function setupEditor(project: EditorProject): void {
       return;
     }
 
+    exportVideoButton.disabled = true;
+    editorSaveStatus.textContent = "Preparing export...";
+    const saved = await saveProjectChanges(false);
+    exportVideoButton.disabled = false;
+    if (!saved) {
+      return;
+    }
+
+    const exportedBlobName = project.mediaObjectName;
+    if (!exportedBlobName) {
+      editorSaveStatus.textContent = "Unable to locate the exported video.";
+      editorSaveStatus.classList.add("is-error");
+      return;
+    }
+
     const link = document.createElement("a");
     link.href = (
-      `${API_BASE_URL}/projects/download?source_blob_name=${encodeURIComponent(sourceBlobName)}`
+      `${API_BASE_URL}/projects/download?source_blob_name=${encodeURIComponent(exportedBlobName)}`
     );
     link.download = `${project.title || "benzaiten-video"}.mp4`;
     document.body.append(link);
@@ -2342,6 +2486,8 @@ function setupEditor(project: EditorProject): void {
           })),
           subtitle_font_size: project.subtitleFontSize || 30,
           subtitle_transform: subtitleTransform,
+          karaoke_enabled: karaokeEnabled,
+          karaoke_highlight_color: karaokeHighlightColor,
         }),
       });
       if (!response.ok) {
@@ -2496,9 +2642,11 @@ function setupEditor(project: EditorProject): void {
   media.addEventListener("play", () => {
     playbackRequested = true;
     setPlayButtonState(true);
+    startPreviewLoop();
   });
   media.addEventListener("playing", () => {
     setVideoLoading(false);
+    startPreviewLoop();
   });
   media.addEventListener("waiting", () => {
     if (playbackRequested) {
@@ -2514,6 +2662,7 @@ function setupEditor(project: EditorProject): void {
     setVideoLoading(false);
   });
   media.addEventListener("pause", () => {
+    stopPreviewLoop();
     setPlayButtonState(false);
     if (!playbackRequested) {
       setVideoLoading(false);
@@ -2523,10 +2672,12 @@ function setupEditor(project: EditorProject): void {
     }
   });
   media.addEventListener("ended", () => {
+    stopPreviewLoop();
     playbackRequested = false;
     setVideoLoading(false);
   });
   media.addEventListener("error", () => {
+    stopPreviewLoop();
     playbackRequested = false;
     setVideoLoading(false);
   });
