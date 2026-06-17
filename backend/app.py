@@ -61,6 +61,8 @@ class SaveEditorProjectRequest(BaseModel):
     cues: List[EditorSubtitleCue]
     subtitle_font_size: int = Field(ge=12, le=72)
     subtitle_transform: EditorSubtitleTransform
+    karaoke_enabled: bool = True
+    karaoke_highlight_color: str = "#f4a6c1"
 
 
 class RenameProjectRequest(BaseModel):
@@ -123,6 +125,68 @@ def _escape_ass_text(text: str) -> str:
     )
 
 
+def _ass_color_from_hex(hex_color: str) -> str:
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", hex_color):
+        raise HTTPException(
+            status_code=400,
+            detail="Karaoke highlight color must be a #RRGGBB hex color.",
+        )
+    clean = hex_color.lstrip("#")
+    red = clean[0:2]
+    green = clean[2:4]
+    blue = clean[4:6]
+    return f"&H00{blue}{green}{red}".upper()
+
+
+def _karaoke_token_weight(text: str) -> float:
+    weight = 0.0
+    for character in text.strip():
+        if character.isspace():
+            continue
+        weight += 0.25 if re.fullmatch(r"[\W_]", character, re.UNICODE) else 1.0
+    return max(0.25, weight)
+
+
+def _karaoke_line_segments(text: str) -> List[Tuple[str, float]]:
+    if not text:
+        return []
+    if re.search(r"\s", text.strip()):
+        return [
+            (token, _karaoke_token_weight(token))
+            for token in re.findall(r"\S+\s*", text)
+        ]
+    return [(character, _karaoke_token_weight(character)) for character in text]
+
+
+def _escape_ass_karaoke_segment(text: str) -> str:
+    return (
+        text.replace("\\", r"\\")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+        .replace("\r", "")
+    )
+
+
+def _format_karaoke_ass_text(text: str, duration: float) -> str:
+    segments = _karaoke_line_segments(text)
+    total_weight = sum(weight for _, weight in segments) or 1.0
+    remaining_centiseconds = max(1, round(duration * 100))
+    remaining_weight = total_weight
+    ass_parts: List[str] = []
+    for token, weight in segments:
+        if remaining_weight <= 0:
+            centiseconds = 1
+        else:
+            centiseconds = max(
+                1,
+                round(remaining_centiseconds * (weight / remaining_weight)),
+            )
+        remaining_centiseconds = max(0, remaining_centiseconds - centiseconds)
+        remaining_weight -= weight
+        ass_parts.append(rf"{{\kf{centiseconds}}}{_escape_ass_karaoke_segment(token)}")
+    return "".join(ass_parts)
+
+
 def _write_editor_subtitles(
     request: SaveEditorProjectRequest,
     ass_path: Path,
@@ -132,6 +196,12 @@ def _write_editor_subtitles(
     margin = round((100 - transform.width) / 200 * 1920)
     position_x = round(transform.x / 100 * 1920)
     position_y = round(transform.y / 100 * 1080)
+    primary_color = (
+        _ass_color_from_hex(request.karaoke_highlight_color)
+        if request.karaoke_enabled
+        else "&H00FFFFFF"
+    )
+    secondary_color = "&H00FFFFFF" if request.karaoke_enabled else "&H000000FF"
     ass_lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -147,8 +217,8 @@ def _write_editor_subtitles(
             "Alignment, MarginL, MarginR, MarginV, Encoding"
         ),
         (
-            f"Style: Default,Arial,{request.subtitle_font_size},&H00FFFFFF,"
-            "&H000000FF,&H00101A24,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,"
+            f"Style: Default,Arial,{request.subtitle_font_size},{primary_color},"
+            f"{secondary_color},&H00101A24,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,"
             f"5,{margin},{margin},0,1"
         ),
         "",
@@ -165,17 +235,36 @@ def _write_editor_subtitles(
                 status_code=400,
                 detail=f"Subtitle cue {index} must end after it starts.",
             )
-        ass_text = _escape_ass_text(cue.text)
-        overrides = (
-            rf"{{\an5\pos({position_x},{position_y})"
-            rf"\frz{transform.rotation:.2f}}}"
-        )
-        ass_lines.append(
-            "Dialogue: 0,"
-            f"{_format_ass_timestamp(cue.start)},"
-            f"{_format_ass_timestamp(cue.end)},"
-            f"Default,,0,0,0,,{overrides}{ass_text}"
-        )
+        if request.karaoke_enabled:
+            cue_lines = cue.text.replace("\r", "").split("\n")
+            line_height = round(request.subtitle_font_size * 1.25)
+            line_count = max(1, len(cue_lines))
+            for line_index, line in enumerate(cue_lines):
+                if not line:
+                    continue
+                offset_y = round((line_index - (line_count - 1) / 2) * line_height)
+                overrides = (
+                    rf"{{\an5\pos({position_x},{position_y + offset_y})"
+                    rf"\frz{transform.rotation:.2f}}}"
+                )
+                ass_lines.append(
+                    "Dialogue: 0,"
+                    f"{_format_ass_timestamp(cue.start)},"
+                    f"{_format_ass_timestamp(cue.end)},"
+                    f"Default,,0,0,0,,{overrides}"
+                    f"{_format_karaoke_ass_text(line, cue.end - cue.start)}"
+                )
+        else:
+            overrides = (
+                rf"{{\an5\pos({position_x},{position_y})"
+                rf"\frz{transform.rotation:.2f}}}"
+            )
+            ass_lines.append(
+                "Dialogue: 0,"
+                f"{_format_ass_timestamp(cue.start)},"
+                f"{_format_ass_timestamp(cue.end)},"
+                f"Default,,0,0,0,,{overrides}{_escape_ass_text(cue.text)}"
+            )
         vtt_lines.extend(
             [
                 str(index),

@@ -1632,6 +1632,28 @@ body.is-resizing-panel {
   border-bottom: 1px solid var(--line);
 }
 
+.karaoke-toggle {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  color: var(--ink);
+  background: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.karaoke-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--purple);
+}
+
 .font-size-control {
   display: flex;
   min-height: 38px;
@@ -2035,6 +2057,11 @@ body.is-resizing-panel {
 
 .subtitle-overlay {
   --subtitle-preview-scale: 1;
+  --karaoke-highlight-color: #f4a6c1;
+  --subtitle-shadow:
+    0 calc(2px * var(--subtitle-preview-scale))
+      calc(5px * var(--subtitle-preview-scale)) #000,
+    0 0 calc(2px * var(--subtitle-preview-scale)) #000;
   width: 100%;
   padding:
     calc(8px * var(--subtitle-preview-scale))
@@ -2043,12 +2070,45 @@ body.is-resizing-panel {
   font-weight: 700;
   line-height: 1.25;
   text-align: center;
-  text-shadow:
-    0 calc(2px * var(--subtitle-preview-scale))
-      calc(5px * var(--subtitle-preview-scale)) #000,
-    0 0 calc(2px * var(--subtitle-preview-scale)) #000;
+  text-shadow: var(--subtitle-shadow);
   white-space: pre-line;
   pointer-events: none;
+}
+
+.karaoke-segment {
+  position: relative;
+  display: inline-block;
+  color: #fff;
+  text-shadow: var(--subtitle-shadow);
+  vertical-align: baseline;
+  white-space: pre;
+}
+
+.karaoke-segment-base {
+  color: #fff;
+  -webkit-text-fill-color: currentColor;
+  text-shadow: var(--subtitle-shadow);
+}
+
+.karaoke-segment-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: inline-block;
+  width: var(--karaoke-progress);
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--karaoke-highlight-color);
+  -webkit-text-fill-color: currentColor;
+  -webkit-text-stroke: calc(0.35px * var(--subtitle-preview-scale))
+    rgba(255, 248, 253, 0.95);
+  filter:
+    drop-shadow(0 0 calc(3px * var(--subtitle-preview-scale)) rgba(255, 226, 240, 0.7))
+    drop-shadow(0 calc(2px * var(--subtitle-preview-scale))
+      calc(4px * var(--subtitle-preview-scale)) rgba(0, 0, 0, 0.75));
+  text-shadow:
+    0 0 calc(2px * var(--subtitle-preview-scale)) rgba(255, 248, 253, 0.95),
+    var(--subtitle-shadow);
+  white-space: pre;
 }
 
 .subtitle-box-outline {
