@@ -163,6 +163,11 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+function withQueryParam(url: string, key: string, value: string | number): string {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`;
+}
+
 function getKaraokeTokenWeight(text: string): number {
   let weight = 0;
   for (const character of Array.from(text.trim())) {
@@ -235,11 +240,36 @@ function renderKaraokeSubtitle(cue: SubtitleCue, time: number): string {
   }).join("");
 }
 
+function formatApiErrorDetail(detail: unknown): string {
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    return detail.map(item => {
+      if (item && typeof item === "object") {
+        const record = item as { loc?: unknown; msg?: unknown; type?: unknown };
+        const location = Array.isArray(record.loc) ? record.loc.join(".") : "";
+        const message = typeof record.msg === "string" ? record.msg : JSON.stringify(item);
+        return location ? `${location}: ${message}` : message;
+      }
+      return String(item);
+    }).join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    return JSON.stringify(detail);
+  }
+  return "";
+}
+
 function getApiError(response: Response): Promise<string> {
   return response.text().then(body => {
     try {
-      const parsed = JSON.parse(body) as { detail?: string };
-      return parsed.detail || body || `Request failed with status ${response.status}`;
+      const parsed = JSON.parse(body) as { detail?: unknown };
+      return (
+        formatApiErrorDetail(parsed.detail)
+        || body
+        || `Request failed with status ${response.status}`
+      );
     } catch {
       return body || `Request failed with status ${response.status}`;
     }
@@ -1474,12 +1504,28 @@ function setupEditor(project: EditorProject): void {
   const volumeInput = queryElement<HTMLInputElement>("#volumeInput");
   const speedSlider = queryElement<HTMLInputElement>("#speedSlider");
   const speedInput = queryElement<HTMLInputElement>("#speedInput");
+  const exportPreviewModal = queryElement<HTMLDivElement>("#exportPreviewModal");
+  const exportPreviewVideo = queryElement<HTMLVideoElement>("#exportPreviewVideo");
+  const exportPreviewTitle = queryElement<HTMLElement>("#exportPreviewTitle");
+  const exportRenderProgress = queryElement<HTMLDivElement>("#exportRenderProgress");
+  const exportRenderPercent = queryElement<HTMLElement>("#exportRenderPercent");
+  const exportRenderStatus = queryElement<HTMLElement>("#exportRenderStatus");
+  const exportProgressFill = queryElement<HTMLDivElement>("#exportProgressFill");
+  const downloadMp4Button = queryElement<HTMLButtonElement>("#downloadMp4Button");
+  const downloadMp3Button = queryElement<HTMLButtonElement>("#downloadMp3Button");
+  let exportProgressTimer: number | null = null;
+  let exportAbortController: AbortController | null = null;
+  let activeExportRenderId: string | null = null;
+  let latestRenderedPreviewUrl: string | null = null;
+  let exportWasCancelled = false;
+  let saveInFlight = false;
   let cues: SubtitleCue[] = [];
   let sources: TimelineSource[] = [];
   let duration = project.isBlank ? 60 : 120;
   let zoom = Number(zoomInput.value);
   let selectedCueId: string | null = null;
-  let selectedSourceId: string | null = null;
+  const selectedCueIds = new Set<string>();
+  const selectedSourceIds = new Set<string>();
   let activeCueId: string | null = null;
   let timelineSnapTime: number | null = null;
   let previousSidebarWidth = 350;
@@ -1503,6 +1549,30 @@ function setupEditor(project: EditorProject): void {
     rotation: project.subtitleTransform?.rotation ?? 0,
   };
 
+  const finiteOrDefault = (value: number | undefined, fallback: number): number => (
+    Number.isFinite(value) ? Number(value) : fallback
+  );
+
+  const getSerializableSubtitleTransform = (): SubtitleTransform => ({
+    x: clamp(finiteOrDefault(subtitleTransform.x, 50), 0, 100),
+    y: clamp(finiteOrDefault(subtitleTransform.y, 82), 0, 100),
+    width: clamp(finiteOrDefault(subtitleTransform.width, 82), 5, 120),
+    height: clamp(finiteOrDefault(subtitleTransform.height, 22), 5, 100),
+    rotation: clamp(finiteOrDefault(subtitleTransform.rotation, 0), -180, 180),
+  });
+
+  const getSerializableCues = (): Array<{ start: number; end: number; text: string }> => (
+    cues.map(cue => {
+      const start = Math.max(0, finiteOrDefault(cue.start, 0));
+      const end = Math.max(start + 0.1, finiteOrDefault(cue.end, start + 0.1));
+      return {
+        start,
+        end,
+        text: cue.text.length > 0 ? cue.text : " ",
+      };
+    })
+  );
+
   if (project.mediaUrl) {
     media.src = project.mediaUrl;
   }
@@ -1522,6 +1592,52 @@ function setupEditor(project: EditorProject): void {
   speedInput.value = playbackRate.toFixed(2);
   karaokeToggleInput.checked = karaokeEnabled;
   overlay.style.setProperty("--karaoke-highlight-color", karaokeHighlightColor);
+
+  const isMultiSelectEvent = (event: MouseEvent | PointerEvent): boolean => (
+    event.metaKey || event.ctrlKey
+  );
+
+  const clearTimelineSelection = (): void => {
+    selectedCueIds.clear();
+    selectedSourceIds.clear();
+    selectedCueId = null;
+  };
+
+  const selectCue = (cueId: string, additive = false): void => {
+    if (additive) {
+      selectedSourceIds.clear();
+      if (selectedCueIds.has(cueId)) {
+        selectedCueIds.delete(cueId);
+      } else {
+        selectedCueIds.add(cueId);
+      }
+      selectedCueId = selectedCueIds.has(cueId)
+        ? cueId
+        : Array.from(selectedCueIds).at(-1) || null;
+      return;
+    }
+    selectedCueIds.clear();
+    selectedSourceIds.clear();
+    selectedCueIds.add(cueId);
+    selectedCueId = cueId;
+  };
+
+  const selectSource = (sourceId: string, additive = false): void => {
+    if (additive) {
+      selectedCueIds.clear();
+      selectedCueId = null;
+      if (selectedSourceIds.has(sourceId)) {
+        selectedSourceIds.delete(sourceId);
+      } else {
+        selectedSourceIds.add(sourceId);
+      }
+      return;
+    }
+    selectedCueIds.clear();
+    selectedSourceIds.clear();
+    selectedSourceIds.add(sourceId);
+    selectedCueId = null;
+  };
 
   const fitEditorTitle = (): void => {
     if (window.getComputedStyle(projectTitle).position !== "absolute") {
@@ -1604,14 +1720,31 @@ function setupEditor(project: EditorProject): void {
     saveEditorProject(project);
   };
 
+  const updateExportAvailability = (): void => {
+    exportVideoButton.disabled = (
+      saveInFlight
+      || project.isBlank
+      || project.mediaType !== "video"
+    );
+  };
+
   const updateSaveAvailability = (): void => {
     saveChangesButton.disabled = (
-      project.mediaType !== "video"
+      saveInFlight
+      || project.mediaType !== "video"
       || project.isLocalMedia
       || !mediaReady
       || !subtitlesReady
     );
+    updateExportAvailability();
   };
+
+  const hasSavePrerequisites = (): boolean => (
+      project.mediaType !== "video"
+      || project.isLocalMedia
+      || !mediaReady
+      || !subtitlesReady
+  );
 
   const persistSubtitleTransform = (): void => {
     project.subtitleTransform = { ...subtitleTransform };
@@ -1792,7 +1925,11 @@ function setupEditor(project: EditorProject): void {
 
   const syncSubtitleSelection = (scrollIntoView = false): void => {
     for (const card of subtitleList.querySelectorAll<HTMLElement>(".subtitle-card")) {
-      card.classList.toggle("is-active", card.dataset.cueId === selectedCueId);
+      const cueId = card.dataset.cueId;
+      card.classList.toggle(
+        "is-active",
+        Boolean(cueId && selectedCueIds.has(cueId)),
+      );
     }
     if (scrollIntoView && selectedCueId) {
       window.requestAnimationFrame(() => {
@@ -1813,8 +1950,8 @@ function setupEditor(project: EditorProject): void {
       : "";
     if (activeCue?.id !== activeCueId) {
       activeCueId = activeCue?.id || null;
-      if (activeCue) {
-        selectedCueId = activeCue.id;
+      if (activeCue && selectedCueIds.size <= 1 && selectedSourceIds.size === 0) {
+        selectCue(activeCue.id);
         syncSubtitleSelection();
       }
     }
@@ -1880,7 +2017,7 @@ function setupEditor(project: EditorProject): void {
     subtitleList.innerHTML = cues.map(cue => {
       const { previousEnd, nextStart } = getSubtitleNeighborBounds(cue);
       return `
-        <article class="subtitle-card ${cue.id === selectedCueId ? "is-active" : ""}" data-cue-id="${cue.id}">
+        <article class="subtitle-card ${selectedCueIds.has(cue.id) ? "is-active" : ""}" data-cue-id="${cue.id}">
           <div class="subtitle-time-row">
             <div class="subtitle-time">
               <input
@@ -1967,7 +2104,7 @@ function setupEditor(project: EditorProject): void {
           <div class="track-label">${source.type === "video" ? "Video" : "Audio"}</div>
           <div class="track-lane" style="width:${width}px">
             <div
-              class="clip ${sourceClass} ${source.id === selectedSourceId ? "is-selected" : ""}"
+              class="clip ${sourceClass} ${selectedSourceIds.has(source.id) ? "is-selected" : ""}"
               data-source-id="${source.id}"
               style="left:${source.start * pixelsPerSecond()}px;width:${Math.max(20, source.duration * pixelsPerSecond())}px"
             >
@@ -1983,7 +2120,7 @@ function setupEditor(project: EditorProject): void {
 
     const subtitleClips = cues.map(cue => `
       <div
-        class="clip subtitle-clip ${cue.id === selectedCueId ? "is-selected" : ""}"
+        class="clip subtitle-clip ${selectedCueIds.has(cue.id) ? "is-selected" : ""}"
         data-cue-clip="${cue.id}"
         style="left:${cue.start * pixelsPerSecond()}px;width:${Math.max(18, (cue.end - cue.start) * pixelsPerSecond())}px"
       >
@@ -2020,8 +2157,7 @@ function setupEditor(project: EditorProject): void {
   };
 
   const seekToCue = (cue: SubtitleCue): void => {
-    selectedCueId = cue.id;
-    selectedSourceId = null;
+    selectCue(cue.id);
     media.currentTime = cue.start;
     updatePreview();
     renderTimeline();
@@ -2034,11 +2170,43 @@ function setupEditor(project: EditorProject): void {
       return;
     }
     cues.splice(cueIndex, 1);
+    selectedCueIds.delete(cueId);
     if (selectedCueId === cueId) {
-      selectedCueId = cues[Math.min(cueIndex, cues.length - 1)]?.id || null;
+      selectedCueId = Array.from(selectedCueIds).at(-1)
+        || cues[Math.min(cueIndex, cues.length - 1)]?.id
+        || null;
+      if (selectedCueId) {
+        selectedCueIds.add(selectedCueId);
+      }
     }
     if (activeCueId === cueId) {
       activeCueId = null;
+    }
+    renderSubtitleList();
+    renderTimeline();
+    updatePreview();
+  };
+
+  const deleteSelectedSubtitleCues = (): void => {
+    const selectedIds = selectedCueIds.size > 0
+      ? new Set(selectedCueIds)
+      : new Set(selectedCueId ? [selectedCueId] : []);
+    if (selectedIds.size === 0) {
+      return;
+    }
+    cues = cues.filter(cue => !selectedIds.has(cue.id));
+    for (const cueId of selectedIds) {
+      selectedCueIds.delete(cueId);
+      if (activeCueId === cueId) {
+        activeCueId = null;
+      }
+    }
+    selectedCueId = cues.find(cue => cue.start >= media.currentTime)?.id
+      || cues.at(-1)?.id
+      || null;
+    selectedCueIds.clear();
+    if (selectedCueId) {
+      selectedCueIds.add(selectedCueId);
     }
     renderSubtitleList();
     renderTimeline();
@@ -2059,7 +2227,13 @@ function setupEditor(project: EditorProject): void {
     if (card?.dataset.cueId) {
       const cue = cues.find(item => item.id === card.dataset.cueId);
       if (cue) {
-        seekToCue(cue);
+        selectCue(cue.id, isMultiSelectEvent(event));
+        if (!isMultiSelectEvent(event)) {
+          media.currentTime = cue.start;
+          updatePreview();
+        }
+        renderTimeline();
+        syncSubtitleSelection(true);
       }
     }
   });
@@ -2070,7 +2244,7 @@ function setupEditor(project: EditorProject): void {
     if (!card?.dataset.cueId) {
       return;
     }
-    selectedCueId = card.dataset.cueId;
+    selectCue(card.dataset.cueId);
     const cue = cues.find(item => item.id === selectedCueId);
     if (cue) {
       media.currentTime = cue.start;
@@ -2162,7 +2336,7 @@ function setupEditor(project: EditorProject): void {
         text: "New subtitle",
       };
       cues.splice(containingCueIndex + 1, 0, splitCue);
-      selectedCueId = splitCue.id;
+      selectCue(splitCue.id);
       activeCueId = splitCue.id;
       renderSubtitleList();
       renderTimeline();
@@ -2184,7 +2358,7 @@ function setupEditor(project: EditorProject): void {
     };
     cues.push(cue);
     cues.sort((left, right) => left.start - right.start);
-    selectedCueId = cue.id;
+    selectCue(cue.id);
     renderSubtitleList();
     renderTimeline();
   });
@@ -2395,50 +2569,247 @@ function setupEditor(project: EditorProject): void {
     }
   });
 
-  exportVideoButton.addEventListener("click", async () => {
-    if (project.isLocalMedia && project.mediaType === "video" && project.mediaUrl) {
-      const link = document.createElement("a");
-      link.href = project.mediaUrl;
-      link.download = `${project.title || "benzaiten-video"}.mp4`;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      return;
-    }
+  const getProjectDownloadUrl = (sourceBlobName: string): string => (
+    `${API_BASE_URL}/projects/download?source_blob_name=${encodeURIComponent(sourceBlobName)}`
+  );
 
-    const sourceBlobName = project.mediaObjectName;
-    if (project.mediaType !== "video" || !sourceBlobName) {
-      editorSaveStatus.textContent = "Only GCS video projects can currently be exported.";
-      editorSaveStatus.classList.add("is-error");
-      return;
-    }
+  const getProjectAudioDownloadUrl = (sourceBlobName: string): string => (
+    `${API_BASE_URL}/projects/download-audio?source_blob_name=${encodeURIComponent(sourceBlobName)}`
+  );
 
-    exportVideoButton.disabled = true;
-    editorSaveStatus.textContent = "Preparing export...";
-    const saved = await saveProjectChanges(false);
-    exportVideoButton.disabled = false;
-    if (!saved) {
-      return;
-    }
-
-    const exportedBlobName = project.mediaObjectName;
-    if (!exportedBlobName) {
-      editorSaveStatus.textContent = "Unable to locate the exported video.";
-      editorSaveStatus.classList.add("is-error");
-      return;
-    }
-
+  const downloadVideoUrl = (url: string): void => {
     const link = document.createElement("a");
-    link.href = (
-      `${API_BASE_URL}/projects/download?source_blob_name=${encodeURIComponent(exportedBlobName)}`
-    );
+    link.href = url;
     link.download = `${project.title || "benzaiten-video"}.mp4`;
     document.body.append(link);
     link.click();
     link.remove();
+  };
+
+  const downloadAudioUrl = (url: string): void => {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${project.title || "benzaiten-video"}.mp3`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  };
+
+  const stopExportProgress = (): void => {
+    if (exportProgressTimer !== null) {
+      window.clearInterval(exportProgressTimer);
+      exportProgressTimer = null;
+    }
+  };
+
+  const cancelActiveExportRender = (): void => {
+    if (!activeExportRenderId) {
+      return;
+    }
+    const renderId = activeExportRenderId;
+    activeExportRenderId = null;
+    void fetch(`${API_BASE_URL}/projects/render-cancel/${encodeURIComponent(renderId)}`, {
+      method: "POST",
+      keepalive: true,
+    }).catch(error => {
+      console.info(`${LOG_PREFIX} Could not cancel export render`, error);
+    });
+  };
+
+  const cancelExportRenderForNavigation = (): void => {
+    if (!exportAbortController && !activeExportRenderId) {
+      return;
+    }
+    exportWasCancelled = true;
+    cancelActiveExportRender();
+    exportAbortController?.abort();
+    exportAbortController = null;
+    stopExportProgress();
+  };
+
+  const setExportProgress = (percent: number, status: string): void => {
+    const safePercent = clamp(Math.round(percent), 0, 100);
+    exportRenderPercent.textContent = `${safePercent}%`;
+    exportRenderStatus.textContent = status;
+    exportProgressFill.style.width = `${safePercent}%`;
+  };
+
+  const startEstimatedExportProgress = (): void => {
+    stopExportProgress();
+    let progress = 7;
+    setExportProgress(progress, "Preparing render...");
+    exportProgressTimer = window.setInterval(() => {
+      progress = Math.min(88, progress + Math.max(1, (90 - progress) * 0.08));
+      const status = progress < 24
+        ? "Preparing render..."
+        : progress < 72
+          ? "Rendering subtitles into the video..."
+          : "Publishing preview...";
+      setExportProgress(progress, status);
+      if (progress >= 88) {
+        stopExportProgress();
+      }
+    }, 650);
+  };
+
+  const closeExportPreview = (): void => {
+    stopExportProgress();
+    if (exportAbortController) {
+      exportWasCancelled = true;
+      cancelExportRenderForNavigation();
+    }
+    saveChangesButton.textContent = "Save changes";
+    updateSaveAvailability();
+    exportPreviewModal.hidden = true;
+    exportPreviewModal.classList.remove("is-open");
+    exportPreviewVideo.pause();
+    exportPreviewVideo.removeAttribute("src");
+    exportPreviewVideo.load();
+  };
+
+  const editorNavigationAbortController = new AbortController();
+  window.addEventListener(
+    "hashchange",
+    () => {
+      if (window.location.hash !== "#editor") {
+        cancelExportRenderForNavigation();
+        editorNavigationAbortController.abort();
+      }
+    },
+    { signal: editorNavigationAbortController.signal },
+  );
+  window.addEventListener(
+    "pagehide",
+    cancelExportRenderForNavigation,
+    { signal: editorNavigationAbortController.signal },
+  );
+
+  const openExportProgress = (): void => {
+    exportWasCancelled = false;
+    media.pause();
+    for (const source of sources) {
+      source.element?.pause();
+    }
+    setPlayButtonState(false);
+    playbackRequested = false;
+    setVideoLoading(false);
+    exportPreviewTitle.textContent = project.title || "Benzaiten video";
+    exportPreviewVideo.hidden = true;
+    exportPreviewVideo.removeAttribute("src");
+    exportPreviewVideo.load();
+    exportRenderProgress.hidden = false;
+    exportPreviewModal.hidden = false;
+    exportPreviewModal.classList.add("is-open");
+    startEstimatedExportProgress();
+  };
+
+  const openExportPreview = (previewUrl: string): void => {
+    stopExportProgress();
+    setExportProgress(100, "Preview ready.");
+    exportPreviewTitle.textContent = project.title || "Benzaiten video";
+    exportPreviewVideo.src = previewUrl;
+    exportPreviewVideo.hidden = false;
+    exportRenderProgress.hidden = true;
+    exportPreviewModal.hidden = false;
+    exportPreviewModal.classList.add("is-open");
+    exportPreviewVideo.load();
+  };
+
+  exportVideoButton.addEventListener("click", async () => {
+    exportVideoButton.disabled = true;
+    editorSaveStatus.textContent = "Preparing export...";
+    openExportProgress();
+    try {
+      if (project.isLocalMedia && project.mediaType === "video" && project.mediaUrl) {
+        openExportPreview(project.mediaUrl);
+        editorSaveStatus.textContent = "";
+        return;
+      }
+
+      const sourceBlobName = project.mediaObjectName;
+      if (project.mediaType !== "video" || !sourceBlobName) {
+        editorSaveStatus.textContent = "Only GCS video projects can currently be exported.";
+        editorSaveStatus.classList.add("is-error");
+        closeExportPreview();
+        return;
+      }
+
+      exportAbortController = new AbortController();
+      activeExportRenderId = crypto.randomUUID().replaceAll("-", "");
+      const saved = await saveProjectChanges(
+        false,
+        exportAbortController.signal,
+        activeExportRenderId,
+      );
+      exportAbortController = null;
+      activeExportRenderId = null;
+      if (!saved) {
+        if (!exportWasCancelled) {
+          closeExportPreview();
+        } else {
+          editorSaveStatus.textContent = "Export cancelled.";
+          editorSaveStatus.classList.remove("is-error");
+        }
+        return;
+      }
+
+      if (!project.mediaObjectName || !latestRenderedPreviewUrl) {
+        editorSaveStatus.textContent = "Unable to locate the rendered video preview.";
+        editorSaveStatus.classList.add("is-error");
+        closeExportPreview();
+        return;
+      }
+
+      openExportPreview(latestRenderedPreviewUrl);
+      editorSaveStatus.textContent = "Export preview ready.";
+      editorSaveStatus.classList.remove("is-error");
+    } finally {
+      exportAbortController = null;
+      activeExportRenderId = null;
+      saveChangesButton.textContent = "Save changes";
+      updateSaveAvailability();
+    }
   });
 
-  const saveProjectChanges = async (background = false): Promise<boolean> => {
+  downloadMp4Button.addEventListener("click", () => {
+    if (project.isLocalMedia && project.mediaType === "video" && project.mediaUrl) {
+      downloadVideoUrl(project.mediaUrl);
+      return;
+    }
+    if (!project.mediaObjectName) {
+      editorSaveStatus.textContent = "Unable to locate the rendered video.";
+      editorSaveStatus.classList.add("is-error");
+      return;
+    }
+    downloadVideoUrl(getProjectDownloadUrl(project.mediaObjectName));
+  });
+
+  downloadMp3Button.addEventListener("click", () => {
+    if (!project.mediaObjectName || project.isLocalMedia) {
+      editorSaveStatus.textContent = "Audio export is only available for rendered GCS projects.";
+      editorSaveStatus.classList.add("is-error");
+      return;
+    }
+    downloadAudioUrl(getProjectAudioDownloadUrl(project.mediaObjectName));
+  });
+
+  exportPreviewModal.addEventListener("click", event => {
+    if ((event.target as HTMLElement).closest("[data-export-preview-close]")) {
+      closeExportPreview();
+    }
+  });
+
+  window.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !exportPreviewModal.hidden) {
+      closeExportPreview();
+    }
+  });
+
+  const saveProjectChanges = async (
+    background = false,
+    signal?: AbortSignal,
+    clientRenderId?: string,
+  ): Promise<boolean> => {
     const sourceBlobName = project.mediaObjectName;
     const hasAddedMedia = sources.some(source => !source.isPrimary);
     const hasTimelineMediaChanges = sources.some(source => (
@@ -2447,6 +2818,12 @@ function setupEditor(project: EditorProject): void {
     ));
 
     editorSaveStatus.classList.remove("is-error");
+    if (saveInFlight) {
+      if (!background) {
+        editorSaveStatus.textContent = "A save or export is already running.";
+      }
+      return false;
+    }
     if (project.mediaType !== "video" || project.isLocalMedia || !sourceBlobName) {
       if (!background) {
         editorSaveStatus.textContent = (
@@ -2467,7 +2844,8 @@ function setupEditor(project: EditorProject): void {
       return false;
     }
 
-    saveChangesButton.disabled = true;
+    saveInFlight = true;
+    updateSaveAvailability();
     saveChangesButton.textContent = "Saving...";
     if (!background) {
       editorSaveStatus.textContent = "";
@@ -2475,19 +2853,17 @@ function setupEditor(project: EditorProject): void {
     try {
       const response = await fetch(`${API_BASE_URL}/projects/save`, {
         method: "POST",
+        signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           source_blob_name: sourceBlobName,
           title: project.title,
-          cues: cues.map(cue => ({
-            start: cue.start,
-            end: cue.end,
-            text: cue.text,
-          })),
+          cues: getSerializableCues(),
           subtitle_font_size: project.subtitleFontSize || 30,
-          subtitle_transform: subtitleTransform,
+          subtitle_transform: getSerializableSubtitleTransform(),
           karaoke_enabled: karaokeEnabled,
           karaoke_highlight_color: karaokeHighlightColor,
+          client_render_id: clientRenderId,
         }),
       });
       if (!response.ok) {
@@ -2498,6 +2874,7 @@ function setupEditor(project: EditorProject): void {
       project.title = saved.title;
       project.originalTitle = saved.title;
       project.mediaObjectName = saved.media_object_name;
+      latestRenderedPreviewUrl = withQueryParam(saved.media_url, "generation", saved.generation);
       project.mediaUrl = saved.render_source_url;
       project.subtitleObjectName = saved.subtitle_object_name;
       project.subtitleUrl = saved.subtitle_url;
@@ -2514,15 +2891,27 @@ function setupEditor(project: EditorProject): void {
       }
       return true;
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        console.info(`${LOG_PREFIX} Project save aborted by user`);
+        return false;
+      }
+      const errorMessage = error instanceof Error ? error.message : "";
+      if (
+        signal?.aborted
+        || exportWasCancelled
+        || /cancelled|code 255/i.test(errorMessage)
+      ) {
+        console.info(`${LOG_PREFIX} Project save cancelled`);
+        return false;
+      }
       if (!background) {
-        editorSaveStatus.textContent = error instanceof Error
-          ? error.message
-          : "Unable to save changes.";
+        editorSaveStatus.textContent = errorMessage || "Unable to save changes.";
         editorSaveStatus.classList.add("is-error");
       }
       console.error(`${LOG_PREFIX} Project save failed`, error);
       return false;
     } finally {
+      saveInFlight = false;
       updateSaveAvailability();
       saveChangesButton.textContent = "Save changes";
     }
@@ -2533,7 +2922,7 @@ function setupEditor(project: EditorProject): void {
   });
 
   backButton.addEventListener("click", () => {
-    if (mediaReady && subtitlesReady && !saveChangesButton.disabled) {
+    if (!hasSavePrerequisites() && !saveInFlight) {
       void saveProjectChanges(true);
     }
     window.location.hash = "";
@@ -2626,12 +3015,12 @@ function setupEditor(project: EditorProject): void {
     if (
       target?.matches("input, textarea, select")
       || target?.isContentEditable
-      || !selectedCueId
+      || (selectedCueIds.size === 0 && !selectedCueId)
     ) {
       return;
     }
     event.preventDefault();
-    deleteSubtitleCue(selectedCueId);
+    deleteSelectedSubtitleCues();
   });
 
   zoomInput.addEventListener("input", () => {
@@ -2746,13 +3135,11 @@ function setupEditor(project: EditorProject): void {
     const dragPixelsPerSecond = pixelsPerSecond();
     const snapCandidates = getTimelineSnapCandidates(cue?.id, source?.id);
     if (cue) {
-      selectedCueId = cue.id;
-      selectedSourceId = null;
+      selectCue(cue.id);
       syncSubtitleSelection(true);
     }
     if (source) {
-      selectedSourceId = source.id;
-      selectedCueId = null;
+      selectSource(source.id);
       syncSubtitleSelection();
     }
 
@@ -2796,7 +3183,7 @@ function setupEditor(project: EditorProject): void {
           cue.end = snapped.value;
           timelineSnapTime = snapped.snapTime;
         }
-        selectedCueId = cue.id;
+        selectCue(cue.id);
       }
       if (source) {
         if (mode === "move") {
@@ -2833,7 +3220,7 @@ function setupEditor(project: EditorProject): void {
           source.duration = snapped.value - source.start;
           timelineSnapTime = snapped.snapTime;
         }
-        selectedSourceId = source.id;
+        selectSource(source.id);
       }
       renderTimeline();
     };
@@ -2854,6 +3241,19 @@ function setupEditor(project: EditorProject): void {
     const cueClip = target.closest<HTMLElement>("[data-cue-clip]");
     const sourceClip = target.closest<HTMLElement>("[data-source-id]");
     const resize = target.dataset.resize as "left" | "right" | undefined;
+    if (!resize && isMultiSelectEvent(event)) {
+      event.preventDefault();
+      if (cueClip?.dataset.cueClip) {
+        selectCue(cueClip.dataset.cueClip, true);
+        syncSubtitleSelection();
+        renderTimeline();
+      } else if (sourceClip?.dataset.sourceId) {
+        selectSource(sourceClip.dataset.sourceId, true);
+        syncSubtitleSelection();
+        renderTimeline();
+      }
+      return;
+    }
     if (cueClip?.dataset.cueClip) {
       beginTimelineDrag(event, "cue", cueClip.dataset.cueClip, resize || "move");
     } else if (sourceClip?.dataset.sourceId) {
@@ -2865,6 +3265,9 @@ function setupEditor(project: EditorProject): void {
     const target = event.target as HTMLElement;
     const cueClip = target.closest<HTMLElement>("[data-cue-clip]");
     if (cueClip?.dataset.cueClip) {
+      if (isMultiSelectEvent(event)) {
+        return;
+      }
       const cue = cues.find(item => item.id === cueClip.dataset.cueClip);
       if (cue) {
         seekToCue(cue);
@@ -2879,6 +3282,9 @@ function setupEditor(project: EditorProject): void {
       return;
     }
     const bounds = lane.getBoundingClientRect();
+    clearTimelineSelection();
+    syncSubtitleSelection();
+    renderTimeline();
     media.currentTime = clamp((event.clientX - bounds.left) / pixelsPerSecond(), 0, duration);
   });
 
@@ -3168,6 +3574,7 @@ function setupEditor(project: EditorProject): void {
   async function loadSubtitles(): Promise<void> {
     if (!project.subtitleUrl) {
       cues = [];
+      clearTimelineSelection();
       subtitlesReady = true;
       updateSaveAvailability();
       renderSubtitleList();
@@ -3181,7 +3588,10 @@ function setupEditor(project: EditorProject): void {
       }
       cues = parseSubtitleFile(await response.text());
       normalizeSubtitleTiming();
-      selectedCueId = cues[0]?.id || null;
+      clearTimelineSelection();
+      if (cues[0]) {
+        selectCue(cues[0].id);
+      }
       subtitlesReady = true;
       updateSaveAvailability();
     } catch (error) {

@@ -19,7 +19,11 @@ RUN pip install --no-cache-dir -r requirements.txt \
         torchvision==0.21.0 \
         --extra-index-url https://download.pytorch.org/whl/cu124
 
+RUN PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright \
+    python -m playwright install --with-deps chromium
+
 COPY backend ./backend
+COPY frontend/src/fonts ./frontend/src/fonts
 
 EXPOSE 8080
 CMD ["python", "-m", "uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8080"]
