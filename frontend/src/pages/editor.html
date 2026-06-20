@@ -247,4 +247,71 @@
       </div>
     </section>
   </main>
+
+  <div
+    class="export-preview-modal"
+    id="exportPreviewModal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="exportPreviewTitle"
+    hidden
+  >
+    <div class="export-preview-backdrop" data-export-preview-close></div>
+    <section class="export-preview-panel">
+      <div class="export-preview-player-card">
+        <div class="export-preview-heading">
+          <div class="export-preview-avatar" aria-hidden="true">B</div>
+          <div>
+            <h2 id="exportPreviewTitle">{{PROJECT_TITLE}}</h2>
+            <p>Rendered preview</p>
+          </div>
+          <button
+            class="export-preview-close"
+            type="button"
+            data-export-preview-close
+            aria-label="Close export preview"
+          >
+            &times;
+          </button>
+        </div>
+        <div class="export-preview-video-wrap">
+          <div class="export-render-progress" id="exportRenderProgress" hidden>
+            <strong id="exportRenderPercent">0%</strong>
+            <span>Rendering your video</span>
+            <p id="exportRenderStatus">Preparing export...</p>
+            <div class="export-progress-track" aria-hidden="true">
+              <div class="export-progress-fill" id="exportProgressFill"></div>
+            </div>
+          </div>
+          <video id="exportPreviewVideo" controls playsinline preload="metadata"></video>
+        </div>
+      </div>
+
+      <aside class="export-download-card">
+        <p class="section-kicker">Export</p>
+        <h3>Download</h3>
+        <p class="export-download-note">
+          Preview and download the format you need.
+        </p>
+        <button class="export-download-option primary" id="downloadMp4Button" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 4h14v16H5V4Zm4 0v16M15 4v16M5 9h4m6 0h4M5 15h4m6 0h4"></path>
+          </svg>
+          <span>
+            <strong>MP4</strong>
+            <small>Rendered video</small>
+          </span>
+        </button>
+        <button class="export-download-option primary" id="downloadMp3Button" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9 18V7l10-2v11M9 18a3 3 0 1 1-2-2.83M19 16a3 3 0 1 1-2-2.83"></path>
+          </svg>
+          <span>
+            <strong>MP3</strong>
+            <small>Rendered audio</small>
+          </span>
+        </button>
+      </aside>
+    </section>
+  </div>
 </div>

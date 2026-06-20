@@ -15,10 +15,16 @@ from pathlib import Path
 from urllib.parse import quote
 
 from backend.scripts.ffmpeg import (
+    cancel_ffmpeg_process,
     split_sources,
     build_video,
     convert_srt_to_vtt,
+    extract_audio_from_video,
     render_video_with_ass_subtitles,
+)
+from backend.scripts.browser_subtitle_renderer import (
+    BrowserSubtitleRendererUnavailable,
+    render_video_with_browser_subtitles,
 )
 from backend.gcp_utils.gcs_bucket import (
     upload_file_to_gcs,
@@ -34,6 +40,21 @@ from backend.scripts.benzaiten_inference.k8s.kubernetes_utils import (
 
 app = FastAPI()
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "benzaiten-outputs")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+EDITOR_REFERENCE_WIDTH = 960
+EDITOR_REFERENCE_HEIGHT = 540
+EDITOR_SUBTITLE_FONT = "DM Sans"
+EDITOR_ASS_FONT_SCALE = 1.32
+EDITOR_ASS_SCALE_X = 106
+EDITOR_ASS_SPACING = 0.35
+EDITOR_SUBTITLE_HORIZONTAL_PADDING = 28
+EDITOR_SUBTITLE_FONT_DIR = (
+    PROJECT_ROOT / "frontend" / "src" / "fonts" / "DM_Sans" / "static"
+)
+EDITOR_SUBTITLE_FONT_FILES = (
+    "DMSans-Regular.ttf",
+    "DMSans-Bold.ttf",
+)
 IMAGE = os.environ.get(
     "IMAGE",
     "northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest",
@@ -63,6 +84,7 @@ class SaveEditorProjectRequest(BaseModel):
     subtitle_transform: EditorSubtitleTransform
     karaoke_enabled: bool = True
     karaoke_highlight_color: str = "#f4a6c1"
+    client_render_id: Optional[str] = None
 
 
 class RenameProjectRequest(BaseModel):
@@ -91,6 +113,42 @@ def _clean_project_title(title: str) -> str:
     if not clean_title:
         raise HTTPException(status_code=400, detail="Project title is invalid.")
     return clean_title
+
+
+def _clean_client_render_id(render_id: Optional[str]) -> Optional[str]:
+    if render_id is None:
+        return None
+    if not re.fullmatch(r"[0-9a-fA-F-]{16,80}", render_id):
+        raise HTTPException(status_code=400, detail="Invalid render id.")
+    return render_id.replace("-", "").lower()
+
+
+def _prepare_editor_font_dir(work_dir: Path) -> Path:
+    export_font_dir = work_dir / "fonts"
+    export_font_dir.mkdir(parents=True, exist_ok=True)
+    for font_filename in EDITOR_SUBTITLE_FONT_FILES:
+        source_path = EDITOR_SUBTITLE_FONT_DIR / font_filename
+        if not source_path.exists():
+            raise RuntimeError(f"Editor subtitle font is missing: {source_path}")
+        shutil.copy2(source_path, export_font_dir / font_filename)
+    return export_font_dir
+
+
+def _latest_generation_match_for_existing_blob(
+    bucket: storage.Bucket,
+    blob_name: str,
+) -> int:
+    latest_blob = bucket.get_blob(blob_name)
+    if latest_blob is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The project video changed or was deleted while the save was "
+                "rendering. Refresh the project and try again."
+            ),
+        )
+    latest_blob.reload()
+    return latest_blob.generation
 
 
 def _validated_job_id(job_id: str) -> str:
@@ -125,17 +183,18 @@ def _escape_ass_text(text: str) -> str:
     )
 
 
-def _ass_color_from_hex(hex_color: str) -> str:
+def _ass_color_from_hex(hex_color: str, alpha: int = 0) -> str:
     if not re.fullmatch(r"#[0-9A-Fa-f]{6}", hex_color):
         raise HTTPException(
             status_code=400,
             detail="Karaoke highlight color must be a #RRGGBB hex color.",
         )
+    alpha = max(0, min(255, alpha))
     clean = hex_color.lstrip("#")
     red = clean[0:2]
     green = clean[2:4]
     blue = clean[4:6]
-    return f"&H00{blue}{green}{red}".upper()
+    return f"&H{alpha:02X}{blue}{green}{red}".upper()
 
 
 def _karaoke_token_weight(text: str) -> float:
@@ -187,26 +246,136 @@ def _format_karaoke_ass_text(text: str, duration: float) -> str:
     return "".join(ass_parts)
 
 
+def _ass_visible_width_weight(text: str) -> float:
+    weight = 0.0
+    for character in text:
+        if character.isspace():
+            weight += 0.32
+        elif re.fullmatch(
+            r"[\u1100-\u11FF\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]", character
+        ):
+            weight += 1.05
+        elif re.fullmatch(r"[\W_]", character, re.UNICODE):
+            weight += 0.36
+        elif character.isupper():
+            weight += 0.66
+        else:
+            weight += 0.58
+    return weight
+
+
+def _max_subtitle_line_weight(
+    transform: EditorSubtitleTransform,
+    editor_font_size: int,
+) -> float:
+    available_width = max(
+        80,
+        transform.width / 100 * EDITOR_REFERENCE_WIDTH
+        - EDITOR_SUBTITLE_HORIZONTAL_PADDING,
+    )
+    average_character_width = editor_font_size * (EDITOR_ASS_SCALE_X / 100)
+    return max(4.0, available_width / average_character_width)
+
+
+def _wrap_subtitle_line(text: str, max_line_weight: float) -> List[str]:
+    clean_text = text.strip()
+    if not clean_text:
+        return [""]
+
+    tokens = (
+        re.findall(r"\S+\s*", clean_text)
+        if re.search(r"\s", clean_text)
+        else list(clean_text)
+    )
+    lines: List[str] = []
+    current = ""
+    current_weight = 0.0
+
+    for token in tokens:
+        token_weight = _ass_visible_width_weight(token)
+        if current and current_weight + token_weight > max_line_weight:
+            lines.append(current.rstrip())
+            current = token
+            current_weight = token_weight
+        else:
+            current += token
+            current_weight += token_weight
+
+    if current:
+        lines.append(current.rstrip())
+    return lines or [clean_text]
+
+
+def _format_karaoke_wrapped_ass_text(
+    text: str,
+    duration: float,
+    max_line_weight: float,
+) -> Tuple[str, int]:
+    segments = _karaoke_line_segments(text.strip())
+    if not segments:
+        return "", 1
+
+    total_weight = sum(weight for _, weight in segments) or 1.0
+    remaining_centiseconds = max(1, round(duration * 100))
+    remaining_weight = total_weight
+    ass_parts: List[str] = []
+    line_count = 1
+    current_line_weight = 0.0
+
+    for token, weight in segments:
+        token_width = _ass_visible_width_weight(token)
+        if (
+            current_line_weight > 0
+            and current_line_weight + token_width > max_line_weight
+        ):
+            ass_parts.append(r"\N")
+            line_count += 1
+            current_line_weight = 0.0
+
+        if remaining_weight <= 0:
+            centiseconds = 1
+        else:
+            centiseconds = max(
+                1,
+                round(remaining_centiseconds * (weight / remaining_weight)),
+            )
+        remaining_centiseconds = max(0, remaining_centiseconds - centiseconds)
+        remaining_weight -= weight
+        ass_parts.append(rf"{{\kf{centiseconds}}}{_escape_ass_karaoke_segment(token)}")
+        current_line_weight += token_width
+
+    return "".join(ass_parts), line_count
+
+
 def _write_editor_subtitles(
     request: SaveEditorProjectRequest,
     ass_path: Path,
     vtt_path: Path,
 ) -> None:
     transform = request.subtitle_transform
-    margin = round((100 - transform.width) / 200 * 1920)
-    position_x = round(transform.x / 100 * 1920)
-    position_y = round(transform.y / 100 * 1080)
+    margin = round((100 - transform.width) / 200 * EDITOR_REFERENCE_WIDTH)
+    position_x = round(transform.x / 100 * EDITOR_REFERENCE_WIDTH)
+    position_y = round(transform.y / 100 * EDITOR_REFERENCE_HEIGHT)
+    ass_font_size = max(1, round(request.subtitle_font_size * EDITOR_ASS_FONT_SCALE))
+    outline_width = max(1.25, round(ass_font_size / 25, 2))
+    shadow_depth = max(0.85, round(ass_font_size / 38, 2))
+    glow_outline_width = max(2.8, round(ass_font_size / 9, 2))
+    glow_blur = max(2.4, round(ass_font_size / 11, 2))
     primary_color = (
         _ass_color_from_hex(request.karaoke_highlight_color)
         if request.karaoke_enabled
         else "&H00FFFFFF"
     )
     secondary_color = "&H00FFFFFF" if request.karaoke_enabled else "&H000000FF"
+    glow_primary_color = _ass_color_from_hex(request.karaoke_highlight_color, alpha=10)
+    glow_secondary_color = _ass_color_from_hex("#FFFFFF", alpha=255)
+    glow_outline_color = _ass_color_from_hex("#FFEAF4", alpha=20)
+    max_line_weight = _max_subtitle_line_weight(transform, request.subtitle_font_size)
     ass_lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
-        "PlayResX: 1920",
-        "PlayResY: 1080",
+        f"PlayResX: {EDITOR_REFERENCE_WIDTH}",
+        f"PlayResY: {EDITOR_REFERENCE_HEIGHT}",
         "WrapStyle: 2",
         "",
         "[V4+ Styles]",
@@ -217,8 +386,17 @@ def _write_editor_subtitles(
             "Alignment, MarginL, MarginR, MarginV, Encoding"
         ),
         (
-            f"Style: Default,Arial,{request.subtitle_font_size},{primary_color},"
-            f"{secondary_color},&H00101A24,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,"
+            f"Style: Default,{EDITOR_SUBTITLE_FONT},{ass_font_size},{primary_color},"
+            f"{secondary_color},&H00101A24,&H80000000,-1,0,0,0,"
+            f"{EDITOR_ASS_SCALE_X},100,{EDITOR_ASS_SPACING},0,"
+            f"1,{outline_width},{shadow_depth},"
+            f"5,{margin},{margin},0,1"
+        ),
+        (
+            f"Style: KaraokeGlow,{EDITOR_SUBTITLE_FONT},{ass_font_size},{glow_primary_color},"
+            f"{glow_secondary_color},{glow_outline_color},&HFF000000,-1,0,0,0,"
+            f"{EDITOR_ASS_SCALE_X},100,{EDITOR_ASS_SPACING},0,"
+            f"1,{glow_outline_width},0,"
             f"5,{margin},{margin},0,1"
         ),
         "",
@@ -238,23 +416,52 @@ def _write_editor_subtitles(
         if request.karaoke_enabled:
             cue_lines = cue.text.replace("\r", "").split("\n")
             line_height = round(request.subtitle_font_size * 1.25)
-            line_count = max(1, len(cue_lines))
-            for line_index, line in enumerate(cue_lines):
+            rendered_lines: List[Tuple[str, int]] = []
+            for line in cue_lines:
                 if not line:
                     continue
-                offset_y = round((line_index - (line_count - 1) / 2) * line_height)
+                rendered_text, visual_line_count = _format_karaoke_wrapped_ass_text(
+                    line,
+                    cue.end - cue.start,
+                    max_line_weight,
+                )
+                if rendered_text:
+                    rendered_lines.append((rendered_text, visual_line_count))
+
+            visual_line_total = max(1, sum(count for _, count in rendered_lines))
+            visual_line_cursor = 0
+            for rendered_text, visual_line_count in rendered_lines:
+                visual_line_center = visual_line_cursor + (visual_line_count - 1) / 2
+                offset_y = round(
+                    (visual_line_center - (visual_line_total - 1) / 2) * line_height
+                )
+                visual_line_cursor += visual_line_count
                 overrides = (
                     rf"{{\an5\pos({position_x},{position_y + offset_y})"
                     rf"\frz{transform.rotation:.2f}}}"
+                )
+                glow_overrides = (
+                    rf"{{\an5\pos({position_x},{position_y + offset_y})"
+                    rf"\frz{transform.rotation:.2f}\blur{glow_blur}}}"
                 )
                 ass_lines.append(
                     "Dialogue: 0,"
                     f"{_format_ass_timestamp(cue.start)},"
                     f"{_format_ass_timestamp(cue.end)},"
+                    f"KaraokeGlow,,0,0,0,,{glow_overrides}"
+                    f"{rendered_text}"
+                )
+                ass_lines.append(
+                    "Dialogue: 1,"
+                    f"{_format_ass_timestamp(cue.start)},"
+                    f"{_format_ass_timestamp(cue.end)},"
                     f"Default,,0,0,0,,{overrides}"
-                    f"{_format_karaoke_ass_text(line, cue.end - cue.start)}"
+                    f"{rendered_text}"
                 )
         else:
+            wrapped_text_lines: List[str] = []
+            for line in cue.text.replace("\r", "").split("\n"):
+                wrapped_text_lines.extend(_wrap_subtitle_line(line, max_line_weight))
             overrides = (
                 rf"{{\an5\pos({position_x},{position_y})"
                 rf"\frz{transform.rotation:.2f}}}"
@@ -263,7 +470,8 @@ def _write_editor_subtitles(
                 "Dialogue: 0,"
                 f"{_format_ass_timestamp(cue.start)},"
                 f"{_format_ass_timestamp(cue.end)},"
-                f"Default,,0,0,0,,{overrides}{_escape_ass_text(cue.text)}"
+                f"Default,,0,0,0,,{overrides}"
+                f"{_escape_ass_text(chr(10).join(wrapped_text_lines))}"
             )
         vtt_lines.extend(
             [
@@ -776,7 +984,7 @@ def save_editor_project(request: SaveEditorProjectRequest) -> Dict[str, object]:
 
     source_parent = source_blob_name.rsplit("/", 1)[0]
     destination_blob_name = f"{source_parent}/{clean_title}.mp4"
-    save_id = uuid.uuid4().hex
+    save_id = _clean_client_render_id(request.client_render_id) or uuid.uuid4().hex
     subtitle_blob_name = (
         f"{source_blob_name.split('/')[0]}/{source_blob_name.split('/')[1]}"
         f"/editor/{clean_title}-{save_id}.vtt"
@@ -838,12 +1046,55 @@ def save_editor_project(request: SaveEditorProjectRequest) -> Dict[str, object]:
             str(source_path),
             if_generation_match=render_source_blob.generation,
         )
+        render_font_dir = _prepare_editor_font_dir(work_dir)
         _write_editor_subtitles(request, ass_path, vtt_path)
-        render_video_with_ass_subtitles(
-            video_path=str(source_path),
-            ass_path=str(ass_path),
-            output_path=str(rendered_path),
-        )
+        try:
+            render_video_with_browser_subtitles(
+                video_path=str(source_path),
+                output_path=str(rendered_path),
+                cues=[
+                    {
+                        "start": cue.start,
+                        "end": cue.end,
+                        "text": cue.text,
+                    }
+                    for cue in request.cues
+                ],
+                subtitle_font_size=request.subtitle_font_size,
+                subtitle_transform=request.subtitle_transform.model_dump(),
+                karaoke_enabled=request.karaoke_enabled,
+                karaoke_highlight_color=request.karaoke_highlight_color,
+                fonts_dir=str(render_font_dir),
+                process_id=save_id,
+                reference_width=EDITOR_REFERENCE_WIDTH,
+                reference_height=EDITOR_REFERENCE_HEIGHT,
+            )
+        except BrowserSubtitleRendererUnavailable as error:
+            warnings.warn(
+                f"Browser subtitle renderer unavailable; falling back to ASS: {error}",
+                RuntimeWarning,
+            )
+            render_video_with_ass_subtitles(
+                video_path=str(source_path),
+                ass_path=str(ass_path),
+                output_path=str(rendered_path),
+                fonts_dir=str(render_font_dir),
+                process_id=save_id,
+            )
+        except Exception as error:
+            if "cancelled" in str(error).lower():
+                raise
+            warnings.warn(
+                f"Browser subtitle renderer failed; falling back to ASS: {error}",
+                RuntimeWarning,
+            )
+            render_video_with_ass_subtitles(
+                video_path=str(source_path),
+                ass_path=str(ass_path),
+                output_path=str(rendered_path),
+                fonts_dir=str(render_font_dir),
+                process_id=save_id,
+            )
         if not rendered_path.exists() or rendered_path.stat().st_size == 0:
             raise RuntimeError("The rendered video is empty.")
 
@@ -867,15 +1118,32 @@ def save_editor_project(request: SaveEditorProjectRequest) -> Dict[str, object]:
         )
         published_vtt.reload()
 
-        destination_generation_match = (
-            source_generation if destination_blob_name == source_blob_name else 0
-        )
-        published_video = bucket.copy_blob(
-            staging_video,
-            bucket,
-            destination_blob_name,
-            if_generation_match=destination_generation_match,
-        )
+        if destination_blob_name == source_blob_name:
+            destination_generation_match = _latest_generation_match_for_existing_blob(
+                bucket,
+                destination_blob_name,
+            )
+        else:
+            destination_generation_match = 0
+        try:
+            published_video = bucket.copy_blob(
+                staging_video,
+                bucket,
+                destination_blob_name,
+                if_generation_match=destination_generation_match,
+            )
+        except Exception as error:
+            if destination_blob_name != source_blob_name or "412" not in str(error):
+                raise
+            published_video = bucket.copy_blob(
+                staging_video,
+                bucket,
+                destination_blob_name,
+                if_generation_match=_latest_generation_match_for_existing_blob(
+                    bucket,
+                    destination_blob_name,
+                ),
+            )
         published_video.reload()
         if published_video.size != staging_video.size:
             raise RuntimeError("The published video failed size verification.")
@@ -909,6 +1177,8 @@ def save_editor_project(request: SaveEditorProjectRequest) -> Dict[str, object]:
                 published_vtt.delete()
             except Exception:
                 pass
+        if "cancelled" in str(error).lower():
+            raise HTTPException(status_code=499, detail="Export render cancelled.")
         raise HTTPException(
             status_code=500,
             detail=f"edited video save failed before replacing the original: {error}",
@@ -920,6 +1190,19 @@ def save_editor_project(request: SaveEditorProjectRequest) -> Dict[str, object]:
             except Exception:
                 pass
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.post("/projects/render-cancel/{render_id}")
+def cancel_project_render(render_id: str) -> Dict[str, object]:
+    clean_render_id = _clean_client_render_id(render_id)
+    if clean_render_id is None:
+        raise HTTPException(status_code=400, detail="Invalid render id.")
+    return {
+        "status": "cancelled"
+        if cancel_ffmpeg_process(clean_render_id)
+        else "not_running",
+        "render_id": clean_render_id,
+    }
 
 
 @app.get("/projects/download")
@@ -949,6 +1232,57 @@ def download_project(source_blob_name: str) -> StreamingResponse:
                 f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
             ),
             "Content-Length": str(source_blob.size),
+        },
+    )
+
+
+@app.get("/projects/download-audio")
+def download_project_audio(source_blob_name: str) -> StreamingResponse:
+    source_blob_name = _validated_project_video_blob_name(source_blob_name)
+    bucket = storage.Client().bucket(GCS_BUCKET)
+    source_blob = bucket.get_blob(source_blob_name)
+    if source_blob is None:
+        raise HTTPException(
+            status_code=404, detail="The project video no longer exists."
+        )
+
+    source_blob.reload()
+    work_dir = Path(f"/tmp/benzaiten-audio-export-{uuid.uuid4().hex}")
+    source_path = work_dir / "source.mp4"
+    audio_path = work_dir / "audio.mp3"
+    filename = f"{Path(source_blob_name).stem}.mp3"
+
+    try:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        source_blob.download_to_filename(
+            str(source_path),
+            if_generation_match=source_blob.generation,
+        )
+        extract_audio_from_video(str(source_path), str(audio_path))
+        if not audio_path.exists() or audio_path.stat().st_size == 0:
+            raise RuntimeError("The exported audio file is empty.")
+    except Exception as error:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise HTTPException(
+            status_code=500, detail=f"audio export failed: {error}"
+        ) from error
+
+    def stream_audio():
+        try:
+            with audio_path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    yield chunk
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    return StreamingResponse(
+        stream_audio(),
+        media_type="audio/mpeg",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+            ),
+            "Content-Length": str(audio_path.stat().st_size),
         },
     )
 
