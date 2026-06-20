@@ -1,0 +1,94 @@
+__FONT_FACE_CSS__
+
+html,
+body {
+  width: __VIEWPORT_WIDTH__px;
+  height: __VIEWPORT_HEIGHT__px;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  font-family: BenzaitenSubtitle, "DM Sans", Arial, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.subtitle-transform-box {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  min-width: 48px;
+  min-height: 32px;
+  place-items: center;
+  transform-origin: center;
+}
+
+.subtitle-overlay {
+  --subtitle-preview-scale: 1;
+  --karaoke-highlight-color: #f4a6c1;
+  --subtitle-shadow:
+    0 calc(2px * var(--subtitle-preview-scale))
+      calc(5px * var(--subtitle-preview-scale)) #000,
+    0 0 calc(2px * var(--subtitle-preview-scale)) #000;
+  width: 100%;
+  padding:
+    calc(8px * var(--subtitle-preview-scale))
+    calc(14px * var(--subtitle-preview-scale));
+  color: #fff;
+  font-family: BenzaitenSubtitle, "DM Sans", Arial, sans-serif;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  text-shadow: var(--subtitle-shadow);
+  white-space: pre-line;
+  pointer-events: none;
+}
+
+.karaoke-segment {
+  position: relative;
+  display: inline-block;
+  color: #fff;
+  text-shadow: var(--subtitle-shadow);
+  vertical-align: baseline;
+  white-space: pre;
+}
+
+.karaoke-segment-base {
+  color: #fff;
+  -webkit-text-fill-color: currentColor;
+  text-shadow: var(--subtitle-shadow);
+}
+
+.karaoke-segment-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: inline-block;
+  width: var(--karaoke-progress);
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--karaoke-highlight-color);
+  -webkit-text-fill-color: currentColor;
+  -webkit-text-stroke: calc(0.35px * var(--subtitle-preview-scale))
+    rgba(255, 248, 253, 0.95);
+  filter:
+    drop-shadow(0 0 calc(3px * var(--subtitle-preview-scale)) rgba(255, 226, 240, 0.7))
+    drop-shadow(0 calc(2px * var(--subtitle-preview-scale))
+      calc(4px * var(--subtitle-preview-scale)) rgba(0, 0, 0, 0.75));
+  text-shadow:
+    0 0 calc(2px * var(--subtitle-preview-scale)) rgba(255, 248, 253, 0.95),
+    var(--subtitle-shadow);
+  white-space: pre;
+}
+
+#fontProbe {
+  position: absolute;
+  left: -10000px;
+  top: -10000px;
+  font-family: BenzaitenSubtitle, "DM Sans", Arial, sans-serif;
+  font-size: 48px;
+  font-weight: 700;
+  white-space: nowrap;
+}
