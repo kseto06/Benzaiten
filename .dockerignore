@@ -2,6 +2,7 @@ venv/
 frontend/node_modules/
 node_modules/
 __pycache__/
+.cache/
 *.pyc
 .git/
 .DS_Store

@@ -1,15 +1,31 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from google.cloud import storage
 
 import json
 import os
+import re
+import shutil
 import uuid
 import warnings
-from typing import Tuple, Dict, Union
+from typing import List, Optional, Tuple, Dict, Union
 from pathlib import Path
+from urllib.parse import quote
 
-from backend.scripts.ffmpeg import split_sources, build_video, convert_srt_to_vtt
+from backend.scripts.ffmpeg import (
+    cancel_ffmpeg_process,
+    split_sources,
+    build_video,
+    convert_srt_to_vtt,
+    extract_audio_from_video,
+    render_video_with_ass_subtitles,
+)
+from backend.scripts.browser_subtitle_renderer import (
+    BrowserSubtitleRendererUnavailable,
+    render_video_with_browser_subtitles,
+)
 from backend.gcp_utils.gcs_bucket import (
     upload_file_to_gcs,
     download_file_from_gcs,
@@ -24,11 +40,453 @@ from backend.scripts.benzaiten_inference.k8s.kubernetes_utils import (
 
 app = FastAPI()
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "benzaiten-outputs")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+EDITOR_REFERENCE_WIDTH = 960
+EDITOR_REFERENCE_HEIGHT = 540
+EDITOR_SUBTITLE_FONT = "DM Sans"
+EDITOR_ASS_FONT_SCALE = 1.32
+EDITOR_ASS_SCALE_X = 106
+EDITOR_ASS_SPACING = 0.35
+EDITOR_SUBTITLE_HORIZONTAL_PADDING = 28
+EDITOR_SUBTITLE_FONT_DIR = (
+    PROJECT_ROOT / "frontend" / "src" / "fonts" / "DM_Sans" / "static"
+)
+EDITOR_SUBTITLE_FONT_FILES = (
+    "DMSans-Regular.ttf",
+    "DMSans-Bold.ttf",
+)
 IMAGE = os.environ.get(
     "IMAGE",
     "northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest",
 )
 K8S_NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
+
+
+class EditorSubtitleCue(BaseModel):
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    text: str = Field(min_length=1, max_length=10000)
+
+
+class EditorSubtitleTransform(BaseModel):
+    x: float = Field(ge=0, le=100)
+    y: float = Field(ge=0, le=100)
+    width: float = Field(ge=5, le=120)
+    height: float = Field(ge=5, le=100)
+    rotation: float = Field(ge=-180, le=180)
+
+
+class SaveEditorProjectRequest(BaseModel):
+    source_blob_name: str
+    title: str = Field(min_length=1, max_length=180)
+    cues: List[EditorSubtitleCue]
+    subtitle_font_size: int = Field(ge=12, le=72)
+    subtitle_transform: EditorSubtitleTransform
+    karaoke_enabled: bool = True
+    karaoke_highlight_color: str = "#f4a6c1"
+    client_render_id: Optional[str] = None
+
+
+class RenameProjectRequest(BaseModel):
+    source_blob_name: str
+    title: str = Field(min_length=1, max_length=180)
+
+
+def _public_gcs_url(blob_name: str) -> str:
+    encoded_name = "/".join(quote(part, safe="") for part in blob_name.split("/"))
+    return f"https://storage.googleapis.com/{GCS_BUCKET}/{encoded_name}"
+
+
+def _validated_project_video_blob_name(blob_name: str) -> str:
+    clean_blob_name = blob_name.strip()
+    if (
+        not re.fullmatch(r"outputs/[^/]+/.+\.mp4", clean_blob_name, re.IGNORECASE)
+        or ".." in Path(clean_blob_name).parts
+    ):
+        raise HTTPException(status_code=400, detail="Invalid project video object.")
+    return clean_blob_name
+
+
+def _clean_project_title(title: str) -> str:
+    clean_title = re.sub(r"[/\\\x00-\x1f]+", "-", title).strip(" .")
+    clean_title = re.sub(r"\.mp4$", "", clean_title, flags=re.IGNORECASE).strip()
+    if not clean_title:
+        raise HTTPException(status_code=400, detail="Project title is invalid.")
+    return clean_title
+
+
+def _clean_client_render_id(render_id: Optional[str]) -> Optional[str]:
+    if render_id is None:
+        return None
+    if not re.fullmatch(r"[0-9a-fA-F-]{16,80}", render_id):
+        raise HTTPException(status_code=400, detail="Invalid render id.")
+    return render_id.replace("-", "").lower()
+
+
+def _prepare_editor_font_dir(work_dir: Path) -> Path:
+    export_font_dir = work_dir / "fonts"
+    export_font_dir.mkdir(parents=True, exist_ok=True)
+    for font_filename in EDITOR_SUBTITLE_FONT_FILES:
+        source_path = EDITOR_SUBTITLE_FONT_DIR / font_filename
+        if not source_path.exists():
+            raise RuntimeError(f"Editor subtitle font is missing: {source_path}")
+        shutil.copy2(source_path, export_font_dir / font_filename)
+    return export_font_dir
+
+
+def _latest_generation_match_for_existing_blob(
+    bucket: storage.Bucket,
+    blob_name: str,
+) -> int:
+    latest_blob = bucket.get_blob(blob_name)
+    if latest_blob is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The project video changed or was deleted while the save was "
+                "rendering. Refresh the project and try again."
+            ),
+        )
+    latest_blob.reload()
+    return latest_blob.generation
+
+
+def _validated_job_id(job_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", job_id):
+        raise HTTPException(status_code=400, detail="Invalid project job ID.")
+    return job_id
+
+
+def _format_ass_timestamp(seconds: float) -> str:
+    centiseconds = max(0, round(seconds * 100))
+    hours, remainder = divmod(centiseconds, 360000)
+    minutes, remainder = divmod(remainder, 6000)
+    whole_seconds, fraction = divmod(remainder, 100)
+    return f"{hours}:{minutes:02d}:{whole_seconds:02d}.{fraction:02d}"
+
+
+def _format_vtt_timestamp(seconds: float) -> str:
+    milliseconds = max(0, round(seconds * 1000))
+    hours, remainder = divmod(milliseconds, 3600000)
+    minutes, remainder = divmod(remainder, 60000)
+    whole_seconds, fraction = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{fraction:03d}"
+
+
+def _escape_ass_text(text: str) -> str:
+    return (
+        text.replace("\\", r"\\")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+        .replace("\r", "")
+        .replace("\n", r"\N")
+    )
+
+
+def _ass_color_from_hex(hex_color: str, alpha: int = 0) -> str:
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", hex_color):
+        raise HTTPException(
+            status_code=400,
+            detail="Karaoke highlight color must be a #RRGGBB hex color.",
+        )
+    alpha = max(0, min(255, alpha))
+    clean = hex_color.lstrip("#")
+    red = clean[0:2]
+    green = clean[2:4]
+    blue = clean[4:6]
+    return f"&H{alpha:02X}{blue}{green}{red}".upper()
+
+
+def _karaoke_token_weight(text: str) -> float:
+    weight = 0.0
+    for character in text.strip():
+        if character.isspace():
+            continue
+        weight += 0.25 if re.fullmatch(r"[\W_]", character, re.UNICODE) else 1.0
+    return max(0.25, weight)
+
+
+def _karaoke_line_segments(text: str) -> List[Tuple[str, float]]:
+    if not text:
+        return []
+    if re.search(r"\s", text.strip()):
+        return [
+            (token, _karaoke_token_weight(token))
+            for token in re.findall(r"\S+\s*", text)
+        ]
+    return [(character, _karaoke_token_weight(character)) for character in text]
+
+
+def _escape_ass_karaoke_segment(text: str) -> str:
+    return (
+        text.replace("\\", r"\\")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+        .replace("\r", "")
+    )
+
+
+def _format_karaoke_ass_text(text: str, duration: float) -> str:
+    segments = _karaoke_line_segments(text)
+    total_weight = sum(weight for _, weight in segments) or 1.0
+    remaining_centiseconds = max(1, round(duration * 100))
+    remaining_weight = total_weight
+    ass_parts: List[str] = []
+    for token, weight in segments:
+        if remaining_weight <= 0:
+            centiseconds = 1
+        else:
+            centiseconds = max(
+                1,
+                round(remaining_centiseconds * (weight / remaining_weight)),
+            )
+        remaining_centiseconds = max(0, remaining_centiseconds - centiseconds)
+        remaining_weight -= weight
+        ass_parts.append(rf"{{\kf{centiseconds}}}{_escape_ass_karaoke_segment(token)}")
+    return "".join(ass_parts)
+
+
+def _ass_visible_width_weight(text: str) -> float:
+    weight = 0.0
+    for character in text:
+        if character.isspace():
+            weight += 0.32
+        elif re.fullmatch(
+            r"[\u1100-\u11FF\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]", character
+        ):
+            weight += 1.05
+        elif re.fullmatch(r"[\W_]", character, re.UNICODE):
+            weight += 0.36
+        elif character.isupper():
+            weight += 0.66
+        else:
+            weight += 0.58
+    return weight
+
+
+def _max_subtitle_line_weight(
+    transform: EditorSubtitleTransform,
+    editor_font_size: int,
+) -> float:
+    available_width = max(
+        80,
+        transform.width / 100 * EDITOR_REFERENCE_WIDTH
+        - EDITOR_SUBTITLE_HORIZONTAL_PADDING,
+    )
+    average_character_width = editor_font_size * (EDITOR_ASS_SCALE_X / 100)
+    return max(4.0, available_width / average_character_width)
+
+
+def _wrap_subtitle_line(text: str, max_line_weight: float) -> List[str]:
+    clean_text = text.strip()
+    if not clean_text:
+        return [""]
+
+    tokens = (
+        re.findall(r"\S+\s*", clean_text)
+        if re.search(r"\s", clean_text)
+        else list(clean_text)
+    )
+    lines: List[str] = []
+    current = ""
+    current_weight = 0.0
+
+    for token in tokens:
+        token_weight = _ass_visible_width_weight(token)
+        if current and current_weight + token_weight > max_line_weight:
+            lines.append(current.rstrip())
+            current = token
+            current_weight = token_weight
+        else:
+            current += token
+            current_weight += token_weight
+
+    if current:
+        lines.append(current.rstrip())
+    return lines or [clean_text]
+
+
+def _format_karaoke_wrapped_ass_text(
+    text: str,
+    duration: float,
+    max_line_weight: float,
+) -> Tuple[str, int]:
+    segments = _karaoke_line_segments(text.strip())
+    if not segments:
+        return "", 1
+
+    total_weight = sum(weight for _, weight in segments) or 1.0
+    remaining_centiseconds = max(1, round(duration * 100))
+    remaining_weight = total_weight
+    ass_parts: List[str] = []
+    line_count = 1
+    current_line_weight = 0.0
+
+    for token, weight in segments:
+        token_width = _ass_visible_width_weight(token)
+        if (
+            current_line_weight > 0
+            and current_line_weight + token_width > max_line_weight
+        ):
+            ass_parts.append(r"\N")
+            line_count += 1
+            current_line_weight = 0.0
+
+        if remaining_weight <= 0:
+            centiseconds = 1
+        else:
+            centiseconds = max(
+                1,
+                round(remaining_centiseconds * (weight / remaining_weight)),
+            )
+        remaining_centiseconds = max(0, remaining_centiseconds - centiseconds)
+        remaining_weight -= weight
+        ass_parts.append(rf"{{\kf{centiseconds}}}{_escape_ass_karaoke_segment(token)}")
+        current_line_weight += token_width
+
+    return "".join(ass_parts), line_count
+
+
+def _write_editor_subtitles(
+    request: SaveEditorProjectRequest,
+    ass_path: Path,
+    vtt_path: Path,
+) -> None:
+    transform = request.subtitle_transform
+    margin = round((100 - transform.width) / 200 * EDITOR_REFERENCE_WIDTH)
+    position_x = round(transform.x / 100 * EDITOR_REFERENCE_WIDTH)
+    position_y = round(transform.y / 100 * EDITOR_REFERENCE_HEIGHT)
+    ass_font_size = max(1, round(request.subtitle_font_size * EDITOR_ASS_FONT_SCALE))
+    outline_width = max(1.25, round(ass_font_size / 25, 2))
+    shadow_depth = max(0.85, round(ass_font_size / 38, 2))
+    glow_outline_width = max(2.8, round(ass_font_size / 9, 2))
+    glow_blur = max(2.4, round(ass_font_size / 11, 2))
+    primary_color = (
+        _ass_color_from_hex(request.karaoke_highlight_color)
+        if request.karaoke_enabled
+        else "&H00FFFFFF"
+    )
+    secondary_color = "&H00FFFFFF" if request.karaoke_enabled else "&H000000FF"
+    glow_primary_color = _ass_color_from_hex(request.karaoke_highlight_color, alpha=10)
+    glow_secondary_color = _ass_color_from_hex("#FFFFFF", alpha=255)
+    glow_outline_color = _ass_color_from_hex("#FFEAF4", alpha=20)
+    max_line_weight = _max_subtitle_line_weight(transform, request.subtitle_font_size)
+    ass_lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {EDITOR_REFERENCE_WIDTH}",
+        f"PlayResY: {EDITOR_REFERENCE_HEIGHT}",
+        "WrapStyle: 2",
+        "",
+        "[V4+ Styles]",
+        (
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+            "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding"
+        ),
+        (
+            f"Style: Default,{EDITOR_SUBTITLE_FONT},{ass_font_size},{primary_color},"
+            f"{secondary_color},&H00101A24,&H80000000,-1,0,0,0,"
+            f"{EDITOR_ASS_SCALE_X},100,{EDITOR_ASS_SPACING},0,"
+            f"1,{outline_width},{shadow_depth},"
+            f"5,{margin},{margin},0,1"
+        ),
+        (
+            f"Style: KaraokeGlow,{EDITOR_SUBTITLE_FONT},{ass_font_size},{glow_primary_color},"
+            f"{glow_secondary_color},{glow_outline_color},&HFF000000,-1,0,0,0,"
+            f"{EDITOR_ASS_SCALE_X},100,{EDITOR_ASS_SPACING},0,"
+            f"1,{glow_outline_width},0,"
+            f"5,{margin},{margin},0,1"
+        ),
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    vtt_lines = ["WEBVTT", ""]
+
+    for index, cue in enumerate(
+        sorted(request.cues, key=lambda item: item.start), start=1
+    ):
+        if cue.end <= cue.start:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Subtitle cue {index} must end after it starts.",
+            )
+        if request.karaoke_enabled:
+            cue_lines = cue.text.replace("\r", "").split("\n")
+            line_height = round(request.subtitle_font_size * 1.25)
+            rendered_lines: List[Tuple[str, int]] = []
+            for line in cue_lines:
+                if not line:
+                    continue
+                rendered_text, visual_line_count = _format_karaoke_wrapped_ass_text(
+                    line,
+                    cue.end - cue.start,
+                    max_line_weight,
+                )
+                if rendered_text:
+                    rendered_lines.append((rendered_text, visual_line_count))
+
+            visual_line_total = max(1, sum(count for _, count in rendered_lines))
+            visual_line_cursor = 0
+            for rendered_text, visual_line_count in rendered_lines:
+                visual_line_center = visual_line_cursor + (visual_line_count - 1) / 2
+                offset_y = round(
+                    (visual_line_center - (visual_line_total - 1) / 2) * line_height
+                )
+                visual_line_cursor += visual_line_count
+                overrides = (
+                    rf"{{\an5\pos({position_x},{position_y + offset_y})"
+                    rf"\frz{transform.rotation:.2f}}}"
+                )
+                glow_overrides = (
+                    rf"{{\an5\pos({position_x},{position_y + offset_y})"
+                    rf"\frz{transform.rotation:.2f}\blur{glow_blur}}}"
+                )
+                ass_lines.append(
+                    "Dialogue: 0,"
+                    f"{_format_ass_timestamp(cue.start)},"
+                    f"{_format_ass_timestamp(cue.end)},"
+                    f"KaraokeGlow,,0,0,0,,{glow_overrides}"
+                    f"{rendered_text}"
+                )
+                ass_lines.append(
+                    "Dialogue: 1,"
+                    f"{_format_ass_timestamp(cue.start)},"
+                    f"{_format_ass_timestamp(cue.end)},"
+                    f"Default,,0,0,0,,{overrides}"
+                    f"{rendered_text}"
+                )
+        else:
+            wrapped_text_lines: List[str] = []
+            for line in cue.text.replace("\r", "").split("\n"):
+                wrapped_text_lines.extend(_wrap_subtitle_line(line, max_line_weight))
+            overrides = (
+                rf"{{\an5\pos({position_x},{position_y})"
+                rf"\frz{transform.rotation:.2f}}}"
+            )
+            ass_lines.append(
+                "Dialogue: 0,"
+                f"{_format_ass_timestamp(cue.start)},"
+                f"{_format_ass_timestamp(cue.end)},"
+                f"Default,,0,0,0,,{overrides}"
+                f"{_escape_ass_text(chr(10).join(wrapped_text_lines))}"
+            )
+        vtt_lines.extend(
+            [
+                str(index),
+                (
+                    f"{_format_vtt_timestamp(cue.start)} --> "
+                    f"{_format_vtt_timestamp(cue.end)}"
+                ),
+                cue.text,
+                "",
+            ]
+        )
+
+    ass_path.write_text("\n".join(ass_lines) + "\n", encoding="utf-8")
+    vtt_path.write_text("\n".join(vtt_lines), encoding="utf-8")
 
 
 @app.get("/")
@@ -514,6 +972,431 @@ async def create_orchestration_inference_pipeline_job(
             status_code=500,
             detail=f"inference orchestration job creation failed: {str(e)}",
         )
+
+
+@app.post("/projects/save")
+def save_editor_project(request: SaveEditorProjectRequest) -> Dict[str, object]:
+    """
+    Render editor subtitle changes and publish them without deleting the source first.
+    """
+    source_blob_name = _validated_project_video_blob_name(request.source_blob_name)
+    clean_title = _clean_project_title(request.title)
+
+    source_parent = source_blob_name.rsplit("/", 1)[0]
+    destination_blob_name = f"{source_parent}/{clean_title}.mp4"
+    save_id = _clean_client_render_id(request.client_render_id) or uuid.uuid4().hex
+    subtitle_blob_name = (
+        f"{source_blob_name.split('/')[0]}/{source_blob_name.split('/')[1]}"
+        f"/editor/{clean_title}-{save_id}.vtt"
+    )
+    staging_prefix = (
+        f"{source_blob_name.split('/')[0]}/{source_blob_name.split('/')[1]}"
+        f"/.editor-staging/{save_id}"
+    )
+    staging_video_name = f"{staging_prefix}.mp4"
+    staging_vtt_name = f"{staging_prefix}.vtt"
+    render_source_blob_name = (
+        f"{source_blob_name.split('/')[0]}/{source_blob_name.split('/')[1]}"
+        "/editor/source.mp4"
+    )
+    work_dir = Path(f"/tmp/benzaiten-editor-{save_id}")
+    source_path = work_dir / "source.mp4"
+    ass_path = work_dir / "subtitles.ass"
+    vtt_path = work_dir / "subtitles.vtt"
+    rendered_path = work_dir / "rendered.mp4"
+    client = storage.Client()
+    bucket = client.bucket(GCS_BUCKET)
+    source_blob = bucket.get_blob(source_blob_name)
+    published_vtt = None
+    cleanup_warning: Optional[str] = None
+
+    if source_blob is None:
+        raise HTTPException(
+            status_code=404, detail="The source video no longer exists."
+        )
+    source_generation = source_blob.generation
+
+    if destination_blob_name != source_blob_name and bucket.get_blob(
+        destination_blob_name
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="A video with that project title already exists.",
+        )
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        render_source_blob = bucket.get_blob(render_source_blob_name)
+        if render_source_blob is None:
+            try:
+                render_source_blob = bucket.copy_blob(
+                    source_blob,
+                    bucket,
+                    render_source_blob_name,
+                    source_generation=source_generation,
+                    if_generation_match=0,
+                    if_source_generation_match=source_generation,
+                )
+            except Exception:
+                render_source_blob = bucket.get_blob(render_source_blob_name)
+                if render_source_blob is None:
+                    raise
+        render_source_blob.reload()
+        render_source_blob.download_to_filename(
+            str(source_path),
+            if_generation_match=render_source_blob.generation,
+        )
+        render_font_dir = _prepare_editor_font_dir(work_dir)
+        _write_editor_subtitles(request, ass_path, vtt_path)
+        try:
+            render_video_with_browser_subtitles(
+                video_path=str(source_path),
+                output_path=str(rendered_path),
+                cues=[
+                    {
+                        "start": cue.start,
+                        "end": cue.end,
+                        "text": cue.text,
+                    }
+                    for cue in request.cues
+                ],
+                subtitle_font_size=request.subtitle_font_size,
+                subtitle_transform=request.subtitle_transform.model_dump(),
+                karaoke_enabled=request.karaoke_enabled,
+                karaoke_highlight_color=request.karaoke_highlight_color,
+                fonts_dir=str(render_font_dir),
+                process_id=save_id,
+                reference_width=EDITOR_REFERENCE_WIDTH,
+                reference_height=EDITOR_REFERENCE_HEIGHT,
+            )
+        except BrowserSubtitleRendererUnavailable as error:
+            warnings.warn(
+                f"Browser subtitle renderer unavailable; falling back to ASS: {error}",
+                RuntimeWarning,
+            )
+            render_video_with_ass_subtitles(
+                video_path=str(source_path),
+                ass_path=str(ass_path),
+                output_path=str(rendered_path),
+                fonts_dir=str(render_font_dir),
+                process_id=save_id,
+            )
+        except Exception as error:
+            if "cancelled" in str(error).lower():
+                raise
+            warnings.warn(
+                f"Browser subtitle renderer failed; falling back to ASS: {error}",
+                RuntimeWarning,
+            )
+            render_video_with_ass_subtitles(
+                video_path=str(source_path),
+                ass_path=str(ass_path),
+                output_path=str(rendered_path),
+                fonts_dir=str(render_font_dir),
+                process_id=save_id,
+            )
+        if not rendered_path.exists() or rendered_path.stat().st_size == 0:
+            raise RuntimeError("The rendered video is empty.")
+
+        staging_video = bucket.blob(staging_video_name)
+        staging_video.upload_from_filename(str(rendered_path), content_type="video/mp4")
+        staging_video.reload()
+        if staging_video.size != rendered_path.stat().st_size:
+            raise RuntimeError("The staged video failed size verification.")
+
+        staging_vtt = bucket.blob(staging_vtt_name)
+        staging_vtt.upload_from_filename(str(vtt_path), content_type="text/vtt")
+        staging_vtt.reload()
+        if staging_vtt.size != vtt_path.stat().st_size:
+            raise RuntimeError("The staged subtitle file failed size verification.")
+
+        published_vtt = bucket.copy_blob(
+            staging_vtt,
+            bucket,
+            subtitle_blob_name,
+            if_generation_match=0,
+        )
+        published_vtt.reload()
+
+        if destination_blob_name == source_blob_name:
+            destination_generation_match = _latest_generation_match_for_existing_blob(
+                bucket,
+                destination_blob_name,
+            )
+        else:
+            destination_generation_match = 0
+        try:
+            published_video = bucket.copy_blob(
+                staging_video,
+                bucket,
+                destination_blob_name,
+                if_generation_match=destination_generation_match,
+            )
+        except Exception as error:
+            if destination_blob_name != source_blob_name or "412" not in str(error):
+                raise
+            published_video = bucket.copy_blob(
+                staging_video,
+                bucket,
+                destination_blob_name,
+                if_generation_match=_latest_generation_match_for_existing_blob(
+                    bucket,
+                    destination_blob_name,
+                ),
+            )
+        published_video.reload()
+        if published_video.size != staging_video.size:
+            raise RuntimeError("The published video failed size verification.")
+
+        if destination_blob_name != source_blob_name:
+            try:
+                source_blob.delete(if_generation_match=source_generation)
+            except Exception as error:
+                cleanup_warning = (
+                    "The edited video was saved, but the previous video could not be "
+                    f"removed safely: {error}"
+                )
+
+        return {
+            "status": "saved",
+            "title": clean_title,
+            "media_object_name": destination_blob_name,
+            "media_url": _public_gcs_url(destination_blob_name),
+            "render_source_object_name": render_source_blob_name,
+            "render_source_url": _public_gcs_url(render_source_blob_name),
+            "subtitle_object_name": subtitle_blob_name,
+            "subtitle_url": _public_gcs_url(subtitle_blob_name),
+            "generation": published_video.generation,
+            "cleanup_warning": cleanup_warning,
+        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        if published_vtt is not None:
+            try:
+                published_vtt.delete()
+            except Exception:
+                pass
+        if "cancelled" in str(error).lower():
+            raise HTTPException(status_code=499, detail="Export render cancelled.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"edited video save failed before replacing the original: {error}",
+        )
+    finally:
+        for blob_name in (staging_video_name, staging_vtt_name):
+            try:
+                bucket.blob(blob_name).delete()
+            except Exception:
+                pass
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.post("/projects/render-cancel/{render_id}")
+def cancel_project_render(render_id: str) -> Dict[str, object]:
+    clean_render_id = _clean_client_render_id(render_id)
+    if clean_render_id is None:
+        raise HTTPException(status_code=400, detail="Invalid render id.")
+    return {
+        "status": "cancelled"
+        if cancel_ffmpeg_process(clean_render_id)
+        else "not_running",
+        "render_id": clean_render_id,
+    }
+
+
+@app.get("/projects/download")
+def download_project(source_blob_name: str) -> StreamingResponse:
+    source_blob_name = _validated_project_video_blob_name(source_blob_name)
+    bucket = storage.Client().bucket(GCS_BUCKET)
+    source_blob = bucket.get_blob(source_blob_name)
+    if source_blob is None:
+        raise HTTPException(
+            status_code=404, detail="The project video no longer exists."
+        )
+
+    source_blob.reload()
+    generation = source_blob.generation
+    filename = source_blob_name.rsplit("/", 1)[-1]
+
+    def stream_video():
+        with source_blob.open("rb", if_generation_match=generation) as source:
+            while chunk := source.read(1024 * 1024):
+                yield chunk
+
+    return StreamingResponse(
+        stream_video(),
+        media_type=source_blob.content_type or "video/mp4",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+            ),
+            "Content-Length": str(source_blob.size),
+        },
+    )
+
+
+@app.get("/projects/download-audio")
+def download_project_audio(source_blob_name: str) -> StreamingResponse:
+    source_blob_name = _validated_project_video_blob_name(source_blob_name)
+    bucket = storage.Client().bucket(GCS_BUCKET)
+    source_blob = bucket.get_blob(source_blob_name)
+    if source_blob is None:
+        raise HTTPException(
+            status_code=404, detail="The project video no longer exists."
+        )
+
+    source_blob.reload()
+    work_dir = Path(f"/tmp/benzaiten-audio-export-{uuid.uuid4().hex}")
+    source_path = work_dir / "source.mp4"
+    audio_path = work_dir / "audio.mp3"
+    filename = f"{Path(source_blob_name).stem}.mp3"
+
+    try:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        source_blob.download_to_filename(
+            str(source_path),
+            if_generation_match=source_blob.generation,
+        )
+        extract_audio_from_video(str(source_path), str(audio_path))
+        if not audio_path.exists() or audio_path.stat().st_size == 0:
+            raise RuntimeError("The exported audio file is empty.")
+    except Exception as error:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise HTTPException(
+            status_code=500, detail=f"audio export failed: {error}"
+        ) from error
+
+    def stream_audio():
+        try:
+            with audio_path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    yield chunk
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    return StreamingResponse(
+        stream_audio(),
+        media_type="audio/mpeg",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+            ),
+            "Content-Length": str(audio_path.stat().st_size),
+        },
+    )
+
+
+@app.post("/projects/rename")
+def rename_project(request: RenameProjectRequest) -> Dict[str, object]:
+    source_blob_name = _validated_project_video_blob_name(request.source_blob_name)
+    clean_title = _clean_project_title(request.title)
+    source_parent = source_blob_name.rsplit("/", 1)[0]
+    destination_blob_name = f"{source_parent}/{clean_title}.mp4"
+    bucket = storage.Client().bucket(GCS_BUCKET)
+    source_blob = bucket.get_blob(source_blob_name)
+
+    if source_blob is None:
+        raise HTTPException(
+            status_code=404, detail="The project video no longer exists."
+        )
+    source_blob.reload()
+    source_generation = source_blob.generation
+
+    if destination_blob_name == source_blob_name:
+        return {
+            "status": "renamed",
+            "title": clean_title,
+            "media_object_name": source_blob_name,
+            "media_url": _public_gcs_url(source_blob_name),
+        }
+    if bucket.get_blob(destination_blob_name) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A video with that project title already exists.",
+        )
+
+    try:
+        renamed_blob = bucket.copy_blob(
+            source_blob,
+            bucket,
+            destination_blob_name,
+            source_generation=source_generation,
+            if_generation_match=0,
+            if_source_generation_match=source_generation,
+        )
+        renamed_blob.reload()
+        if renamed_blob.size != source_blob.size:
+            renamed_blob.delete(if_generation_match=renamed_blob.generation)
+            raise RuntimeError("The renamed video failed size verification.")
+        try:
+            source_blob.delete(if_generation_match=source_generation)
+        except Exception as error:
+            renamed_blob.delete(if_generation_match=renamed_blob.generation)
+            raise RuntimeError(
+                "The original video changed before rename could complete."
+            ) from error
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"project rename failed: {error}")
+
+    return {
+        "status": "renamed",
+        "title": clean_title,
+        "media_object_name": destination_blob_name,
+        "media_url": _public_gcs_url(destination_blob_name),
+    }
+
+
+@app.delete("/projects/{job_id}")
+def delete_project(job_id: str) -> Dict[str, object]:
+    job_id = _validated_job_id(job_id)
+    prefix = f"outputs/{job_id}/"
+    bucket = storage.Client().bucket(GCS_BUCKET)
+    blobs_by_name = {blob.name: blob for blob in bucket.list_blobs(prefix=prefix)}
+
+    for marker_name in (prefix, prefix.rstrip("/")):
+        marker_blob = bucket.get_blob(marker_name)
+        if marker_blob is not None:
+            blobs_by_name[marker_blob.name] = marker_blob
+
+    blobs = list(blobs_by_name.values())
+    if not blobs:
+        raise HTTPException(status_code=404, detail="The project no longer exists.")
+
+    deleted_objects = 0
+    try:
+        for blob in blobs:
+            blob.delete(if_generation_match=blob.generation)
+            deleted_objects += 1
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"project deletion stopped after {deleted_objects} objects: {error}"
+            ),
+        )
+
+    remaining_names = {blob.name for blob in bucket.list_blobs(prefix=prefix)}
+    for marker_name in (prefix, prefix.rstrip("/")):
+        if bucket.get_blob(marker_name) is not None:
+            remaining_names.add(marker_name)
+    if remaining_names:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "project deletion did not fully clear the GCS prefix; remaining objects: "
+                + ", ".join(sorted(remaining_names))
+            ),
+        )
+
+    return {
+        "status": "deleted",
+        "job_id": job_id,
+        "deleted_objects": deleted_objects,
+        "deleted_prefix": prefix,
+    }
 
 
 @app.get("/jobs/{job_id}")
