@@ -64,6 +64,7 @@ numpy==2.4.4
 onnxruntime==1.25.1
 packaging==26.2
 platformdirs==4.9.6
+playwright==1.60.0
 pooch==1.9.0
 propcache==0.4.1
 proto-plus==1.28.0
