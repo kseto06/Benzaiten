@@ -1,13 +1,41 @@
 import "./style.css";
 import editorPageHtml from "./pages/editor.html?raw";
 import landingPageHtml from "./pages/landing.html?raw";
+import { initializeApp } from "firebase/app";
+import {
+  createUserWithEmailAndPassword,
+  getAuth,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
+  type Auth,
+  type User,
+} from "firebase/auth";
 
 const GCS_BUCKET = "benzaiten-outputs";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+const FIREBASE_CONFIG = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+};
 const PROJECT_STORAGE_KEY = "benzaiten-editor-project";
 const LOG_PREFIX = "[Benzaiten]";
 const DEFAULT_KARAOKE_HIGHLIGHT_COLOR = "#f4a6c1";
 let landingDocumentListeners: AbortController | null = null;
+let firebaseAuth: Auth | null = null;
+let currentUser: User | null = null;
+let authReady = false;
+let authReadyResolve: (() => void) | null = null;
+let firebaseConfigWarningLogged = false;
+
+const authReadyPromise = new Promise<void>(resolve => {
+  authReadyResolve = resolve;
+});
 
 type JobStartResponse = {
   status: "queued";
@@ -49,6 +77,24 @@ type DeleteProjectResponse = {
   deleted_objects: number;
 };
 
+type ProjectListItemResponse = {
+  title: string;
+  job_id: string;
+  media_object_name: string;
+  media_url: string;
+  media_updated?: string | null;
+  media_size?: string;
+  media_content_type?: string;
+  subtitle_object_name?: string | null;
+  subtitle_url?: string | null;
+  render_source_object_name?: string | null;
+  render_source_url?: string | null;
+};
+
+type ProjectListResponse = {
+  projects: ProjectListItemResponse[];
+};
+
 type GcsObject = {
   name: string;
   updated?: string;
@@ -84,8 +130,11 @@ type LibraryProject = {
   title: string;
   jobId: string;
   mediaObject: GcsObject;
+  mediaUrl: string;
   renderSourceObject?: GcsObject;
+  renderSourceUrl?: string;
   subtitleObject?: GcsObject;
+  subtitleUrl?: string;
 };
 
 type SubtitleTransform = {
@@ -142,6 +191,84 @@ if (!appRoot) {
 }
 const app = appRoot;
 
+function hasFirebaseConfig(): boolean {
+  return Boolean(
+    FIREBASE_CONFIG.apiKey
+    && FIREBASE_CONFIG.authDomain
+    && FIREBASE_CONFIG.projectId
+    && FIREBASE_CONFIG.appId,
+  );
+}
+
+function initializeFirebaseAuth(): void {
+  if (!hasFirebaseConfig()) {
+    authReady = true;
+    authReadyResolve?.();
+    return;
+  }
+  const firebaseApp = initializeApp(FIREBASE_CONFIG);
+  firebaseAuth = getAuth(firebaseApp);
+  onAuthStateChanged(firebaseAuth, user => {
+    currentUser = user;
+    authReady = true;
+    authReadyResolve?.();
+    window.dispatchEvent(new CustomEvent("benzaiten-auth-changed"));
+  });
+}
+
+async function waitForAuthReady(): Promise<void> {
+  if (authReady) {
+    return;
+  }
+  await authReadyPromise;
+}
+
+async function getAuthToken(): Promise<string> {
+  await waitForAuthReady();
+  if (!firebaseAuth) {
+    console.warn(`${LOG_PREFIX} Firebase is not configured. Add the VITE_FIREBASE_* env vars.`);
+    throw new Error("Project authentication is not configured.");
+  }
+  if (!currentUser) {
+    throw new Error("Sign in with Google before using project features.");
+  }
+  return currentUser.getIdToken();
+}
+
+async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const token = await getAuthToken();
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${token}`);
+  return fetch(input, { ...init, headers });
+}
+
+async function authJsonFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set("Content-Type", "application/json");
+  return authFetch(input, { ...init, headers });
+}
+
+async function downloadAuthenticatedFile(url: string, filename: string): Promise<void> {
+  const response = await authFetch(url);
+  if (!response.ok) {
+    throw new Error(await getApiError(response));
+  }
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+initializeFirebaseAuth();
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -161,11 +288,6 @@ function queryElement<T extends Element>(selector: string, root: ParentNode = do
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
-}
-
-function withQueryParam(url: string, key: string, value: string | number): string {
-  const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`;
 }
 
 function getKaraokeTokenWeight(text: string): number {
@@ -276,12 +398,40 @@ function getApiError(response: Response): Promise<string> {
   });
 }
 
-function buildGcsObjectUrl(objectName: string): string {
-  const encodedName = objectName
-    .split("/")
-    .map(segment => encodeURIComponent(segment))
-    .join("/");
-  return `https://storage.googleapis.com/${GCS_BUCKET}/${encodedName}`;
+function getFirebaseAuthErrorMessage(error: unknown): string {
+  const code = (
+    typeof error === "object"
+    && error !== null
+    && "code" in error
+    && typeof (error as { code?: unknown }).code === "string"
+  )
+    ? (error as { code: string }).code
+    : "";
+
+  switch (code) {
+    case "auth/email-already-in-use":
+      return "An account already exists for this email.";
+    case "auth/invalid-email":
+      return "Enter a valid email address.";
+    case "auth/invalid-credential":
+    case "auth/user-not-found":
+    case "auth/wrong-password":
+      return "The email or password is incorrect.";
+    case "auth/missing-email":
+      return "Enter your email address.";
+    case "auth/missing-password":
+      return "Enter your password.";
+    case "auth/weak-password":
+      return "Use a stronger password with at least 6 characters.";
+    case "auth/too-many-requests":
+      return "Too many attempts. Please wait a moment and try again.";
+    case "auth/popup-closed-by-user":
+      return "Sign-in was cancelled.";
+    case "auth/network-request-failed":
+      return "Network error. Check your connection and try again.";
+    default:
+      return error instanceof Error ? error.message : "Authentication failed.";
+  }
 }
 
 function getGcsObjectName(url?: string): string | undefined {
@@ -298,10 +448,6 @@ function getGcsObjectName(url?: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-function getObjectFilename(objectName: string): string {
-  return objectName.split("/").at(-1) || objectName;
 }
 
 function filenameWithoutExtension(filename: string): string {
@@ -357,88 +503,40 @@ function getFuzzyMatchScore(query: string, candidate: string): number {
   return Math.max(tokenCoverage * 0.9, dice);
 }
 
-function isSearchableMediaObject(objectName: string): boolean {
-  const parts = objectName.split("/");
-  const filename = getObjectFilename(objectName).toLocaleLowerCase();
-  const extension = filename.split(".").at(-1);
-  const intermediates = new Set([
-    "input_video.mp4",
-    "vocals.mp3",
-    "instrumental.mp3",
-    "instrumental_(decrowd).mp3",
-  ]);
-
-  return (
-    parts[0] === "outputs"
-    && parts.length >= 3
-    && ["mp4", "mp3"].includes(extension || "")
-    && !intermediates.has(filename)
-    && (parts.length === 3 || parts.includes("final_output"))
-  );
+async function listJobObjects(jobId: string): Promise<GcsObject[]> {
+  const response = await authFetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/objects`);
+  if (!response.ok) {
+    throw new Error(await getApiError(response));
+  }
+  const data = await response.json() as GcsObjectListResponse;
+  return data.items || [];
 }
 
-async function listGcsObjects(prefix = "outputs/"): Promise<GcsObject[]> {
-  const objects: GcsObject[] = [];
-  let pageToken: string | undefined;
-
-  do {
-    const params = new URLSearchParams({
-      prefix,
-      maxResults: "1000",
-      fields: "items(name,updated,size,contentType),nextPageToken",
-    });
-    if (pageToken) {
-      params.set("pageToken", pageToken);
-    }
-
-    const response = await fetch(
-      `https://storage.googleapis.com/storage/v1/b/${GCS_BUCKET}/o?${params}`,
-    );
-    if (!response.ok) {
-      throw new Error(`GCS listing failed with status ${response.status}`);
-    }
-
-    const data = await response.json() as GcsObjectListResponse;
-    objects.push(...(data.items || []));
-    pageToken = data.nextPageToken;
-  } while (pageToken);
-
-  return objects;
-}
-
-function getLibraryProjects(objects: GcsObject[]): LibraryProject[] {
-  return objects
-    .filter(object => (
-      isSearchableMediaObject(object.name)
-      && object.name.toLocaleLowerCase().endsWith(".mp4")
-    ))
-    .map(mediaObject => {
-      const jobId = mediaObject.name.split("/")[1];
-      const subtitleObjects = objects
-        .filter(object => (
-          object.name.startsWith(`outputs/${jobId}/`)
-          && object.name.toLocaleLowerCase().endsWith(".vtt")
-        ))
-        .sort((left, right) => {
-          const editorPriority = Number(right.name.includes("/editor/"))
-            - Number(left.name.includes("/editor/"));
-          return editorPriority || (
-            Date.parse(right.updated || "") - Date.parse(left.updated || "")
-          );
-        });
-      return {
-        title: filenameWithoutExtension(getObjectFilename(mediaObject.name)),
-        jobId,
-        mediaObject,
-        renderSourceObject: objects.find(
-          object => object.name === `outputs/${jobId}/editor/source.mp4`,
-        ),
-        subtitleObject: subtitleObjects[0],
-      };
-    })
-    .sort((left, right) => (
-      Date.parse(right.mediaObject.updated || "") - Date.parse(left.mediaObject.updated || "")
-    ));
+async function listLibraryProjects(): Promise<LibraryProject[]> {
+  const response = await authFetch(`${API_BASE_URL}/projects`);
+  if (!response.ok) {
+    throw new Error(await getApiError(response));
+  }
+  const data = await response.json() as ProjectListResponse;
+  return data.projects.map(project => ({
+    title: project.title,
+    jobId: project.job_id,
+    mediaUrl: project.media_url,
+    mediaObject: {
+      name: project.media_object_name,
+      updated: project.media_updated || undefined,
+      size: project.media_size,
+      contentType: project.media_content_type,
+    },
+    renderSourceUrl: project.render_source_url || undefined,
+    renderSourceObject: project.render_source_object_name
+      ? { name: project.render_source_object_name }
+      : undefined,
+    subtitleUrl: project.subtitle_url || undefined,
+    subtitleObject: project.subtitle_object_name
+      ? { name: project.subtitle_object_name }
+      : undefined,
+  }));
 }
 
 function openLibraryProject(project: LibraryProject): void {
@@ -446,13 +544,9 @@ function openLibraryProject(project: LibraryProject): void {
     title: project.title,
     originalTitle: project.title,
     jobId: project.jobId,
-    mediaUrl: buildGcsObjectUrl(
-      project.renderSourceObject?.name || project.mediaObject.name,
-    ),
+    mediaUrl: project.renderSourceUrl || project.mediaUrl,
     mediaObjectName: project.mediaObject.name,
-    subtitleUrl: project.subtitleObject
-      ? buildGcsObjectUrl(project.subtitleObject.name)
-      : undefined,
+    subtitleUrl: project.subtitleUrl,
     subtitleObjectName: project.subtitleObject?.name,
     mediaType: "video",
   });
@@ -521,13 +615,185 @@ function setupLandingInteractions(): void {
   const libraryGallery = queryElement<HTMLDivElement>("#libraryGallery");
   const libraryStatus = queryElement<HTMLDivElement>("#libraryGalleryStatus");
   const libraryGrid = queryElement<HTMLDivElement>("#libraryVideoGrid");
+  const libraryAuthenticatedContent = queryElement<HTMLDivElement>("#libraryAuthenticatedContent");
+  const librarySignedOutPrompt = queryElement<HTMLDivElement>("#librarySignedOutPrompt");
   const deleteDialog = queryElement<HTMLDialogElement>("#deleteProjectDialog");
   const deleteProjectName = queryElement<HTMLElement>("#deleteProjectName");
   const cancelProjectDelete = queryElement<HTMLButtonElement>("#cancelProjectDelete");
   const confirmProjectDelete = queryElement<HTMLButtonElement>("#confirmProjectDelete");
+  const authPanel = queryElement<HTMLDivElement>("#authPanel");
+  const authStatus = queryElement<HTMLElement>("#authStatus");
+  const authUser = queryElement<HTMLElement>("#authUser");
+  const loginButton = queryElement<HTMLButtonElement>("#loginButton");
+  const accountMenuButton = queryElement<HTMLButtonElement>("#accountMenuButton");
+  const accountMenu = queryElement<HTMLDivElement>("#accountMenu");
+  const accountAvatarImage = queryElement<HTMLImageElement>("#accountAvatarImage");
+  const accountAvatarFallback = queryElement<HTMLElement>("#accountAvatarFallback");
+  const accountMenuAvatarImage = queryElement<HTMLImageElement>("#accountMenuAvatarImage");
+  const accountMenuAvatarFallback = queryElement<HTMLElement>("#accountMenuAvatarFallback");
+  const accountMenuName = queryElement<HTMLElement>("#accountMenuName");
+  const accountMenuEmail = queryElement<HTMLElement>("#accountMenuEmail");
+  const logoutButton = queryElement<HTMLButtonElement>("#logoutButton");
+  const authDialog = queryElement<HTMLDialogElement>("#authDialog");
+  const authDialogClose = queryElement<HTMLButtonElement>("#authDialogClose");
+  const authProviderList = queryElement<HTMLDivElement>("#authProviderList");
+  const googleAuthButton = queryElement<HTMLButtonElement>("#googleAuthButton");
+  const emailAuthButton = queryElement<HTMLButtonElement>("#emailAuthButton");
+  const authEmailForm = queryElement<HTMLFormElement>("#authEmailForm");
+  const authEmailInput = queryElement<HTMLInputElement>("#authEmailInput");
+  const authPasswordInput = queryElement<HTMLInputElement>("#authPasswordInput");
+  const emailCreateAccountButton = queryElement<HTMLButtonElement>("#emailCreateAccountButton");
+  const emailResetPasswordButton = queryElement<HTMLButtonElement>("#emailResetPasswordButton");
+  const authProvidersBackButton = queryElement<HTMLButtonElement>("#authProvidersBackButton");
+  const authDialogStatus = queryElement<HTMLElement>("#authDialogStatus");
   let libraryProjects: LibraryProject[] | null = null;
   let pendingDelete: { project: LibraryProject; index: number } | null = null;
+  let loadedLibraryUid: string | null = null;
+  let libraryLoadPromise: Promise<void> | null = null;
+  let authStateVersion = 0;
   setupWorkflowZoom();
+
+  const invalidateLibraryRequests = (): number => {
+    authStateVersion += 1;
+    libraryLoadPromise = null;
+    loadedLibraryUid = null;
+    return authStateVersion;
+  };
+
+  const setProjectControlsEnabled = (enabled: boolean): void => {
+    runButton.disabled = !enabled;
+    searchButton.disabled = !enabled;
+    searchInput.disabled = !enabled;
+    libraryToggle.disabled = !enabled;
+  };
+
+  const setLibraryAuthenticated = (authenticated: boolean, message: string): void => {
+    libraryAuthenticatedContent.hidden = !authenticated;
+    librarySignedOutPrompt.hidden = authenticated;
+    if (!authenticated) {
+      libraryProjects = null;
+      loadedLibraryUid = null;
+      libraryGrid.innerHTML = "";
+      libraryStatus.hidden = true;
+      libraryStatus.classList.remove("is-error");
+      libraryStatus.textContent = "";
+      librarySignedOutPrompt.textContent = message;
+    }
+  };
+
+  const renderAuthState = (): void => {
+    const configured = Boolean(firebaseAuth);
+    authPanel.classList.toggle("is-warning", !configured);
+    loginButton.hidden = Boolean(currentUser);
+    accountMenuButton.hidden = !currentUser;
+    authUser.hidden = !currentUser;
+    googleAuthButton.disabled = false;
+    emailAuthButton.disabled = false;
+    if (!configured) {
+      if (!firebaseConfigWarningLogged) {
+        firebaseConfigWarningLogged = true;
+        console.warn(
+          `${LOG_PREFIX} Firebase login is not configured. `
+          + "Add VITE_FIREBASE_API_KEY, VITE_FIREBASE_AUTH_DOMAIN, "
+          + "VITE_FIREBASE_PROJECT_ID, and VITE_FIREBASE_APP_ID.",
+        );
+      }
+      authStatus.textContent = "Project accounts are unavailable.";
+      authUser.textContent = "";
+      accountMenu.hidden = true;
+      accountMenuButton.setAttribute("aria-expanded", "false");
+      setProjectControlsEnabled(false);
+      setLibraryAuthenticated(
+        false,
+        "Project accounts are unavailable in this environment.",
+      );
+      return;
+    }
+    if (!currentUser) {
+      authStatus.textContent = "Sign in to create and view your projects.";
+      authUser.textContent = "";
+      accountMenu.hidden = true;
+      accountMenuButton.setAttribute("aria-expanded", "false");
+      setProjectControlsEnabled(false);
+      setLibraryAuthenticated(
+        false,
+        "Sign in to view your project library and create projects.",
+      );
+      return;
+    }
+    authStatus.textContent = "Signed in";
+    authUser.textContent = currentUser.email || currentUser.displayName || currentUser.uid;
+    accountMenuName.textContent = currentUser.displayName || "Benzaiten user";
+    accountMenuEmail.textContent = currentUser.email || currentUser.uid;
+    if (currentUser.photoURL) {
+      accountAvatarImage.src = currentUser.photoURL;
+      accountMenuAvatarImage.src = currentUser.photoURL;
+      accountAvatarImage.hidden = false;
+      accountMenuAvatarImage.hidden = false;
+      accountAvatarFallback.hidden = true;
+      accountMenuAvatarFallback.hidden = true;
+    } else {
+      accountAvatarImage.removeAttribute("src");
+      accountMenuAvatarImage.removeAttribute("src");
+      accountAvatarImage.hidden = true;
+      accountMenuAvatarImage.hidden = true;
+      accountAvatarFallback.hidden = false;
+      accountMenuAvatarFallback.hidden = false;
+    }
+    setLibraryAuthenticated(true, "");
+    setProjectControlsEnabled(true);
+  };
+
+  const refreshLibrary = async (requestVersion = authStateVersion): Promise<void> => {
+    if (!currentUser) {
+      libraryProjects = null;
+      loadedLibraryUid = null;
+      renderAuthState();
+      return;
+    }
+    const uid = currentUser.uid;
+    if (loadedLibraryUid === uid && libraryProjects !== null) {
+      return;
+    }
+    if (libraryLoadPromise) {
+      await libraryLoadPromise;
+      return;
+    }
+
+    let loadPromise!: Promise<void>;
+    loadPromise = (async () => {
+      libraryStatus.hidden = false;
+      libraryStatus.classList.remove("is-error");
+      libraryStatus.textContent = "Loading your saved videos...";
+      try {
+        const projects = await listLibraryProjects();
+        if (requestVersion !== authStateVersion || currentUser?.uid !== uid) {
+          return;
+        }
+        libraryProjects = projects;
+        loadedLibraryUid = uid;
+        renderLibrary(libraryProjects);
+        libraryStatus.textContent = libraryProjects.length
+          ? ""
+          : "No completed videos were found for this account.";
+      } catch (error) {
+        if (requestVersion !== authStateVersion || currentUser?.uid !== uid) {
+          return;
+        }
+        loadedLibraryUid = null;
+        libraryStatus.classList.add("is-error");
+        libraryStatus.textContent = error instanceof Error
+          ? error.message
+          : "Unable to load the project library.";
+      } finally {
+        if (libraryLoadPromise === loadPromise) {
+          libraryLoadPromise = null;
+        }
+      }
+    })();
+    libraryLoadPromise = loadPromise;
+    await loadPromise;
+  };
 
   const closeLibraryMenus = (): void => {
     for (const openMenu of libraryGrid.querySelectorAll<HTMLDivElement>(
@@ -581,8 +847,217 @@ function setupLandingInteractions(): void {
       void handleLibrarySearch();
     }
   });
+  const openAuthDialog = (): void => {
+    authDialogStatus.textContent = firebaseAuth
+      ? ""
+      : "Authentication is not configured in this environment.";
+    showAuthProviderOptions();
+    authDialog.showModal();
+  };
+
+  const closeAuthDialog = (): void => {
+    if (authDialog.open) {
+      authDialog.close();
+    }
+  };
+
+  const setAuthBusy = (busy: boolean): void => {
+    googleAuthButton.disabled = busy;
+    emailAuthButton.disabled = busy;
+    authEmailInput.disabled = busy;
+    authPasswordInput.disabled = busy;
+    emailCreateAccountButton.disabled = busy;
+    emailResetPasswordButton.disabled = busy;
+    authProvidersBackButton.disabled = busy;
+  };
+
+  function showAuthProviderOptions(): void {
+    authProviderList.hidden = false;
+    authEmailForm.hidden = true;
+    authDialogStatus.textContent = firebaseAuth
+      ? ""
+      : "Authentication is not configured in this environment.";
+  }
+
+  const showEmailAuthForm = (): void => {
+    authProviderList.hidden = true;
+    authEmailForm.hidden = false;
+    authDialogStatus.textContent = "";
+    authEmailInput.focus();
+  };
+
+  const getEmailCredentials = (): { email: string; password: string } | null => {
+    const email = authEmailInput.value.trim();
+    const password = authPasswordInput.value;
+    if (!email) {
+      authDialogStatus.textContent = "Enter your email address.";
+      authEmailInput.focus();
+      return null;
+    }
+    if (!password) {
+      authDialogStatus.textContent = "Enter your password.";
+      authPasswordInput.focus();
+      return null;
+    }
+    return { email, password };
+  };
+
+  const signInWithEmail = async (): Promise<void> => {
+    if (!firebaseAuth) {
+      console.warn(`${LOG_PREFIX} Firebase login is not configured.`);
+      authDialogStatus.textContent = "Authentication is not configured in this environment.";
+      return;
+    }
+    const credentials = getEmailCredentials();
+    if (!credentials) {
+      return;
+    }
+    setAuthBusy(true);
+    authDialogStatus.textContent = "Signing in...";
+    try {
+      await signInWithEmailAndPassword(
+        firebaseAuth,
+        credentials.email,
+        credentials.password,
+      );
+      closeAuthDialog();
+      setLandingStatus("Signed in.");
+    } catch (error) {
+      console.warn(`${LOG_PREFIX} Email sign-in failed`, error);
+      authDialogStatus.textContent = getFirebaseAuthErrorMessage(error);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const createEmailAccount = async (): Promise<void> => {
+    if (!firebaseAuth) {
+      console.warn(`${LOG_PREFIX} Firebase login is not configured.`);
+      authDialogStatus.textContent = "Authentication is not configured in this environment.";
+      return;
+    }
+    const credentials = getEmailCredentials();
+    if (!credentials) {
+      return;
+    }
+    setAuthBusy(true);
+    authDialogStatus.textContent = "Creating account...";
+    try {
+      await createUserWithEmailAndPassword(
+        firebaseAuth,
+        credentials.email,
+        credentials.password,
+      );
+      closeAuthDialog();
+      setLandingStatus("Account created.");
+    } catch (error) {
+      console.warn(`${LOG_PREFIX} Email account creation failed`, error);
+      authDialogStatus.textContent = getFirebaseAuthErrorMessage(error);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const sendEmailPasswordReset = async (): Promise<void> => {
+    if (!firebaseAuth) {
+      console.warn(`${LOG_PREFIX} Firebase login is not configured.`);
+      authDialogStatus.textContent = "Authentication is not configured in this environment.";
+      return;
+    }
+    const email = authEmailInput.value.trim();
+    if (!email) {
+      authDialogStatus.textContent = "Enter your email address first.";
+      authEmailInput.focus();
+      return;
+    }
+    setAuthBusy(true);
+    authDialogStatus.textContent = "Sending password reset email...";
+    try {
+      await sendPasswordResetEmail(firebaseAuth, email);
+      authDialogStatus.textContent = "Password reset email sent.";
+    } catch (error) {
+      console.warn(`${LOG_PREFIX} Password reset failed`, error);
+      authDialogStatus.textContent = getFirebaseAuthErrorMessage(error);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const signInWithGoogle = async (): Promise<void> => {
+    if (!firebaseAuth) {
+      console.warn(`${LOG_PREFIX} Firebase login is not configured.`);
+      authDialogStatus.textContent = "Authentication is not configured in this environment.";
+      return;
+    }
+    setAuthBusy(true);
+    authDialogStatus.textContent = "Opening Google sign-in...";
+    try {
+      await signInWithPopup(firebaseAuth, new GoogleAuthProvider());
+      closeAuthDialog();
+      setLandingStatus("Signed in.");
+    } catch (error) {
+      console.warn(`${LOG_PREFIX} Google sign-in failed`, error);
+      authDialogStatus.textContent = getFirebaseAuthErrorMessage(error);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  loginButton.addEventListener("click", openAuthDialog);
+  authDialogClose.addEventListener("click", closeAuthDialog);
+  authDialog.addEventListener("click", event => {
+    if (event.target === authDialog) {
+      closeAuthDialog();
+    }
+  });
+  authDialog.addEventListener("cancel", () => {
+    authDialogStatus.textContent = "";
+  });
+  googleAuthButton.addEventListener("click", () => {
+    void signInWithGoogle();
+  });
+  emailAuthButton.addEventListener("click", showEmailAuthForm);
+  authProvidersBackButton.addEventListener("click", showAuthProviderOptions);
+  authEmailForm.addEventListener("submit", event => {
+    event.preventDefault();
+    void signInWithEmail();
+  });
+  emailCreateAccountButton.addEventListener("click", () => {
+    void createEmailAccount();
+  });
+  emailResetPasswordButton.addEventListener("click", () => {
+    void sendEmailPasswordReset();
+  });
+  accountMenuButton.addEventListener("click", () => {
+    const shouldOpen = accountMenu.hidden;
+    accountMenu.hidden = !shouldOpen;
+    accountMenuButton.setAttribute("aria-expanded", String(shouldOpen));
+  });
+  logoutButton.addEventListener("click", async () => {
+    if (!firebaseAuth) {
+      return;
+    }
+    accountMenu.hidden = true;
+    accountMenuButton.setAttribute("aria-expanded", "false");
+    invalidateLibraryRequests();
+    await signOut(firebaseAuth);
+    libraryProjects = null;
+    loadedLibraryUid = null;
+    libraryGrid.innerHTML = "";
+    setLandingStatus("Signed out.");
+  });
+  window.addEventListener("benzaiten-auth-changed", () => {
+    const requestVersion = invalidateLibraryRequests();
+    renderAuthState();
+    void refreshLibrary(requestVersion);
+  }, documentListenerOptions);
 
   const renderLibrary = (projects: LibraryProject[]): void => {
+    if (!currentUser) {
+      libraryStatus.hidden = true;
+      libraryGrid.innerHTML = "";
+      return;
+    }
     libraryStatus.hidden = true;
     if (!projects.length) {
       libraryStatus.textContent = "";
@@ -613,7 +1088,7 @@ function setupLandingInteractions(): void {
             aria-label="Open ${escapeHtml(project.title)} in the editor"
           >
             <video
-              src="${buildGcsObjectUrl(project.mediaObject.name)}"
+              src="${project.mediaUrl}"
               preload="metadata"
               muted
               playsinline
@@ -623,9 +1098,8 @@ function setupLandingInteractions(): void {
           <div class="library-video-actions">
             <a
               class="library-video-action"
-              href="${API_BASE_URL}/projects/download?source_blob_name=${
-                encodeURIComponent(project.mediaObject.name)
-              }"
+              href="#"
+              data-library-action="download"
               aria-label="Download ${escapeHtml(project.title)} as MP4"
               title="Download MP4"
             >
@@ -761,9 +1235,8 @@ function setupLandingInteractions(): void {
     }
     setLandingStatus(`Renaming "${project.title}"...`);
     try {
-      const response = await fetch(`${API_BASE_URL}/projects/rename`, {
+      const response = await authJsonFetch(`${API_BASE_URL}/projects/rename`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           source_blob_name: project.mediaObject.name,
           title: nextTitle,
@@ -779,6 +1252,7 @@ function setupLandingInteractions(): void {
         name: renamed.media_object_name,
         updated: new Date().toISOString(),
       };
+      project.mediaUrl = renamed.media_url;
       renderLibrary(libraryProjects || []);
       setLandingStatus(`Renamed project to "${renamed.title}".`);
     } catch (error) {
@@ -815,7 +1289,7 @@ function setupLandingInteractions(): void {
     setLandingStatus(`Deleting "${project.title}" and its related assets...`);
 
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `${API_BASE_URL}/projects/${encodeURIComponent(project.jobId)}`,
         { method: "DELETE" },
       );
@@ -864,21 +1338,7 @@ function setupLandingInteractions(): void {
       return;
     }
 
-    libraryStatus.hidden = false;
-    libraryStatus.classList.remove("is-error");
-    libraryStatus.textContent = "Loading saved videos...";
-    try {
-      libraryProjects = getLibraryProjects(await listGcsObjects());
-      libraryStatus.textContent = libraryProjects.length
-        ? ""
-        : "No completed videos were found.";
-      renderLibrary(libraryProjects);
-    } catch (error) {
-      libraryStatus.classList.add("is-error");
-      libraryStatus.textContent = error instanceof Error
-        ? error.message
-        : "Unable to load the project library.";
-    }
+    await refreshLibrary();
   });
 
   libraryGrid.addEventListener("click", async event => {
@@ -908,6 +1368,22 @@ function setupLandingInteractions(): void {
 
     if (action === "edit") {
       openLibraryProject(project);
+      return;
+    }
+
+    if (action === "download") {
+      event.preventDefault();
+      try {
+        await downloadAuthenticatedFile(
+          `${API_BASE_URL}/projects/download?source_blob_name=${
+            encodeURIComponent(project.mediaObject.name)
+          }`,
+          `${project.title || "benzaiten-video"}.mp4`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setLandingStatus(`Download failed: ${message}`, true);
+      }
       return;
     }
 
@@ -973,9 +1449,13 @@ function setupLandingInteractions(): void {
       target.closest(".library-video-menu")
       || target.closest('[data-library-action="menu"]')
       || target.closest(".library-video-rename")
+      || target.closest("#accountMenu")
+      || target.closest("#accountMenuButton")
     ) {
       return;
     }
+    accountMenu.hidden = true;
+    accountMenuButton.setAttribute("aria-expanded", "false");
     closeLibraryMenus();
     for (const card of libraryGrid.querySelectorAll<HTMLElement>(
       ".library-video-card.is-renaming",
@@ -986,6 +1466,8 @@ function setupLandingInteractions(): void {
 
   document.addEventListener("keydown", event => {
     if (event.key === "Escape") {
+      accountMenu.hidden = true;
+      accountMenuButton.setAttribute("aria-expanded", "false");
       closeLibraryMenus();
       for (const card of libraryGrid.querySelectorAll<HTMLElement>(
         ".library-video-card.is-renaming",
@@ -996,33 +1478,9 @@ function setupLandingInteractions(): void {
   }, documentListenerOptions);
 
   void (async () => {
-    renderLibrary([]);
-    libraryStatus.hidden = false;
-    libraryStatus.classList.remove("is-error");
-    libraryStatus.textContent = "Loading saved videos...";
-    try {
-      libraryProjects = getLibraryProjects(await listGcsObjects());
-      renderLibrary(libraryProjects);
-    } catch (error) {
-      libraryStatus.classList.add("is-error");
-      libraryStatus.textContent = error instanceof Error
-        ? error.message
-        : "Unable to load the project library.";
-      libraryGrid.innerHTML = `
-        <article class="library-video-card library-create-card">
-          <button
-            class="library-create-open"
-            type="button"
-            data-library-action="create"
-            aria-label="Create a new blank video project"
-          >
-            <span class="library-create-plus" aria-hidden="true">+</span>
-            <strong>Create new project</strong>
-            <span>Start with a blank editor</span>
-          </button>
-        </article>
-      `;
-    }
+    await waitForAuthReady();
+    renderAuthState();
+    await refreshLibrary();
   })();
 }
 
@@ -1292,8 +1750,12 @@ async function handleRunInference(): Promise<void> {
       "fast_decrowd",
       shouldDecrowdInput.checked && fastDecrowdInput.checked ? "true" : "false",
     );
+    const projectTitle = projectNameInput.value.trim();
+    if (projectTitle) {
+      formData.append("project_title", projectTitle);
+    }
 
-    const response = await fetch(`${API_BASE_URL}/jobs`, {
+    const response = await authFetch(`${API_BASE_URL}/jobs`, {
       method: "POST",
       body: formData,
     });
@@ -1317,8 +1779,8 @@ async function handleRunInference(): Promise<void> {
     progress.finish();
     await new Promise(resolve => window.setTimeout(resolve, 650));
     openEditor({
-      title: projectNameInput.value.trim() || filenameWithoutExtension(file.name),
-      originalTitle: projectNameInput.value.trim() || filenameWithoutExtension(file.name),
+      title: projectTitle || filenameWithoutExtension(file.name),
+      originalTitle: projectTitle || filenameWithoutExtension(file.name),
       jobId: startData.job_id,
       mediaUrl,
       mediaObjectName: getGcsObjectName(mediaUrl),
@@ -1342,8 +1804,8 @@ async function pollInferenceJob(
 ): Promise<JobStatusResponse> {
   while (true) {
     const [statusResponse, jobObjects] = await Promise.all([
-      fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`),
-      listGcsObjects(`outputs/${jobId}/`).catch(() => []),
+      authFetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`),
+      listJobObjects(jobId).catch(() => []),
     ]);
     if (!statusResponse.ok) {
       throw new Error(await getApiError(statusResponse));
@@ -1370,7 +1832,7 @@ async function handleLibrarySearch(): Promise<void> {
   button.disabled = true;
   setLandingStatus(`Searching the project library for "${query}"...`);
   try {
-    const projects = getLibraryProjects(await listGcsObjects());
+    const projects = await listLibraryProjects();
     const matches = projects
       .map(project => ({
         project,
@@ -2586,15 +3048,6 @@ function setupEditor(project: EditorProject): void {
     link.remove();
   };
 
-  const downloadAudioUrl = (url: string): void => {
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${project.title || "benzaiten-video"}.mp3`;
-    document.body.append(link);
-    link.click();
-    link.remove();
-  };
-
   const stopExportProgress = (): void => {
     if (exportProgressTimer !== null) {
       window.clearInterval(exportProgressTimer);
@@ -2608,7 +3061,7 @@ function setupEditor(project: EditorProject): void {
     }
     const renderId = activeExportRenderId;
     activeExportRenderId = null;
-    void fetch(`${API_BASE_URL}/projects/render-cancel/${encodeURIComponent(renderId)}`, {
+    void authFetch(`${API_BASE_URL}/projects/render-cancel/${encodeURIComponent(renderId)}`, {
       method: "POST",
       keepalive: true,
     }).catch(error => {
@@ -2781,7 +3234,14 @@ function setupEditor(project: EditorProject): void {
       editorSaveStatus.classList.add("is-error");
       return;
     }
-    downloadVideoUrl(getProjectDownloadUrl(project.mediaObjectName));
+    void downloadAuthenticatedFile(
+      getProjectDownloadUrl(project.mediaObjectName),
+      `${project.title || "benzaiten-video"}.mp4`,
+    ).catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      editorSaveStatus.textContent = `Download failed: ${message}`;
+      editorSaveStatus.classList.add("is-error");
+    });
   });
 
   downloadMp3Button.addEventListener("click", () => {
@@ -2790,7 +3250,14 @@ function setupEditor(project: EditorProject): void {
       editorSaveStatus.classList.add("is-error");
       return;
     }
-    downloadAudioUrl(getProjectAudioDownloadUrl(project.mediaObjectName));
+    void downloadAuthenticatedFile(
+      getProjectAudioDownloadUrl(project.mediaObjectName),
+      `${project.title || "benzaiten-video"}.mp3`,
+    ).catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      editorSaveStatus.textContent = `Audio download failed: ${message}`;
+      editorSaveStatus.classList.add("is-error");
+    });
   });
 
   exportPreviewModal.addEventListener("click", event => {
@@ -2851,10 +3318,9 @@ function setupEditor(project: EditorProject): void {
       editorSaveStatus.textContent = "";
     }
     try {
-      const response = await fetch(`${API_BASE_URL}/projects/save`, {
+      const response = await authJsonFetch(`${API_BASE_URL}/projects/save`, {
         method: "POST",
         signal,
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           source_blob_name: sourceBlobName,
           title: project.title,
@@ -2874,7 +3340,7 @@ function setupEditor(project: EditorProject): void {
       project.title = saved.title;
       project.originalTitle = saved.title;
       project.mediaObjectName = saved.media_object_name;
-      latestRenderedPreviewUrl = withQueryParam(saved.media_url, "generation", saved.generation);
+      latestRenderedPreviewUrl = saved.media_url;
       project.mediaUrl = saved.render_source_url;
       project.subtitleObjectName = saved.subtitle_object_name;
       project.subtitleUrl = saved.subtitle_url;
