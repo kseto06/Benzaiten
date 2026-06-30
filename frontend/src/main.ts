@@ -1988,6 +1988,7 @@ function setupEditor(project: EditorProject): void {
   let selectedCueId: string | null = null;
   const selectedCueIds = new Set<string>();
   const selectedSourceIds = new Set<string>();
+  let savedProjectSnapshot: string | null = null;
   let activeCueId: string | null = null;
   let timelineSnapTime: number | null = null;
   let previousSidebarWidth = 350;
@@ -2033,6 +2034,33 @@ function setupEditor(project: EditorProject): void {
         text: cue.text.length > 0 ? cue.text : " ",
       };
     })
+  );
+
+  const normalizeSnapshotNumber = (value: number): number => (
+    Math.round(value * 1000) / 1000
+  );
+
+  const getProjectSaveSnapshot = (): string => JSON.stringify({
+    title: project.title.trim() || "Untitled project",
+    cues: getSerializableCues().map(cue => ({
+      start: normalizeSnapshotNumber(cue.start),
+      end: normalizeSnapshotNumber(cue.end),
+      text: cue.text,
+    })),
+    subtitleFontSize: normalizeSnapshotNumber(project.subtitleFontSize || 30),
+    subtitleTransform: {
+      x: normalizeSnapshotNumber(getSerializableSubtitleTransform().x),
+      y: normalizeSnapshotNumber(getSerializableSubtitleTransform().y),
+      width: normalizeSnapshotNumber(getSerializableSubtitleTransform().width),
+      height: normalizeSnapshotNumber(getSerializableSubtitleTransform().height),
+      rotation: normalizeSnapshotNumber(getSerializableSubtitleTransform().rotation),
+    },
+    karaokeEnabled,
+    karaokeHighlightColor,
+  });
+
+  const hasPersistableChanges = (): boolean => (
+    savedProjectSnapshot !== null && getProjectSaveSnapshot() !== savedProjectSnapshot
   );
 
   if (project.mediaUrl) {
@@ -2197,8 +2225,14 @@ function setupEditor(project: EditorProject): void {
       || project.isLocalMedia
       || !mediaReady
       || !subtitlesReady
+      || !hasPersistableChanges()
     );
     updateExportAvailability();
+  };
+
+  const markProjectClean = (): void => {
+    savedProjectSnapshot = getProjectSaveSnapshot();
+    updateSaveAvailability();
   };
 
   const hasSavePrerequisites = (): boolean => (
@@ -2211,6 +2245,7 @@ function setupEditor(project: EditorProject): void {
   const persistSubtitleTransform = (): void => {
     project.subtitleTransform = { ...subtitleTransform };
     saveEditorProject(project);
+    updateSaveAvailability();
   };
 
   const applySubtitleTransform = (): void => {
@@ -2473,6 +2508,7 @@ function setupEditor(project: EditorProject): void {
           No subtitle cues were found. Add a cue to begin editing.
         </div>
       `;
+      updateSaveAvailability();
       return;
     }
 
@@ -2511,6 +2547,7 @@ function setupEditor(project: EditorProject): void {
       `;
     }).join("");
     syncSubtitleSelection();
+    updateSaveAvailability();
   };
 
   const drawWaveform = (canvas: HTMLCanvasElement, samples?: Float32Array): void => {
@@ -2840,6 +2877,7 @@ function setupEditor(project: EditorProject): void {
         : nextTitle;
     }
     saveEditorProject(project);
+    updateSaveAvailability();
     if (previousTitle !== nextTitle) {
       renderTimeline();
     }
@@ -2855,12 +2893,14 @@ function setupEditor(project: EditorProject): void {
     project.subtitleFontSize = fontSize;
     updateSubtitlePreviewRendering();
     saveEditorProject(project);
+    updateSaveAvailability();
   });
   karaokeToggleInput.addEventListener("change", () => {
     karaokeEnabled = karaokeToggleInput.checked;
     project.karaokeEnabled = karaokeEnabled;
     project.karaokeHighlightColor = karaokeHighlightColor;
     saveEditorProject(project);
+    updateSaveAvailability();
     updatePreview();
   });
 
@@ -3344,6 +3384,7 @@ function setupEditor(project: EditorProject): void {
       project.mediaUrl = saved.render_source_url;
       project.subtitleObjectName = saved.subtitle_object_name;
       project.subtitleUrl = saved.subtitle_url;
+      markProjectClean();
       if (!background) {
         projectTitleInput.value = saved.title;
         document.title = `${saved.title} | Benzaiten Editor`;
@@ -3384,11 +3425,17 @@ function setupEditor(project: EditorProject): void {
   };
 
   saveChangesButton.addEventListener("click", () => {
+    if (!hasPersistableChanges()) {
+      editorSaveStatus.textContent = "No changes to save.";
+      editorSaveStatus.classList.remove("is-error");
+      updateSaveAvailability();
+      return;
+    }
     void saveProjectChanges();
   });
 
   backButton.addEventListener("click", () => {
-    if (!hasSavePrerequisites() && !saveInFlight) {
+    if (!hasSavePrerequisites() && !saveInFlight && hasPersistableChanges()) {
       void saveProjectChanges(true);
     }
     window.location.hash = "";
@@ -4045,6 +4092,7 @@ function setupEditor(project: EditorProject): void {
       updateSaveAvailability();
       renderSubtitleList();
       renderTimeline();
+      markProjectClean();
       return;
     }
     try {
@@ -4070,6 +4118,7 @@ function setupEditor(project: EditorProject): void {
     renderSubtitleList();
     renderTimeline();
     updatePreview();
+    markProjectClean();
   }
 
   renderTimeline();
