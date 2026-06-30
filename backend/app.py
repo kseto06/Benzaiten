@@ -1,8 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import Depends, FastAPI, Header, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from google.cloud import storage
+from google.cloud import firestore
+import firebase_admin
+from firebase_admin import auth as firebase_auth
 
 import json
 import os
@@ -10,9 +13,10 @@ import re
 import shutil
 import uuid
 import warnings
-from typing import List, Optional, Tuple, Dict, Union
+from datetime import datetime, timezone, timedelta
+from typing import Any, List, Optional, Tuple, Dict, Union
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 from backend.scripts.ffmpeg import (
     cancel_ffmpeg_process,
@@ -40,6 +44,28 @@ from backend.scripts.benzaiten_inference.k8s.kubernetes_utils import (
 
 app = FastAPI()
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "benzaiten-outputs")
+FIREBASE_AUTH_PROJECT_ID = os.environ.get(
+    "FIREBASE_AUTH_PROJECT_ID",
+    os.environ.get("FIREBASE_PROJECT_ID", "benzaiten-fbad8"),
+)
+FIRESTORE_PROJECT_ID = os.environ.get(
+    "FIRESTORE_PROJECT_ID",
+    os.environ.get("GOOGLE_CLOUD_PROJECT", "project-0c6e9a84-c914-4d2f-ace"),
+)
+PROJECT_INDEX_BACKEND = os.environ.get("PROJECT_INDEX_BACKEND", "gcs").lower()
+PROJECT_INDEX_PREFIX = os.environ.get("PROJECT_INDEX_PREFIX", "project-index").strip(
+    "/"
+)
+PROJECTS_COLLECTION = os.environ.get("FIRESTORE_PROJECTS_COLLECTION", "projects")
+SIGNED_URL_TTL_SECONDS = int(os.environ.get("SIGNED_URL_TTL_SECONDS", "3600"))
+IS_LOCAL_DEV = not (
+    os.environ.get("KUBERNETES_SERVICE_HOST") or os.environ.get("K_SERVICE")
+)
+DEFAULT_PUBLIC_GCS_URL_FALLBACK = "true" if IS_LOCAL_DEV else "false"
+ALLOW_PUBLIC_GCS_URL_FALLBACK = os.environ.get(
+    "ALLOW_PUBLIC_GCS_URL_FALLBACK",
+    DEFAULT_PUBLIC_GCS_URL_FALLBACK,
+).lower() in {"1", "true", "yes"}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EDITOR_REFERENCE_WIDTH = 960
 EDITOR_REFERENCE_HEIGHT = 540
@@ -92,9 +118,276 @@ class RenameProjectRequest(BaseModel):
     title: str = Field(min_length=1, max_length=180)
 
 
+class AuthenticatedUser(BaseModel):
+    uid: str
+    email: Optional[str] = None
+
+
 def _public_gcs_url(blob_name: str) -> str:
     encoded_name = "/".join(quote(part, safe="") for part in blob_name.split("/"))
     return f"https://storage.googleapis.com/{GCS_BUCKET}/{encoded_name}"
+
+
+def _gcs_object_name_from_url(url_or_name: Optional[str]) -> Optional[str]:
+    if not url_or_name:
+        return None
+
+    if not re.match(r"^https?://", url_or_name):
+        return url_or_name.strip()
+
+    parsed = urlparse(url_or_name)
+    path = parsed.path.lstrip("/")
+    bucket_prefix = f"{GCS_BUCKET}/"
+    if parsed.netloc == "storage.googleapis.com" and path.startswith(bucket_prefix):
+        return unquote(path[len(bucket_prefix) :])
+    if parsed.netloc == f"{GCS_BUCKET}.storage.googleapis.com":
+        return unquote(path)
+
+    return None
+
+
+def _job_id_from_blob_name(blob_name: str) -> str:
+    parts = blob_name.split("/")
+    if len(parts) < 2 or parts[0] != "outputs":
+        raise HTTPException(status_code=400, detail="Invalid project object.")
+
+    return _validated_job_id(parts[1])
+
+
+def _firebase_app() -> firebase_admin.App:
+    try:
+        return firebase_admin.get_app()
+    except ValueError:
+        options = (
+            {"projectId": FIREBASE_AUTH_PROJECT_ID}
+            if FIREBASE_AUTH_PROJECT_ID
+            else None
+        )
+        return firebase_admin.initialize_app(options=options)
+
+
+def _firestore_client() -> firestore.Client:
+    if FIRESTORE_PROJECT_ID:
+        return firestore.Client(project=FIRESTORE_PROJECT_ID)
+    return firestore.Client()
+
+
+def _project_doc(job_id: str) -> firestore.DocumentReference:
+    return _firestore_client().collection(PROJECTS_COLLECTION).document(job_id)
+
+
+def _use_firestore_project_index() -> bool:
+    return PROJECT_INDEX_BACKEND == "firestore"
+
+
+def _project_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _project_index_blob_name(owner_uid: str, job_id: str) -> str:
+    owner_segment = quote(owner_uid, safe="")
+    job_segment = quote(job_id, safe="")
+    return f"{PROJECT_INDEX_PREFIX}/{owner_segment}/{job_segment}.json"
+
+
+def _project_index_bucket() -> storage.Bucket:
+    return storage.Client().bucket(GCS_BUCKET)
+
+
+def _read_gcs_project_record(
+    job_id: str,
+    user: AuthenticatedUser,
+) -> Dict[str, Any]:
+    blob = _project_index_bucket().get_blob(_project_index_blob_name(user.uid, job_id))
+    if blob is None:
+        raise HTTPException(status_code=404, detail="The project does not exist.")
+    try:
+        project = json.loads(blob.download_as_text(encoding="utf-8"))
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"The project index record is unreadable: {error}",
+        ) from error
+    if project.get("owner_uid") != user.uid:
+        raise HTTPException(status_code=404, detail="The project does not exist.")
+    return project
+
+
+def _list_gcs_project_records(user: AuthenticatedUser) -> List[Dict[str, Any]]:
+    prefix = f"{PROJECT_INDEX_PREFIX}/{quote(user.uid, safe='')}/"
+    projects: List[Dict[str, Any]] = []
+    for blob in _project_index_bucket().list_blobs(prefix=prefix):
+        if not blob.name.endswith(".json"):
+            continue
+        try:
+            project = json.loads(blob.download_as_text(encoding="utf-8"))
+        except Exception as error:
+            warnings.warn(
+                f"skipping unreadable project index record {blob.name}: {error}",
+                RuntimeWarning,
+            )
+            continue
+        if project.get("owner_uid") == user.uid:
+            projects.append(project)
+    return projects
+
+
+def _upsert_gcs_project_record(job_id: str, values: Dict[str, Any]) -> None:
+    owner_uid = values.get("owner_uid")
+    if not owner_uid:
+        raise RuntimeError("GCS project index writes require owner_uid.")
+
+    bucket = _project_index_bucket()
+    blob = bucket.blob(_project_index_blob_name(str(owner_uid), job_id))
+    existing: Dict[str, Any] = {}
+    existing_blob = bucket.get_blob(blob.name)
+    if existing_blob is not None:
+        try:
+            existing = json.loads(existing_blob.download_as_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+
+    now = _project_timestamp()
+    record = {
+        **existing,
+        **values,
+        "job_id": job_id,
+        "updated_at": now,
+    }
+    if not record.get("created_at"):
+        record["created_at"] = now
+    blob.upload_from_string(
+        json.dumps(record, ensure_ascii=False, sort_keys=True),
+        content_type="application/json",
+    )
+
+
+def _delete_project_record(job_id: str, user: AuthenticatedUser) -> None:
+    if _use_firestore_project_index():
+        _project_doc(job_id).delete()
+        return
+
+    blob = _project_index_bucket().get_blob(_project_index_blob_name(user.uid, job_id))
+    if blob is not None:
+        blob.delete(if_generation_match=blob.generation)
+
+
+def get_current_user(
+    authorization: Optional[str] = Header(default=None),
+) -> AuthenticatedUser:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    try:
+        _firebase_app()
+        decoded = firebase_auth.verify_id_token(token)
+    except Exception as error:
+        raise HTTPException(
+            status_code=401, detail=f"Invalid authentication token: {error}"
+        ) from error
+    uid = decoded.get("uid") or decoded.get("sub")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid authentication token.")
+    return AuthenticatedUser(uid=uid, email=decoded.get("email"))
+
+
+def _signed_gcs_url(bucket: storage.Bucket, blob_name: str) -> str:
+    blob = bucket.blob(blob_name)
+    try:
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(seconds=SIGNED_URL_TTL_SECONDS),
+            method="GET",
+        )
+    except Exception as error:
+        if ALLOW_PUBLIC_GCS_URL_FALLBACK:
+            warnings.warn(
+                f"falling back to public GCS URL for {blob_name}: {error}",
+                RuntimeWarning,
+            )
+            return _public_gcs_url(blob_name)
+        raise RuntimeError(
+            "failed to create a signed media URL; configure service-account "
+            "credentials or set ALLOW_PUBLIC_GCS_URL_FALLBACK=true for local dev"
+        ) from error
+
+
+def _get_owned_project(job_id: str, user: AuthenticatedUser) -> Dict[str, Any]:
+    if not _use_firestore_project_index():
+        return _read_gcs_project_record(job_id, user)
+
+    snapshot = _project_doc(job_id).get()
+    if not snapshot.exists:
+        raise HTTPException(status_code=404, detail="The project does not exist.")
+    project = snapshot.to_dict() or {}
+    if project.get("owner_uid") != user.uid:
+        raise HTTPException(status_code=404, detail="The project does not exist.")
+    return project
+
+
+def _assert_owned_project_blob(
+    blob_name: str,
+    user: AuthenticatedUser,
+) -> Tuple[str, Dict[str, Any]]:
+    job_id = _job_id_from_blob_name(blob_name)
+    project = _get_owned_project(job_id, user)
+    gcs_prefix = project.get("gcs_prefix") or f"outputs/{job_id}/"
+    if not blob_name.startswith(gcs_prefix):
+        raise HTTPException(status_code=403, detail="Project object is not allowed.")
+    return job_id, project
+
+
+def _project_response(
+    project: Dict[str, Any],
+    bucket: storage.Bucket,
+) -> Optional[Dict[str, Any]]:
+    job_id = project.get("job_id")
+    media_blob_name = project.get("media_blob_name")
+    if not job_id or not media_blob_name:
+        return None
+    media_blob = bucket.get_blob(media_blob_name)
+    if media_blob is None:
+        return None
+    media_blob.reload()
+    subtitle_blob_name = project.get("subtitle_blob_name")
+    render_source_blob_name = project.get("render_source_blob_name")
+    return {
+        "title": project.get("title") or Path(media_blob_name).stem,
+        "job_id": job_id,
+        "media_object_name": media_blob_name,
+        "media_url": _signed_gcs_url(bucket, media_blob_name),
+        "media_updated": media_blob.updated.isoformat() if media_blob.updated else None,
+        "media_size": str(media_blob.size or ""),
+        "media_content_type": media_blob.content_type or "video/mp4",
+        "subtitle_object_name": subtitle_blob_name,
+        "subtitle_url": (
+            _signed_gcs_url(bucket, subtitle_blob_name) if subtitle_blob_name else None
+        ),
+        "render_source_object_name": render_source_blob_name,
+        "render_source_url": (
+            _signed_gcs_url(bucket, render_source_blob_name)
+            if render_source_blob_name
+            else None
+        ),
+    }
+
+
+def _upsert_project_record(job_id: str, values: Dict[str, Any]) -> None:
+    if not _use_firestore_project_index():
+        _upsert_gcs_project_record(job_id, values)
+        return
+
+    doc = _project_doc(job_id)
+    doc.set(
+        {
+            **values,
+            "job_id": job_id,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        },
+        merge=True,
+    )
 
 
 def _validated_project_video_blob_name(blob_name: str) -> str:
@@ -826,13 +1119,18 @@ async def run_full_inference(
 
 
 @app.post("/jobs/{job_id}/convert_to_vtt")
-def convert_to_vtt(job_id: str) -> dict:
+def convert_to_vtt(
+    job_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
     """
     This function takes in an srt file and converts it to a vtt file, which can be used for subtitles in the video player.
 
     Args:
         job_id (str): The job id of the inference job, used to locate the srt file in the gcs bucket.
     """
+    job_id = _validated_job_id(job_id)
+    _get_owned_project(job_id, user)
     output_dir = Path(f"/tmp/outputs/{job_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -860,22 +1158,24 @@ def convert_to_vtt(job_id: str) -> dict:
         )
 
     # upload vtt file to gcs bucket
+    vtt_blob_name = f"outputs/{job_id}/vocals.vtt"
     try:
         upload_file_to_gcs(
             local_path=str(vtt_path),
             bucket_name=GCS_BUCKET,
-            destination_blob_name=f"outputs/{job_id}/vocals.vtt",
+            destination_blob_name=vtt_blob_name,
         )
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"file upload to GCS failed: {str(e)}"
         )
 
+    bucket = storage.Client().bucket(GCS_BUCKET)
     return {
         "status": "vtt converted",
         "job_id": job_id,
-        "vtt_link": f"https://storage.googleapis.com/{GCS_BUCKET}/outputs/{job_id}/vocals.vtt",
-        "vtt_url": f"https://storage.googleapis.com/benzaiten-outputs/outputs/{job_id}/vocals.vtt",
+        "vtt_link": _signed_gcs_url(bucket, vtt_blob_name),
+        "vtt_url": _signed_gcs_url(bucket, vtt_blob_name),
     }
 
 
@@ -930,6 +1230,8 @@ async def create_orchestration_inference_pipeline_job(
     should_decrowd: bool = Form(False),
     fast_decrowd: bool = Form(False),
     language: Union[str, None] = Form(None),
+    project_title: Union[str, None] = Form(None),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> Dict:
     """
     Create a Kubernetes orchestration Job and return immediately for frontend polling.
@@ -945,6 +1247,29 @@ async def create_orchestration_inference_pipeline_job(
         input_gcs_path, input_blob_name, filename = await upload_input_file_to_gcs(
             file=file,
             job_id=job_id,
+        )
+
+        clean_title = (
+            _clean_project_title(project_title)
+            if project_title and project_title.strip()
+            else _clean_project_title(Path(filename).stem)
+        )
+
+        _upsert_project_record(
+            job_id,
+            {
+                "owner_uid": user.uid,
+                "owner_email": user.email,
+                "title": clean_title,
+                "gcs_prefix": f"outputs/{job_id}/",
+                "input_blob_name": input_blob_name,
+                "status": "queued",
+                "created_at": (
+                    firestore.SERVER_TIMESTAMP
+                    if _use_firestore_project_index()
+                    else _project_timestamp()
+                ),
+            },
         )
 
         orchestration_job_name = create_k8s_orchestration_job(
@@ -968,6 +1293,18 @@ async def create_orchestration_inference_pipeline_job(
 
     except Exception as e:
         try_write_inference_job_status(job_id=job_id, status="failed", error=str(e))
+        try:
+            _upsert_project_record(
+                job_id,
+                {
+                    "owner_uid": user.uid,
+                    "owner_email": user.email,
+                    "status": "failed",
+                    "error": str(e),
+                },
+            )
+        except Exception:
+            pass
         raise HTTPException(
             status_code=500,
             detail=f"inference orchestration job creation failed: {str(e)}",
@@ -975,30 +1312,25 @@ async def create_orchestration_inference_pipeline_job(
 
 
 @app.post("/projects/save")
-def save_editor_project(request: SaveEditorProjectRequest) -> Dict[str, object]:
+def save_editor_project(
+    request: SaveEditorProjectRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, object]:
     """
     Render editor subtitle changes and publish them without deleting the source first.
     """
     source_blob_name = _validated_project_video_blob_name(request.source_blob_name)
+    job_id, owned_project = _assert_owned_project_blob(source_blob_name, user)
     clean_title = _clean_project_title(request.title)
 
     source_parent = source_blob_name.rsplit("/", 1)[0]
     destination_blob_name = f"{source_parent}/{clean_title}.mp4"
     save_id = _clean_client_render_id(request.client_render_id) or uuid.uuid4().hex
-    subtitle_blob_name = (
-        f"{source_blob_name.split('/')[0]}/{source_blob_name.split('/')[1]}"
-        f"/editor/{clean_title}-{save_id}.vtt"
-    )
-    staging_prefix = (
-        f"{source_blob_name.split('/')[0]}/{source_blob_name.split('/')[1]}"
-        f"/.editor-staging/{save_id}"
-    )
+    subtitle_blob_name = f"outputs/{job_id}/editor/{clean_title}-{save_id}.vtt"
+    staging_prefix = f"outputs/{job_id}/.editor-staging/{save_id}"
     staging_video_name = f"{staging_prefix}.mp4"
     staging_vtt_name = f"{staging_prefix}.vtt"
-    render_source_blob_name = (
-        f"{source_blob_name.split('/')[0]}/{source_blob_name.split('/')[1]}"
-        "/editor/source.mp4"
-    )
+    render_source_blob_name = f"outputs/{job_id}/editor/source.mp4"
     work_dir = Path(f"/tmp/benzaiten-editor-{save_id}")
     source_path = work_dir / "source.mp4"
     ass_path = work_dir / "subtitles.ass"
@@ -1148,6 +1480,20 @@ def save_editor_project(request: SaveEditorProjectRequest) -> Dict[str, object]:
         if published_video.size != staging_video.size:
             raise RuntimeError("The published video failed size verification.")
 
+        _upsert_project_record(
+            job_id,
+            {
+                "owner_uid": owned_project.get("owner_uid", user.uid),
+                "owner_email": owned_project.get("owner_email", user.email),
+                "title": clean_title,
+                "gcs_prefix": f"outputs/{job_id}/",
+                "media_blob_name": destination_blob_name,
+                "subtitle_blob_name": subtitle_blob_name,
+                "render_source_blob_name": render_source_blob_name,
+                "status": "completed",
+            },
+        )
+
         if destination_blob_name != source_blob_name:
             try:
                 source_blob.delete(if_generation_match=source_generation)
@@ -1161,11 +1507,11 @@ def save_editor_project(request: SaveEditorProjectRequest) -> Dict[str, object]:
             "status": "saved",
             "title": clean_title,
             "media_object_name": destination_blob_name,
-            "media_url": _public_gcs_url(destination_blob_name),
+            "media_url": _signed_gcs_url(bucket, destination_blob_name),
             "render_source_object_name": render_source_blob_name,
-            "render_source_url": _public_gcs_url(render_source_blob_name),
+            "render_source_url": _signed_gcs_url(bucket, render_source_blob_name),
             "subtitle_object_name": subtitle_blob_name,
-            "subtitle_url": _public_gcs_url(subtitle_blob_name),
+            "subtitle_url": _signed_gcs_url(bucket, subtitle_blob_name),
             "generation": published_video.generation,
             "cleanup_warning": cleanup_warning,
         }
@@ -1193,7 +1539,10 @@ def save_editor_project(request: SaveEditorProjectRequest) -> Dict[str, object]:
 
 
 @app.post("/projects/render-cancel/{render_id}")
-def cancel_project_render(render_id: str) -> Dict[str, object]:
+def cancel_project_render(
+    render_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, object]:
     clean_render_id = _clean_client_render_id(render_id)
     if clean_render_id is None:
         raise HTTPException(status_code=400, detail="Invalid render id.")
@@ -1205,9 +1554,66 @@ def cancel_project_render(render_id: str) -> Dict[str, object]:
     }
 
 
+@app.get("/projects")
+def list_projects(
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, object]:
+    try:
+        bucket = storage.Client().bucket(GCS_BUCKET)
+        if _use_firestore_project_index():
+            query = (
+                _firestore_client()
+                .collection(PROJECTS_COLLECTION)
+                .where("owner_uid", "==", user.uid)
+            )
+            project_records = [snapshot.to_dict() or {} for snapshot in query.stream()]
+        else:
+            project_records = _list_gcs_project_records(user)
+
+        projects = []
+        for project in project_records:
+            response = _project_response(project, bucket)
+            if response is not None:
+                projects.append(response)
+        projects.sort(key=lambda item: item.get("media_updated") or "", reverse=True)
+        return {"projects": projects}
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"project library lookup failed: {error}",
+        ) from error
+
+
+@app.get("/jobs/{job_id}/objects")
+def list_job_objects(
+    job_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, object]:
+    job_id = _validated_job_id(job_id)
+    _get_owned_project(job_id, user)
+    prefix = f"outputs/{job_id}/"
+    bucket = storage.Client().bucket(GCS_BUCKET)
+    objects = [
+        {
+            "name": blob.name,
+            "updated": blob.updated.isoformat() if blob.updated else None,
+            "size": str(blob.size or ""),
+            "contentType": blob.content_type,
+        }
+        for blob in bucket.list_blobs(prefix=prefix)
+    ]
+    return {"items": objects}
+
+
 @app.get("/projects/download")
-def download_project(source_blob_name: str) -> StreamingResponse:
+def download_project(
+    source_blob_name: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> StreamingResponse:
     source_blob_name = _validated_project_video_blob_name(source_blob_name)
+    _assert_owned_project_blob(source_blob_name, user)
     bucket = storage.Client().bucket(GCS_BUCKET)
     source_blob = bucket.get_blob(source_blob_name)
     if source_blob is None:
@@ -1237,8 +1643,12 @@ def download_project(source_blob_name: str) -> StreamingResponse:
 
 
 @app.get("/projects/download-audio")
-def download_project_audio(source_blob_name: str) -> StreamingResponse:
+def download_project_audio(
+    source_blob_name: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> StreamingResponse:
     source_blob_name = _validated_project_video_blob_name(source_blob_name)
+    _assert_owned_project_blob(source_blob_name, user)
     bucket = storage.Client().bucket(GCS_BUCKET)
     source_blob = bucket.get_blob(source_blob_name)
     if source_blob is None:
@@ -1288,8 +1698,12 @@ def download_project_audio(source_blob_name: str) -> StreamingResponse:
 
 
 @app.post("/projects/rename")
-def rename_project(request: RenameProjectRequest) -> Dict[str, object]:
+def rename_project(
+    request: RenameProjectRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, object]:
     source_blob_name = _validated_project_video_blob_name(request.source_blob_name)
+    job_id, owned_project = _assert_owned_project_blob(source_blob_name, user)
     clean_title = _clean_project_title(request.title)
     source_parent = source_blob_name.rsplit("/", 1)[0]
     destination_blob_name = f"{source_parent}/{clean_title}.mp4"
@@ -1304,11 +1718,20 @@ def rename_project(request: RenameProjectRequest) -> Dict[str, object]:
     source_generation = source_blob.generation
 
     if destination_blob_name == source_blob_name:
+        _upsert_project_record(
+            job_id,
+            {
+                "owner_uid": owned_project.get("owner_uid", user.uid),
+                "owner_email": owned_project.get("owner_email", user.email),
+                "title": clean_title,
+                "media_blob_name": source_blob_name,
+            },
+        )
         return {
             "status": "renamed",
             "title": clean_title,
             "media_object_name": source_blob_name,
-            "media_url": _public_gcs_url(source_blob_name),
+            "media_url": _signed_gcs_url(bucket, source_blob_name),
         }
     if bucket.get_blob(destination_blob_name) is not None:
         raise HTTPException(
@@ -1341,17 +1764,31 @@ def rename_project(request: RenameProjectRequest) -> Dict[str, object]:
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"project rename failed: {error}")
 
+    _upsert_project_record(
+        job_id,
+        {
+            "owner_uid": owned_project.get("owner_uid", user.uid),
+            "owner_email": owned_project.get("owner_email", user.email),
+            "title": clean_title,
+            "media_blob_name": destination_blob_name,
+        },
+    )
+
     return {
         "status": "renamed",
         "title": clean_title,
         "media_object_name": destination_blob_name,
-        "media_url": _public_gcs_url(destination_blob_name),
+        "media_url": _signed_gcs_url(bucket, destination_blob_name),
     }
 
 
 @app.delete("/projects/{job_id}")
-def delete_project(job_id: str) -> Dict[str, object]:
+def delete_project(
+    job_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, object]:
     job_id = _validated_job_id(job_id)
+    _get_owned_project(job_id, user)
     prefix = f"outputs/{job_id}/"
     bucket = storage.Client().bucket(GCS_BUCKET)
     blobs_by_name = {blob.name: blob for blob in bucket.list_blobs(prefix=prefix)}
@@ -1391,6 +1828,8 @@ def delete_project(job_id: str) -> Dict[str, object]:
             ),
         )
 
+    _delete_project_record(job_id, user)
+
     return {
         "status": "deleted",
         "job_id": job_id,
@@ -1400,7 +1839,10 @@ def delete_project(job_id: str) -> Dict[str, object]:
 
 
 @app.get("/jobs/{job_id}")
-def get_inference_job_status(job_id: str) -> Dict[str, str]:
+def get_inference_job_status(
+    job_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, str]:
     """
     Endpoint to get the status of an inference job given the job id.
     Used for polling the status of the job from the frontend.
@@ -1413,6 +1855,9 @@ def get_inference_job_status(job_id: str) -> Dict[str, str]:
     """
     from kubernetes import client
     from kubernetes.client.rest import ApiException
+
+    job_id = _validated_job_id(job_id)
+    _get_owned_project(job_id, user)
 
     def completed_result_response() -> Union[Dict[str, str], None]:
         res_path = Path(f"/tmp/{job_id}_result.json")
@@ -1436,15 +1881,35 @@ def get_inference_job_status(job_id: str) -> Dict[str, str]:
         ):
             return None
 
+        bucket = storage.Client().bucket(GCS_BUCKET)
+        video_blob_name = _gcs_object_name_from_url(result.get("video_url"))
+        audio_blob_name = _gcs_object_name_from_url(result.get("audio_url"))
+        subtitle_blob_name = _gcs_object_name_from_url(result.get("subtitle_url"))
+        media_blob_name = video_blob_name or audio_blob_name
+        if media_blob_name is None or subtitle_blob_name is None:
+            return None
+
+        _upsert_project_record(
+            job_id,
+            {
+                "owner_uid": user.uid,
+                "owner_email": user.email,
+                "media_blob_name": media_blob_name,
+                "subtitle_blob_name": subtitle_blob_name,
+                "render_source_blob_name": media_blob_name if video_blob_name else None,
+                "status": "completed",
+            },
+        )
+
         response = {
             "job_id": job_id,
             "status": "completed",
-            "subtitle_url": result["subtitle_url"],
+            "subtitle_url": _signed_gcs_url(bucket, subtitle_blob_name),
         }
-        if result.get("video_url"):
-            response["video_url"] = result["video_url"]
-        if result.get("audio_url"):
-            response["audio_url"] = result["audio_url"]
+        if video_blob_name:
+            response["video_url"] = _signed_gcs_url(bucket, video_blob_name)
+        if audio_blob_name:
+            response["audio_url"] = _signed_gcs_url(bucket, audio_blob_name)
 
         return response
 
@@ -1465,6 +1930,15 @@ def get_inference_job_status(job_id: str) -> Dict[str, str]:
 
         if status_result.get("status") != "failed":
             return None
+
+        _upsert_project_record(
+            job_id,
+            {
+                "owner_uid": user.uid,
+                "owner_email": user.email,
+                "status": "failed",
+            },
+        )
 
         return {
             "job_id": job_id,
@@ -1532,6 +2006,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "https://kseto06.github.io",
     ],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

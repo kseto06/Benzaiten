@@ -100,9 +100,10 @@ button:disabled {
   position: sticky;
   top: 0;
   z-index: 30;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) auto minmax(170px, 1fr);
   align-items: center;
-  justify-content: space-between;
+  gap: 18px;
   padding: 18px clamp(24px, 5vw, 76px);
   border-bottom: 1px solid rgba(220, 232, 240, 0.9);
   background: rgba(250, 253, 255, 0.9);
@@ -135,6 +136,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 30px;
+  justify-self: center;
 }
 
 .header-nav a {
@@ -142,6 +144,293 @@ button:disabled {
   font-size: 14px;
   font-weight: 600;
   text-decoration: none;
+}
+
+.auth-panel {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  justify-self: end;
+}
+
+.auth-status,
+.auth-user {
+  position: absolute;
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.auth-avatar {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 999px;
+}
+
+.auth-avatar[hidden],
+.auth-avatar-image[hidden] {
+  display: none;
+}
+
+.auth-avatar-placeholder {
+  color: #fff;
+  background: #d7dee7;
+}
+
+.auth-avatar svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.auth-avatar-image {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  object-fit: cover;
+}
+
+.auth-signin-button,
+.auth-avatar-button {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(34, 66, 88, 0.08);
+  font-weight: 800;
+}
+
+.auth-signin-button[hidden],
+.auth-avatar-button[hidden] {
+  display: none;
+}
+
+.auth-signin-button {
+  min-height: 42px;
+  padding: 0 18px;
+}
+
+.auth-avatar-button {
+  width: 42px;
+  height: 42px;
+  justify-content: center;
+  padding: 2px;
+}
+
+.auth-avatar-button:hover,
+.auth-signin-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(85, 174, 230, 0.2);
+}
+
+.account-menu {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 0;
+  z-index: 50;
+  width: 280px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 60px rgba(16, 34, 49, 0.16);
+}
+
+.account-menu[hidden] {
+  display: none;
+}
+
+.account-menu-profile {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.account-menu-profile strong,
+.account-menu-profile span {
+  display: block;
+}
+
+.account-menu-profile strong {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.account-menu-profile span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-menu-item {
+  width: 100%;
+  padding: 15px 18px;
+  border: 0;
+  color: var(--ink);
+  background: #fff;
+  font-weight: 750;
+  text-align: left;
+}
+
+.account-menu-item:hover {
+  background: var(--surface-soft);
+}
+
+.auth-panel.is-warning .auth-status {
+  color: var(--danger);
+}
+
+.auth-dialog {
+  width: min(92vw, 350px);
+  padding: 26px;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  color: var(--ink);
+  background: #fff;
+  box-shadow: 0 34px 90px rgba(16, 34, 49, 0.2);
+}
+
+.auth-dialog::backdrop {
+  background: rgba(19, 32, 45, 0.42);
+  backdrop-filter: blur(7px);
+}
+
+.auth-dialog-close {
+  position: absolute;
+  top: 15px;
+  right: 17px;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.auth-dialog-header {
+  display: grid;
+  justify-items: center;
+  margin-bottom: 22px;
+  text-align: center;
+}
+
+.auth-dialog-header .brand-mark {
+  width: 42px;
+  height: 42px;
+  margin-bottom: 12px;
+}
+
+.auth-dialog-header h2 {
+  margin: 0 0 6px;
+  font-size: 24px;
+}
+
+.auth-dialog-header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.auth-provider-list {
+  display: grid;
+  gap: 11px;
+}
+
+.auth-provider-list[hidden] {
+  display: none;
+}
+
+.auth-provider-button {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--ink);
+  background: #f3f5f7;
+  font-size: 16px;
+  font-weight: 750;
+}
+
+.auth-provider-primary {
+  color: #fff;
+  background: #181818;
+}
+
+.auth-provider-button:disabled {
+  opacity: 0.62;
+}
+
+.auth-email-form {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-email-form[hidden] {
+  display: none;
+}
+
+.auth-email-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  text-align: left;
+}
+
+.auth-email-form .input {
+  min-height: 46px;
+  font-size: 15px;
+}
+
+.auth-link-button {
+  border: 0;
+  color: var(--blue);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.auth-link-button:hover {
+  text-decoration: underline;
+}
+
+.auth-dialog-status {
+  min-height: 20px;
+  margin: 16px 0 0;
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
 }
 
 .button {
@@ -601,6 +890,26 @@ button:disabled {
 .search-wrap {
   display: flex;
   gap: 10px;
+}
+
+.library-auth-content[hidden],
+.library-auth-prompt[hidden] {
+  display: none;
+}
+
+.library-auth-prompt {
+  margin-top: 18px;
+  padding: 24px;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  color: var(--muted);
+  background:
+    linear-gradient(135deg, rgba(85, 174, 230, 0.08), rgba(238, 145, 181, 0.08)),
+    var(--surface-soft);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
 }
 
 .library-note {
@@ -2884,8 +3193,17 @@ body.is-resizing-timeline {
 }
 
 @media (max-width: 900px) {
+  .site-header {
+    grid-template-columns: auto 1fr auto;
+    gap: 12px;
+  }
+
   .header-nav a {
     display: none;
+  }
+
+  .auth-panel {
+    justify-self: end;
   }
 
   .workspace-grid {
