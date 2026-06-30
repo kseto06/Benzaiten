@@ -1,8 +1,7 @@
 name: Docker Image CI
 
 on:
-  pull_request:
-    branches: ["main"]
+  workflow_call:
 
 jobs:
   build:
