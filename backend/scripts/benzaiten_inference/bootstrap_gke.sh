@@ -65,6 +65,18 @@ else
   bash "${BOOTSTRAP_DIR}/create-gke-cluster.sh"
 fi
 
+PROJECT_ID="$(gcloud config get-value project)"
+echo "Ensuring Workload Identity is enabled..."
+gcloud container clusters update "${CLUSTER}" \
+  --zone "${ZONE}" \
+  --workload-pool="${PROJECT_ID}.svc.id.goog"
+
+echo "Ensuring default node pool uses the GKE metadata server..."
+gcloud container node-pools update default-pool \
+  --cluster "${CLUSTER}" \
+  --zone "${ZONE}" \
+  --workload-metadata=GKE_METADATA
+
 echo "Configuring default node pool autoscaling..."
 gcloud container clusters update "${CLUSTER}" \
   --zone "${ZONE}" \
@@ -88,6 +100,7 @@ if [ "${INFERENCE_POOL}" = "${CPU_POOL}" ]; then
   fi
 
   echo "Configuring CPU inference node pool autoscaling..."
+  NODE_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/enable_workload_identity_node_pool.sh"
   NODE_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/autoscale_cpu_inference_cluster.sh"
 else
   echo "Skipping CPU inference node pool setup because INFERENCE_POOL=${INFERENCE_POOL}."
@@ -107,6 +120,7 @@ if [ "${INFERENCE_POOL}" = "${GPU_POOL}" ]; then
   fi
 
   echo "Configuring GPU inference node pool autoscaling..."
+  NODE_POOL="${GPU_POOL}" bash "${BOOTSTRAP_DIR}/enable_workload_identity_node_pool.sh"
   NODE_POOL="${GPU_POOL}" \
     MAX_NODES="${GPU_POOL_MAX_NODES}" \
     bash "${BOOTSTRAP_DIR}/autoscale_gpu_pool.sh"

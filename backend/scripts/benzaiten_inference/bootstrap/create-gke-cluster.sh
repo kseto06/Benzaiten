@@ -17,6 +17,7 @@ gcloud container clusters create "${CLUSTER}" \
     --disk-type pd-balanced \
     --disk-size 50 \
     --scopes=https://www.googleapis.com/auth/cloud-platform \
+    --workload-pool="$(gcloud config get-value project).svc.id.goog" \
     --enable-ip-alias
 
 # credentials
