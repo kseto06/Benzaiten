@@ -103,6 +103,7 @@ jobs:
       - name: Bootstrap GKE
         env:
           INFERENCE_POOL: ${{ inputs.inference_pool }}
+          BACKEND_GCP_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GCP_SERVICE_ACCOUNT }}
         run: |
           set -euo pipefail
 
