@@ -1,5 +1,6 @@
 # this file serves as the full automated test workflow CI combining all elementary CIs for QA + validation
 name: QA & Validation Automated Test CI
+run-name: QA & Validation Automated Test CI - ${{ github.actor }} on ${{ github.ref_name }}
 
 on:
     push:
