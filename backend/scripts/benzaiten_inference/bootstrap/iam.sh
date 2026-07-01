@@ -28,7 +28,9 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${COMPUTE_SA}" \
     --role="roles/storage.objectAdmin"
 
-if gcloud iam service-accounts describe "${GCP_BACKEND_SA}" >/dev/null 2>&1; then
+if [[ -n "${BACKEND_GCP_SERVICE_ACCOUNT_EMAIL}" ]]; then
+    echo "Using supplied backend Google service account: ${GCP_BACKEND_SA}"
+elif gcloud iam service-accounts describe "${GCP_BACKEND_SA}" >/dev/null 2>&1; then
     echo "Google service account exists: ${GCP_BACKEND_SA}"
 else
     if [[ "${CREATE_BACKEND_GCP_SA}" != "true" ]]; then
@@ -49,11 +51,11 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${GCP_BACKEND_SA}" \
     --role="roles/storage.objectAdmin"
 
-gcloud iam service-accounts add-iam-policy-binding "${GCP_BACKEND_SA}" \
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${PROJECT_ID}.svc.id.goog[${K8S_NAMESPACE}/${K8S_BACKEND_SA}]" \
     --role="roles/iam.workloadIdentityUser"
 
-gcloud iam service-accounts add-iam-policy-binding "${GCP_BACKEND_SA}" \
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${GCP_BACKEND_SA}" \
     --role="roles/iam.serviceAccountTokenCreator"
 
