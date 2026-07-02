@@ -38,7 +38,7 @@ spec:
             - name: PROJECT_INDEX_BACKEND
               value: "gcs"
             - name: ALLOW_PUBLIC_GCS_URL_FALLBACK
-              value: "false"
+              value: "true"
             - name: IMAGE
               value: "northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest"
             - name: K8S_NAMESPACE
