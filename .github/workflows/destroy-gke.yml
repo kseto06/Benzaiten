@@ -67,6 +67,7 @@ jobs:
       ROLE_NAME: benzaiten-backend-role
       ROLE_BINDING_NAME: benzaiten-backend-rolebinding
       NAMESPACE: default
+      GCP_SERVICE_ACCOUNT: github-actions-sa@project-0c6e9a84-c914-4d2f-ace.iam.gserviceaccount.com
 
     steps:
       - name: Checkout code ref
@@ -87,17 +88,11 @@ jobs:
       - name: Validate required secrets
         env:
           WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
-          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
         run: |
           set -euo pipefail
 
           if [[ -z "${WORKLOAD_IDENTITY_PROVIDER}" ]]; then
             echo "::error::WORKLOAD_IDENTITY_PROVIDER repository secret missing"
-            exit 1
-          fi
-
-          if [[ -z "${GCP_SERVICE_ACCOUNT}" ]]; then
-            echo "::error::GCP_SERVICE_ACCOUNT repository secret missing"
             exit 1
           fi
 
@@ -107,7 +102,7 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
           workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
 
       - name: Set up gcloud CLI
         uses: google-github-actions/setup-gcloud@v3
