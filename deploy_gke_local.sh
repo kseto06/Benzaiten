@@ -16,6 +16,7 @@ NAMESPACE="${NAMESPACE:-default}"
 
 PUSH_LATEST="${PUSH_LATEST:-true}"
 NO_CACHE="${NO_CACHE:-false}"
+BACKEND_GCP_SERVICE_ACCOUNT_EMAIL="${BACKEND_GCP_SERVICE_ACCOUNT_EMAIL:-github-actions-sa@project-0c6e9a84-c914-4d2f-ace.iam.gserviceaccount.com}"
 
 SCRIPT_ROOT="backend/scripts/benzaiten_inference"
 PUSH_IMAGE_SCRIPT="${SCRIPT_ROOT}/push-image.sh"
@@ -71,6 +72,7 @@ Container: ${CONTAINER_NAME}
 Namespace: ${NAMESPACE}
 Push latest: ${PUSH_LATEST}
 No cache: ${NO_CACHE}
+Backend GCP service account: ${BACKEND_GCP_SERVICE_ACCOUNT_EMAIL:-<not set>}
 EOF
 
 log "Checking Docker Desktop"
@@ -128,6 +130,7 @@ kubectl get nodes -L cloud.google.com/gke-nodepool
 
 log "Applying persistent Kubernetes resources"
 NAMESPACE="$NAMESPACE" \
+BACKEND_GCP_SERVICE_ACCOUNT_EMAIL="$BACKEND_GCP_SERVICE_ACCOUNT_EMAIL" \
 bash "$DEPLOY_SCRIPT"
 
 log "Updating backend Deployment image"

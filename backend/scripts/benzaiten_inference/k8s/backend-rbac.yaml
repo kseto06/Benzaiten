@@ -3,8 +3,6 @@ kind: ServiceAccount
 metadata:
   name: benzaiten-backend-sa
   namespace: default
-  annotations:
-    iam.gke.io/gcp-service-account: benzaiten-backend@project-0c6e9a84-c914-4d2f-ace.iam.gserviceaccount.com
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
