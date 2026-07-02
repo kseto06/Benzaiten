@@ -256,7 +256,8 @@ if [[ "$DELETE_IMAGE" == "true" ]]; then
         >/dev/null 2>&1; then
         warn "Artifact Registry repository ${REPOSITORY} was not found; skipping image deletion."
     else
-        DIGEST="$(
+        DIGEST=""
+        if ! DIGEST="$(
             gcloud artifacts docker images list "$IMAGE_PATH" \
                 --project "$PROJECT_ID" \
                 --include-tags \
@@ -276,7 +277,11 @@ if [[ "$DELETE_IMAGE" == "true" ]]; then
                     }
                 }
             '
-        )"
+        )"; then
+            warn "Unable to list Artifact Registry images; skipping image deletion."
+            warn "Grant roles/artifactregistry.repoAdmin to the cleanup service account if image deletion is required."
+            DIGEST=""
+        fi
 
         if [[ -z "$DIGEST" ]]; then
             warn "No Artifact Registry image with tag ${TAG} was found; skipping image deletion."
@@ -298,11 +303,14 @@ if [[ "$DELETE_IMAGE" == "true" ]]; then
             fi
 
             if [[ -n "$DIGEST" ]]; then
-                run gcloud artifacts docker images delete \
+                if ! run gcloud artifacts docker images delete \
                     "${IMAGE_PATH}@${DIGEST}" \
                     --project "$PROJECT_ID" \
                     --delete-tags \
-                    --quiet
+                    --quiet; then
+                    warn "Artifact Registry image deletion failed; continuing cleanup."
+                    warn "Grant roles/artifactregistry.repoAdmin to the cleanup service account if image deletion is required."
+                fi
             fi
         fi
     fi
