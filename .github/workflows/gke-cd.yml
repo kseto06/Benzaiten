@@ -1,4 +1,5 @@
 name: Deploy Backend to GKE
+run-name: Deploy Backend to GKE - ${{ github.actor }} on ${{ inputs.code_ref }}
 
 on:
   workflow_dispatch:
