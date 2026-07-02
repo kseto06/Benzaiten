@@ -1,4 +1,5 @@
 name: Bootstrap GKE Cluster
+run-name: Bootstrap GKE Cluster - ${{ github.actor }} on ${{ inputs.code_ref }}
 
 on:
   workflow_dispatch:

@@ -1,5 +1,6 @@
 # This workflow runs automated tests for the model inference pipeline, verifying outputs at each inference step.
 name: Inference Pipeline Automated Test Run CI
+run-name: Inference Pipeline Automated Test Run CI - ${{ github.actor }} on code ref ${{ inputs.code_ref }} and test ref ${{ inputs.test_ref }}
 
 on:
   workflow_dispatch:
