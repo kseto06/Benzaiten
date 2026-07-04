@@ -53,6 +53,12 @@ spec:
                 configMapKeyRef:
                   name: benzaiten-inference-config
                   key: GPU_INFERENCE_NODE_POOL
+            - name: VIDEO_NODE_POOL
+              valueFrom:
+                configMapKeyRef:
+                  name: benzaiten-inference-config
+                  key: VIDEO_NODE_POOL
+                  optional: true
             - name: INFERENCE_NODE_POOL
               valueFrom:
                 configMapKeyRef:
