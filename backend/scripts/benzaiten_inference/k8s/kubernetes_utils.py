@@ -17,6 +17,7 @@ CPU_INFERENCE_NODE_POOL = os.environ.get(
     "CPU_INFERENCE_NODE_POOL", "cpu-inference-pool"
 )
 GPU_INFERENCE_NODE_POOL = os.environ.get("GPU_INFERENCE_NODE_POOL", "gpu-pool")
+VIDEO_NODE_POOL = os.environ.get("VIDEO_NODE_POOL", "video-pool")
 INFERENCE_NODE_POOL = os.environ.get("INFERENCE_NODE_POOL", GPU_INFERENCE_NODE_POOL)
 INFERENCE_GPU_COUNT = int(
     os.environ.get(
@@ -573,7 +574,7 @@ def create_k8s_build_video_job(
             "benzaiten/final_output_audio_filename": output_audio_filename,
             "benzaiten/final_output_prefix": f"outputs/{job_id}/",
         },
-        node_pool="default-pool",
+        node_pool=VIDEO_NODE_POOL,
         gpu_count=0,
         cpu_request="100m",
         memory_request="2Gi",

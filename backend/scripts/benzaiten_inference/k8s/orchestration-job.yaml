@@ -220,8 +220,8 @@ spec:
       serviceAccountName: benzaiten-backend-sa
 
       nodeSelector:
-        # default pool since this resource is not model inference intensive
-        cloud.google.com/gke-nodepool: default-pool 
+        # dedicated CPU pool for video composition and ffmpeg-heavy work
+        cloud.google.com/gke-nodepool: video-pool
 
       tolerations:
         - key: "inference"
