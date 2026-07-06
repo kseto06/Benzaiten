@@ -48,6 +48,7 @@ jobs:
       DEPLOYMENT_NAME: benzaiten-inference-deployment
       CONTAINER_NAME: benzaiten-inference-container
       NAMESPACE: default
+      GCP_SERVICE_ACCOUNT: github-actions-sa@project-0c6e9a84-c914-4d2f-ace.iam.gserviceaccount.com
     
     steps:
     - name: Checkout code ref
@@ -67,7 +68,7 @@ jobs:
       with:
         project_id: ${{ env.PROJECT_ID }}
         workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
-        service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
     
     - name: Set up gcloud CLI
       uses: google-github-actions/setup-gcloud@v3
@@ -116,6 +117,7 @@ jobs:
       env:
         K8S_DIR: backend/scripts/benzaiten_inference/k8s
         NAMESPACE: ${{ env.NAMESPACE }}
+        BACKEND_GCP_SERVICE_ACCOUNT_EMAIL: ${{ env.GCP_SERVICE_ACCOUNT }}
       run: |
         bash backend/scripts/benzaiten_inference/deploy/deploy-inference-job.sh
       

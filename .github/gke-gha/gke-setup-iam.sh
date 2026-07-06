@@ -26,4 +26,4 @@ echo "$GITHUB_ACTIONS_SA"
 
 gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:${GITHUB_ACTIONS_SA}" --role="roles/resourcemanager.projectIamAdmin"
 
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${GITHUB_ACTIONS_SA}" --role="roles/artifactregistry.writer"
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${GITHUB_ACTIONS_SA}" --role="roles/artifactregistry.repoAdmin"
