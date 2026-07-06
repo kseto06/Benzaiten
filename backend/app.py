@@ -20,10 +20,12 @@ from urllib.parse import quote, unquote, urlparse
 
 from backend.scripts.ffmpeg import (
     cancel_ffmpeg_process,
+    clear_ffmpeg_process_cancelled,
     split_sources,
     build_video,
     convert_srt_to_vtt,
     extract_audio_from_video,
+    is_ffmpeg_process_cancelled,
     render_video_with_ass_subtitles,
 )
 from backend.scripts.browser_subtitle_renderer import (
@@ -40,6 +42,9 @@ from backend.scripts.benzaiten_inference.k8s.kubernetes_utils import (
     get_k8s_api_client,
     create_k8s_inference_job,
     create_k8s_orchestration_job,
+    create_k8s_editor_render_job,
+    delete_k8s_editor_render_jobs,
+    wait_for_jobs,
 )
 
 app = FastAPI()
@@ -86,6 +91,13 @@ IMAGE = os.environ.get(
     "northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest",
 )
 K8S_NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
+EDITOR_RENDER_USE_K8S = os.environ.get(
+    "EDITOR_RENDER_USE_K8S",
+    "false" if IS_LOCAL_DEV else "true",
+).lower() in {"1", "true", "yes"}
+EDITOR_RENDER_JOB_TIMEOUT_SECONDS = int(
+    os.environ.get("EDITOR_RENDER_JOB_TIMEOUT_SECONDS", "3600")
+)
 
 
 class EditorSubtitleCue(BaseModel):
@@ -782,6 +794,157 @@ def _write_editor_subtitles(
     vtt_path.write_text("\n".join(vtt_lines), encoding="utf-8")
 
 
+def _render_editor_project_in_process(
+    *,
+    request: SaveEditorProjectRequest,
+    source_path: Path,
+    ass_path: Path,
+    vtt_path: Path,
+    rendered_path: Path,
+    work_dir: Path,
+    render_id: str,
+) -> Dict[str, int]:
+    render_font_dir = _prepare_editor_font_dir(work_dir)
+    _write_editor_subtitles(request, ass_path, vtt_path)
+    try:
+        render_video_with_browser_subtitles(
+            video_path=str(source_path),
+            output_path=str(rendered_path),
+            cues=[
+                {
+                    "start": cue.start,
+                    "end": cue.end,
+                    "text": cue.text,
+                }
+                for cue in request.cues
+            ],
+            subtitle_font_size=request.subtitle_font_size,
+            subtitle_transform=request.subtitle_transform.model_dump(),
+            karaoke_enabled=request.karaoke_enabled,
+            karaoke_highlight_color=request.karaoke_highlight_color,
+            fonts_dir=str(render_font_dir),
+            process_id=render_id,
+            reference_width=EDITOR_REFERENCE_WIDTH,
+            reference_height=EDITOR_REFERENCE_HEIGHT,
+        )
+    except BrowserSubtitleRendererUnavailable as error:
+        warnings.warn(
+            f"Browser subtitle renderer unavailable; falling back to ASS: {error}",
+            RuntimeWarning,
+        )
+        render_video_with_ass_subtitles(
+            video_path=str(source_path),
+            ass_path=str(ass_path),
+            output_path=str(rendered_path),
+            fonts_dir=str(render_font_dir),
+            process_id=render_id,
+        )
+    except Exception as error:
+        if "cancelled" in str(error).lower():
+            raise
+        warnings.warn(
+            f"Browser subtitle renderer failed; falling back to ASS: {error}",
+            RuntimeWarning,
+        )
+        render_video_with_ass_subtitles(
+            video_path=str(source_path),
+            ass_path=str(ass_path),
+            output_path=str(rendered_path),
+            fonts_dir=str(render_font_dir),
+            process_id=render_id,
+        )
+    if not rendered_path.exists() or rendered_path.stat().st_size == 0:
+        raise RuntimeError("The rendered video is empty")
+
+    return {
+        "rendered_size": rendered_path.stat().st_size,
+        "vtt_size": vtt_path.stat().st_size,
+    }
+
+
+def _run_editor_render_job(
+    *,
+    bucket: storage.Bucket,
+    job_id: str,
+    render_id: str,
+    request: SaveEditorProjectRequest,
+    render_request_blob_name: str,
+    render_status_blob_name: str,
+    render_source_blob_name: str,
+    render_source_generation: int,
+    staging_video_name: str,
+    staging_vtt_name: str,
+) -> Dict[str, Any]:
+    request_blob = bucket.blob(render_request_blob_name)
+    status_blob = bucket.blob(render_status_blob_name)
+    request_blob.upload_from_string(
+        request.model_dump_json(),
+        content_type="application/json",
+    )
+    try:
+        job_name = create_k8s_editor_render_job(
+            job_id=job_id,
+            render_id=render_id,
+            render_request_blob_name=render_request_blob_name,
+            render_status_blob_name=render_status_blob_name,
+            render_source_blob_name=render_source_blob_name,
+            render_source_generation=render_source_generation,
+            staging_video_blob_name=staging_video_name,
+            staging_vtt_blob_name=staging_vtt_name,
+        )
+        try:
+            wait_for_jobs(
+                [job_name],
+                poll_interval_seconds=5,
+                timeout_seconds=EDITOR_RENDER_JOB_TIMEOUT_SECONDS,
+            )
+        except Exception as error:
+            if is_ffmpeg_process_cancelled(render_id):
+                raise RuntimeError("Export render cancelled.") from error
+            status_snapshot = bucket.get_blob(render_status_blob_name)
+            if status_snapshot is not None:
+                try:
+                    status_payload = json.loads(
+                        status_snapshot.download_as_text(encoding="utf-8")
+                    )
+                    if status_payload.get("error"):
+                        raise RuntimeError(status_payload["error"]) from error
+                except RuntimeError:
+                    raise
+                except Exception:
+                    pass
+            raise
+
+        status_snapshot = bucket.get_blob(render_status_blob_name)
+        if status_snapshot is None:
+            raise RuntimeError("Editor render job completed without a status file.")
+        status_payload = json.loads(status_snapshot.download_as_text(encoding="utf-8"))
+        if status_payload.get("status") != "completed":
+            raise RuntimeError(
+                status_payload.get("error") or "Editor render job did not complete."
+            )
+        return status_payload
+    except Exception:
+        try:
+            delete_k8s_editor_render_jobs(render_id)
+        except Exception as cleanup_error:
+            warnings.warn(
+                f"failed to clean up editor render job for {render_id}: {cleanup_error}",
+                RuntimeWarning,
+            )
+        raise
+    finally:
+        clear_ffmpeg_process_cancelled(render_id)
+        try:
+            request_blob.delete()
+        except Exception:
+            pass
+        try:
+            status_blob.delete()
+        except Exception:
+            pass
+
+
 @app.get("/")
 def root():
     """
@@ -1330,6 +1493,10 @@ def save_editor_project(
     staging_prefix = f"outputs/{job_id}/.editor-staging/{save_id}"
     staging_video_name = f"{staging_prefix}.mp4"
     staging_vtt_name = f"{staging_prefix}.vtt"
+    render_request_blob_name = (
+        f"outputs/{job_id}/.editor-render-requests/{save_id}.json"
+    )
+    render_status_blob_name = f"outputs/{job_id}/.editor-render-status/{save_id}.json"
     render_source_blob_name = f"outputs/{job_id}/editor/source.mp4"
     work_dir = Path(f"/tmp/benzaiten-editor-{save_id}")
     source_path = work_dir / "source.mp4"
@@ -1341,6 +1508,7 @@ def save_editor_project(
     source_blob = bucket.get_blob(source_blob_name)
     published_vtt = None
     cleanup_warning: Optional[str] = None
+    render_result: Dict[str, Any] = {}
 
     if source_blob is None:
         raise HTTPException(
@@ -1374,72 +1542,56 @@ def save_editor_project(
                 if render_source_blob is None:
                     raise
         render_source_blob.reload()
-        render_source_blob.download_to_filename(
-            str(source_path),
-            if_generation_match=render_source_blob.generation,
-        )
-        render_font_dir = _prepare_editor_font_dir(work_dir)
-        _write_editor_subtitles(request, ass_path, vtt_path)
-        try:
-            render_video_with_browser_subtitles(
-                video_path=str(source_path),
-                output_path=str(rendered_path),
-                cues=[
-                    {
-                        "start": cue.start,
-                        "end": cue.end,
-                        "text": cue.text,
-                    }
-                    for cue in request.cues
-                ],
-                subtitle_font_size=request.subtitle_font_size,
-                subtitle_transform=request.subtitle_transform.model_dump(),
-                karaoke_enabled=request.karaoke_enabled,
-                karaoke_highlight_color=request.karaoke_highlight_color,
-                fonts_dir=str(render_font_dir),
-                process_id=save_id,
-                reference_width=EDITOR_REFERENCE_WIDTH,
-                reference_height=EDITOR_REFERENCE_HEIGHT,
+        if EDITOR_RENDER_USE_K8S:
+            render_result = _run_editor_render_job(
+                bucket=bucket,
+                job_id=job_id,
+                render_id=save_id,
+                request=request,
+                render_request_blob_name=render_request_blob_name,
+                render_status_blob_name=render_status_blob_name,
+                render_source_blob_name=render_source_blob_name,
+                render_source_generation=render_source_blob.generation,
+                staging_video_name=staging_video_name,
+                staging_vtt_name=staging_vtt_name,
             )
-        except BrowserSubtitleRendererUnavailable as error:
-            warnings.warn(
-                f"Browser subtitle renderer unavailable; falling back to ASS: {error}",
-                RuntimeWarning,
+        else:
+            render_source_blob.download_to_filename(
+                str(source_path),
+                if_generation_match=render_source_blob.generation,
             )
-            render_video_with_ass_subtitles(
-                video_path=str(source_path),
-                ass_path=str(ass_path),
-                output_path=str(rendered_path),
-                fonts_dir=str(render_font_dir),
-                process_id=save_id,
+            render_result = _render_editor_project_in_process(
+                request=request,
+                source_path=source_path,
+                ass_path=ass_path,
+                vtt_path=vtt_path,
+                rendered_path=rendered_path,
+                work_dir=work_dir,
+                render_id=save_id,
             )
-        except Exception as error:
-            if "cancelled" in str(error).lower():
-                raise
-            warnings.warn(
-                f"Browser subtitle renderer failed; falling back to ASS: {error}",
-                RuntimeWarning,
+            staging_video_upload = bucket.blob(staging_video_name)
+            staging_video_upload.upload_from_filename(
+                str(rendered_path), content_type="video/mp4"
             )
-            render_video_with_ass_subtitles(
-                video_path=str(source_path),
-                ass_path=str(ass_path),
-                output_path=str(rendered_path),
-                fonts_dir=str(render_font_dir),
-                process_id=save_id,
+            staging_vtt_upload = bucket.blob(staging_vtt_name)
+            staging_vtt_upload.upload_from_filename(
+                str(vtt_path), content_type="text/vtt"
             )
-        if not rendered_path.exists() or rendered_path.stat().st_size == 0:
-            raise RuntimeError("The rendered video is empty.")
 
-        staging_video = bucket.blob(staging_video_name)
-        staging_video.upload_from_filename(str(rendered_path), content_type="video/mp4")
+        staging_video = bucket.get_blob(staging_video_name)
+        if staging_video is None:
+            raise RuntimeError("The staged video was not created.")
         staging_video.reload()
-        if staging_video.size != rendered_path.stat().st_size:
+        expected_video_size = render_result.get("rendered_size")
+        if expected_video_size and staging_video.size != expected_video_size:
             raise RuntimeError("The staged video failed size verification.")
 
-        staging_vtt = bucket.blob(staging_vtt_name)
-        staging_vtt.upload_from_filename(str(vtt_path), content_type="text/vtt")
+        staging_vtt = bucket.get_blob(staging_vtt_name)
+        if staging_vtt is None:
+            raise RuntimeError("The staged subtitle file was not created.")
         staging_vtt.reload()
-        if staging_vtt.size != vtt_path.stat().st_size:
+        expected_vtt_size = render_result.get("vtt_size")
+        if expected_vtt_size and staging_vtt.size != expected_vtt_size:
             raise RuntimeError("The staged subtitle file failed size verification.")
 
         published_vtt = bucket.copy_blob(
@@ -1530,7 +1682,12 @@ def save_editor_project(
             detail=f"edited video save failed before replacing the original: {error}",
         )
     finally:
-        for blob_name in (staging_video_name, staging_vtt_name):
+        for blob_name in (
+            staging_video_name,
+            staging_vtt_name,
+            render_request_blob_name,
+            render_status_blob_name,
+        ):
             try:
                 bucket.blob(blob_name).delete()
             except Exception:
@@ -1546,11 +1703,21 @@ def cancel_project_render(
     clean_render_id = _clean_client_render_id(render_id)
     if clean_render_id is None:
         raise HTTPException(status_code=400, detail="Invalid render id.")
+    k8s_deleted = False
+    if EDITOR_RENDER_USE_K8S:
+        try:
+            k8s_deleted = delete_k8s_editor_render_jobs(clean_render_id)
+        except Exception as error:
+            warnings.warn(
+                f"failed to delete editor render job for {clean_render_id}: {error}",
+                RuntimeWarning,
+            )
+    ffmpeg_cancelled = cancel_ffmpeg_process(clean_render_id)
     return {
-        "status": "cancelled"
-        if cancel_ffmpeg_process(clean_render_id)
-        else "not_running",
+        "status": "cancelled" if k8s_deleted or ffmpeg_cancelled else "not_running",
         "render_id": clean_render_id,
+        "k8s_deleted": k8s_deleted,
+        "ffmpeg_cancelled": ffmpeg_cancelled,
     }
 
 

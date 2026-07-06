@@ -583,6 +583,162 @@ def create_k8s_build_video_job(
     )
 
 
+def create_k8s_editor_render_job(
+    *,
+    job_id: str,
+    render_id: str,
+    render_request_blob_name: str,
+    render_status_blob_name: str,
+    render_source_blob_name: str,
+    render_source_generation: Union[str, int],
+    staging_video_blob_name: str,
+    staging_vtt_blob_name: str,
+) -> str:
+    """
+    Create a CPU editor render job on video-pool for browser subtitle / ffmpeg export work
+
+    Args:
+        job_id: Unique identifier for the job, used as part of the K8s job
+        render_id: Unique identifier for the render, used as part of the K8s job
+        render_request_blob_name: GCS blob name for the render request JSON
+        render_status_blob_name: GCS blob name for the render status JSON
+        render_source_blob_name: GCS blob name for the source video file
+        render_source_generation: Generation number of the source video file in GCS
+        staging_video_blob_name: GCS blob name for the staging video file
+        staging_vtt_blob_name: GCS blob name for the staging VTT file
+
+    Returns:
+        The name of the created K8s job
+    """
+    api_client = get_k8s_api_client()
+    batch_v1 = client.BatchV1Api(api_client=api_client)
+    job_name = _ensure_safe_k8s_name(
+        f"benzaiten-editor-render-{job_id[:8]}-{render_id[:16]}"
+    )
+
+    env_vars = [
+        _env("JOB_ID", job_id),
+        _env("RENDER_ID", render_id),
+        _env("GCS_BUCKET", GCS_BUCKET),
+        _env("RENDER_REQUEST_BLOB_NAME", render_request_blob_name),
+        _env("RENDER_STATUS_BLOB_NAME", render_status_blob_name),
+        _env("RENDER_SOURCE_BLOB_NAME", render_source_blob_name),
+        _env("RENDER_SOURCE_GENERATION", str(render_source_generation)),
+        _env("STAGING_VIDEO_BLOB_NAME", staging_video_blob_name),
+        _env("STAGING_VTT_BLOB_NAME", staging_vtt_blob_name),
+    ]
+
+    container = client.V1Container(
+        name="benzaiten-editor-render",
+        image=IMAGE,
+        image_pull_policy="Always",
+        command=["python", "-m", "backend.scripts.editor_render_job"],
+        env=env_vars,
+        resources=client.V1ResourceRequirements(
+            requests={
+                "cpu": "2",
+                "memory": "4Gi",
+                "ephemeral-storage": "8Gi",
+            },
+            limits={
+                "cpu": "6",
+                "memory": "8Gi",
+                "ephemeral-storage": "16Gi",
+            },
+        ),
+    )
+
+    pod_spec = client.V1PodSpec(
+        restart_policy="Never",
+        service_account_name="benzaiten-backend-sa",
+        node_selector={"cloud.google.com/gke-nodepool": VIDEO_NODE_POOL},
+        tolerations=[
+            client.V1Toleration(
+                key="inference",
+                operator="Equal",
+                value="true",
+                effect="NoSchedule",
+            )
+        ],
+        containers=[container],
+    )
+
+    template = client.V1PodTemplateSpec(
+        metadata=client.V1ObjectMeta(
+            labels={
+                "app": "benzaiten-editor-render-job",
+                "job_id": job_id,
+                "render_id": render_id,
+                "stage": "editor-render",
+            }
+        ),
+        spec=pod_spec,
+    )
+
+    job_spec = client.V1JobSpec(
+        template=template,
+        backoff_limit=0,
+        ttl_seconds_after_finished=600,
+    )
+
+    job = client.V1Job(
+        api_version="batch/v1",
+        kind="Job",
+        metadata=client.V1ObjectMeta(
+            name=job_name,
+            labels={
+                "app": "benzaiten-editor-render-job",
+                "job_id": job_id,
+                "render_id": render_id,
+                "stage": "editor-render",
+            },
+        ),
+        spec=job_spec,
+    )
+
+    batch_v1.create_namespaced_job(namespace=K8S_NAMESPACE, body=job)
+    return job_name
+
+
+def delete_k8s_editor_render_jobs(render_id: str) -> bool:
+    """
+    Function to delete all K8s jobs associated with a specific render_id
+
+    Args:
+        render_id: The unique identifier for the render, used to find associated K8s jobs
+
+    Returns:
+        - True if any jobs were deleted
+        - False if no jobs were found for the given render_id
+    """
+    api_client = get_k8s_api_client()
+    batch_v1 = client.BatchV1Api(api_client=api_client)
+    label_selector = f"app=benzaiten-editor-render-job,render_id={render_id}"
+
+    try:
+        jobs = batch_v1.list_namespaced_job(
+            namespace=K8S_NAMESPACE,
+            label_selector=label_selector,
+        )
+    except ApiException as error:
+        if error.status == 404:
+            return False
+        raise
+
+    deleted_any = False
+    for job in jobs.items:
+        if not job.metadata or not job.metadata.name:
+            continue
+        batch_v1.delete_namespaced_job(
+            name=job.metadata.name,
+            namespace=K8S_NAMESPACE,
+            propagation_policy="Foreground",
+        )
+        deleted_any = True
+
+    return deleted_any
+
+
 def wait_for_jobs(
     job_names: List[str],
     namespace: str = K8S_NAMESPACE,
