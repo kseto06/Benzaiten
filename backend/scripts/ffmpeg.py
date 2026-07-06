@@ -101,6 +101,15 @@ def get_media_frame_rate(media_path: str) -> float:
 
 
 def get_media_dimensions(media_path: str) -> Tuple[int, int]:
+    """
+    Function to get the dimensions (width and height) of a media file using ffprobe
+
+    Args:
+        media_path (str): Path to the input media file.
+
+    Returns:
+        An (int, int) tuple containing the width and height of the media file.
+    """
     command = [
         "ffprobe",
         "-v",
@@ -139,6 +148,18 @@ def extract_audio_segment(
     start_seconds: float,
     duration_seconds: float,
 ) -> Path:
+    """
+    Function to extract a segment of audio from an audio file using ffmpeg
+
+    Args:
+        audio_path (str): Path to the input audio file.
+        output_path (str): Path to the output audio segment file.
+        start_seconds (float): Start time in seconds for the segment.
+        duration_seconds (float): Duration in seconds for the segment.
+
+    Returns:
+        Path to the output audio segment file.
+    """
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -170,6 +191,16 @@ def extract_audio_segment(
 
 
 def concatenate_audio_files(audio_paths: Sequence[str], output_path: str) -> Path:
+    """
+    Function to concatenate multiple audio files into a single audio file using ffmpeg
+
+    Args:
+        audio_paths (Sequence[str]): List of paths to the input audio files.
+        output_path (str): Path to the output concatenated audio file.
+
+    Returns:
+        Path to the output concatenated audio file.
+    """
     if not audio_paths:
         raise ValueError("At least one audio path is required")
 
@@ -358,7 +389,17 @@ def render_video_with_ass_subtitles(
     process_id: Optional[str] = None,
 ) -> Path:
     """
-    Re-encode a video with the edited ASS subtitle track burned into its frames.
+    Re-encode a video with the edited ASS subtitle track burned into its frames
+
+    Args:
+        video_path (str): The path to the input video file.
+        ass_path (str): The path to the input ASS subtitle file.
+        output_path (str): The path where the output video file will be saved.
+        fonts_dir (Optional[str]): The path to the directory containing font files for ASS subtitles.
+        process_id (Optional[str]): An optional identifier for the rendering process.
+
+    Returns:
+        Path to the output video file with burned-in subtitles
     """
     video_path = Path(video_path)
     ass_path = Path(ass_path)
@@ -505,6 +546,16 @@ def render_video_with_png_overlay(
 
 
 def convert_srt_to_vtt(srt_path: str, vtt_path: str) -> Path:
+    """
+    Function to convert SRT subtitle file to VTT format using ffmpeg
+
+    Args:
+        srt_path (str): Path to the input SRT file.
+        vtt_path (str): Path to the output VTT file.
+
+    Returns:
+        Path to the output VTT file.
+    """
     vtt_path = Path(vtt_path)
     vtt_path.parent.mkdir(parents=True, exist_ok=True)
 
