@@ -10,6 +10,46 @@
       <a href="#workflow">Workflow</a>
       <a class="button button-quiet" href="#create">Start a project</a>
     </nav>
+    <div class="auth-panel" id="authPanel">
+      <span class="auth-status" id="authStatus">Checking sign-in...</span>
+      <span class="auth-user" id="authUser" hidden></span>
+      <button class="auth-signin-button" id="loginButton" type="button">
+        <span>Sign In</span>
+      </button>
+      <button
+        class="auth-avatar-button"
+        id="accountMenuButton"
+        type="button"
+        aria-label="Open account menu"
+        aria-haspopup="menu"
+        aria-expanded="false"
+        hidden
+      >
+        <span class="auth-avatar auth-avatar-placeholder" id="accountAvatarFallback" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0"></path>
+          </svg>
+        </span>
+        <img class="auth-avatar-image" id="accountAvatarImage" alt="" hidden />
+      </button>
+      <div class="account-menu" id="accountMenu" role="menu" hidden>
+        <div class="account-menu-profile">
+          <span class="auth-avatar auth-avatar-placeholder" id="accountMenuAvatarFallback" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0"></path>
+            </svg>
+          </span>
+          <img class="auth-avatar-image" id="accountMenuAvatarImage" alt="" hidden />
+          <div>
+            <strong id="accountMenuName">Benzaiten user</strong>
+            <span id="accountMenuEmail">Signed in</span>
+          </div>
+        </div>
+        <button class="account-menu-item" id="logoutButton" type="button" role="menuitem">
+          Sign out
+        </button>
+      </div>
+    </div>
   </header>
 
   <main>
@@ -74,7 +114,6 @@
                   <input
                     class="input"
                     id="languageInput"
-                    value="ko"
                     placeholder="e.g. en, ko, ja"
                   />
                 </div>
@@ -128,40 +167,45 @@
             <div class="panel-body">
               <div class="panel-heading">
                 <div>
-                  <h3>Project library</h3>
+                  <h3>Project Library & Video Editor</h3>
                   <p>Search for saved projects or create new projects:</p>
                 </div>
                 <span class="number-badge">02</span>
               </div>
-              <div class="field">
-                <label for="videoNameInput">Song or project title</label>
-                <div class="search-wrap">
-                  <input
-                    class="input"
-                    id="videoNameInput"
-                    placeholder="Search for a project name..."
-                  />
-                  <button class="button" id="loadButton">Find project</button>
-                </div>
+              <div class="library-auth-prompt" id="librarySignedOutPrompt">
+                Sign in to view your project library and create projects.
               </div>
-              <div class="library-note">
-                Search accepts partial or close matches.
-              </div>
-              <button
-                class="library-toggle"
-                id="libraryToggle"
-                type="button"
-                aria-expanded="true"
-                aria-controls="libraryGallery"
-              >
-                <span>Video Library</span>
-                <span class="library-toggle-icon" aria-hidden="true">&darr;</span>
-              </button>
-              <div class="library-gallery" id="libraryGallery">
-                <div class="library-gallery-status" id="libraryGalleryStatus">
-                  Loading saved videos...
+              <div class="library-auth-content" id="libraryAuthenticatedContent" hidden>
+                <div class="field">
+                  <label for="videoNameInput">Song or project title</label>
+                  <div class="search-wrap">
+                    <input
+                      class="input"
+                      id="videoNameInput"
+                      placeholder="Search for a project name..."
+                    />
+                    <button class="button" id="loadButton">Find project</button>
+                  </div>
                 </div>
-                <div class="library-video-grid" id="libraryVideoGrid"></div>
+                <div class="library-note">
+                  Search accepts partial or close matches.
+                </div>
+                <button
+                  class="library-toggle"
+                  id="libraryToggle"
+                  type="button"
+                  aria-expanded="true"
+                  aria-controls="libraryGallery"
+                >
+                  <span>Video Library</span>
+                  <span class="library-toggle-icon" aria-hidden="true">&darr;</span>
+                </button>
+                <div class="library-gallery" id="libraryGallery">
+                  <div class="library-gallery-status" id="libraryGalleryStatus">
+                    Loading saved videos...
+                  </div>
+                  <div class="library-video-grid" id="libraryVideoGrid"></div>
+                </div>
               </div>
             </div>
           </section>
@@ -308,14 +352,14 @@
                 <h3>Build video</h3>
                 <p>Combine media, karaoke audio, and timed subtitles.</p>
                 <div class="workflow-node-tags">
-                  <span class="tag-gke">GKE</span>
+                  <span class="tag-gke">GKE CPU</span>
                   <span class="tag-gcs">GCS</span>
                 </div>
               </article>
 
               <article class="workflow-node node-editor" tabindex="0">
                 <div class="workflow-node-heading">
-                  <span class="workflow-node-icon workflow-node-icon-editor">BE</span>
+                  <span class="workflow-node-icon workflow-node-icon-editor">B</span>
                   <span class="workflow-node-type">Output</span>
                 </div>
                 <h3>Benzaiten Video Editor</h3>
@@ -358,5 +402,55 @@
         Delete project
       </button>
     </div>
+  </dialog>
+
+  <dialog class="auth-dialog" id="authDialog">
+    <button class="auth-dialog-close" id="authDialogClose" type="button" aria-label="Close sign in">
+      &times;
+    </button>
+    <div class="auth-dialog-header">
+      <span class="brand-mark">B</span>
+      <h2>Sign in to Benzaiten</h2>
+      <p>Sign in to start building up your project library.</p>
+    </div>
+    <div class="auth-provider-list" id="authProviderList">
+      <button class="auth-provider-button auth-provider-primary" id="googleAuthButton" type="button">
+        <span aria-hidden="true">G</span>
+        Google
+      </button>
+      <button class="auth-provider-button" id="emailAuthButton" type="button">
+        Email
+      </button>
+    </div>
+    <form class="auth-email-form" id="authEmailForm" hidden>
+      <label>
+        Email
+        <input class="input" id="authEmailInput" type="email" autocomplete="email" required />
+      </label>
+      <label>
+        Password
+        <input
+          class="input"
+          id="authPasswordInput"
+          type="password"
+          autocomplete="current-password"
+          minlength="6"
+          required
+        />
+      </label>
+      <button class="auth-provider-button auth-provider-primary" id="emailSignInButton" type="submit">
+        Sign in
+      </button>
+      <button class="auth-provider-button" id="emailCreateAccountButton" type="button">
+        Create account
+      </button>
+      <button class="auth-link-button" id="emailResetPasswordButton" type="button">
+        Forgot password?
+      </button>
+      <button class="auth-link-button" id="authProvidersBackButton" type="button">
+        Back to sign-in options
+      </button>
+    </form>
+    <p class="auth-dialog-status" id="authDialogStatus" aria-live="polite"></p>
   </dialog>
 </div>

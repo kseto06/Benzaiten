@@ -29,6 +29,14 @@ on:
         options:
           - "true"
           - "false"
+      runs-on:
+        description: "Which runner to use for the pipeline test"
+        required: false
+        default: "ubuntu-latest"
+        type: choice
+        options:
+          - "ubuntu-latest"
+          - "self-hosted"
 
 env:
   REGISTRY: ghcr.io
@@ -38,7 +46,7 @@ env:
 
 jobs:
   lint-and-compile:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 20
 
     steps:
@@ -73,7 +81,7 @@ jobs:
         run: python -m compileall backend
 
   build-docker-image:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 60
     needs: lint-and-compile
 
@@ -120,7 +128,7 @@ jobs:
             .
 
   source-separation-pipeline-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     needs: build-docker-image
 
@@ -198,7 +206,7 @@ jobs:
 
   decrowd-pipeline-test:
     if: ${{ inputs.run_decrowd == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     needs: [build-docker-image, source-separation-pipeline-test]
 
@@ -261,7 +269,7 @@ jobs:
           retention-days: 1
 
   transcription-pipeline-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     needs: source-separation-pipeline-test
 
@@ -325,7 +333,7 @@ jobs:
 
   build-video-pipeline-test:
     if: ${{ always() && needs.transcription-pipeline-test.result == 'success' && (inputs.run_decrowd == 'false' || needs.decrowd-pipeline-test.result == 'success') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     needs:
       - decrowd-pipeline-test

@@ -31,6 +31,14 @@ spec:
           env:
             - name: GCS_BUCKET
               value: "benzaiten-outputs"
+            - name: FIREBASE_AUTH_PROJECT_ID
+              value: "benzaiten-fbad8"
+            - name: FIRESTORE_PROJECT_ID
+              value: "project-0c6e9a84-c914-4d2f-ace"
+            - name: PROJECT_INDEX_BACKEND
+              value: "gcs"
+            - name: ALLOW_PUBLIC_GCS_URL_FALLBACK
+              value: "true"
             - name: IMAGE
               value: "northamerica-northeast2-docker.pkg.dev/project-0c6e9a84-c914-4d2f-ace/benzaiten/benzaiten-inference:latest"
             - name: K8S_NAMESPACE
@@ -45,6 +53,12 @@ spec:
                 configMapKeyRef:
                   name: benzaiten-inference-config
                   key: GPU_INFERENCE_NODE_POOL
+            - name: VIDEO_NODE_POOL
+              valueFrom:
+                configMapKeyRef:
+                  name: benzaiten-inference-config
+                  key: VIDEO_NODE_POOL
+                  optional: true
             - name: INFERENCE_NODE_POOL
               valueFrom:
                 configMapKeyRef:

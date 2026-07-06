@@ -8,7 +8,9 @@ ZONE="${ZONE:-northamerica-northeast2-b}"
 CLUSTER="${CLUSTER:-benzaiten-inference-cluster-b}"
 CPU_POOL="${CPU_POOL:-cpu-inference-pool}"
 GPU_POOL="${GPU_POOL:-gpu-pool}"
+VIDEO_POOL="${VIDEO_POOL:-video-pool}"
 GPU_POOL_MAX_NODES="${GPU_POOL_MAX_NODES:-1}"
+VIDEO_POOL_MAX_NODES="${VIDEO_POOL_MAX_NODES:-2}"
 DEFAULT_POOL_MIN_NODES="${DEFAULT_POOL_MIN_NODES:-1}"
 DEFAULT_POOL_MAX_NODES="${DEFAULT_POOL_MAX_NODES:-3}"
 INFERENCE_CONFIG_MAP="${INFERENCE_CONFIG_MAP:-benzaiten-inference-config}"
@@ -37,6 +39,7 @@ echo "Bootstrapping Benzaiten GKE infrastructure..."
 echo "Cluster: ${CLUSTER}"
 echo "Zone: ${ZONE}"
 echo "Inference pool: ${INFERENCE_POOL}"
+echo "Video pool: ${VIDEO_POOL}"
 
 if [ "${INFERENCE_POOL}" = "${GPU_POOL}" ]; then
   INFERENCE_GPU_COUNT=1
@@ -65,6 +68,18 @@ else
   bash "${BOOTSTRAP_DIR}/create-gke-cluster.sh"
 fi
 
+PROJECT_ID="$(gcloud config get-value project)"
+echo "Ensuring Workload Identity is enabled..."
+gcloud container clusters update "${CLUSTER}" \
+  --zone "${ZONE}" \
+  --workload-pool="${PROJECT_ID}.svc.id.goog"
+
+echo "Ensuring default node pool uses the GKE metadata server..."
+gcloud container node-pools update default-pool \
+  --cluster "${CLUSTER}" \
+  --zone "${ZONE}" \
+  --workload-metadata=GKE_METADATA
+
 echo "Configuring default node pool autoscaling..."
 gcloud container clusters update "${CLUSTER}" \
   --zone "${ZONE}" \
@@ -88,6 +103,7 @@ if [ "${INFERENCE_POOL}" = "${CPU_POOL}" ]; then
   fi
 
   echo "Configuring CPU inference node pool autoscaling..."
+  NODE_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/enable_workload_identity_node_pool.sh"
   NODE_POOL="${CPU_POOL}" bash "${BOOTSTRAP_DIR}/autoscale_cpu_inference_cluster.sh"
 else
   echo "Skipping CPU inference node pool setup because INFERENCE_POOL=${INFERENCE_POOL}."
@@ -107,6 +123,7 @@ if [ "${INFERENCE_POOL}" = "${GPU_POOL}" ]; then
   fi
 
   echo "Configuring GPU inference node pool autoscaling..."
+  NODE_POOL="${GPU_POOL}" bash "${BOOTSTRAP_DIR}/enable_workload_identity_node_pool.sh"
   NODE_POOL="${GPU_POOL}" \
     MAX_NODES="${GPU_POOL_MAX_NODES}" \
     bash "${BOOTSTRAP_DIR}/autoscale_gpu_pool.sh"
@@ -114,10 +131,29 @@ else
   echo "Skipping GPU node pool setup because INFERENCE_POOL=${INFERENCE_POOL}"
 fi
 
+echo "Checking video node pool..."
+if gcloud container node-pools describe "${VIDEO_POOL}" \
+  --cluster "${CLUSTER}" \
+  --zone "${ZONE}" >/dev/null 2>&1; then
+  echo "Video node pool already exists, skipping create."
+else
+  echo "Creating video node pool..."
+  NODE_POOL="${VIDEO_POOL}" \
+    MAX_NODES="${VIDEO_POOL_MAX_NODES}" \
+    bash "${BOOTSTRAP_DIR}/create-gke-video-node-pool.sh"
+fi
+
+echo "Configuring video node pool autoscaling..."
+NODE_POOL="${VIDEO_POOL}" bash "${BOOTSTRAP_DIR}/enable_workload_identity_node_pool.sh"
+NODE_POOL="${VIDEO_POOL}" \
+  MAX_NODES="${VIDEO_POOL_MAX_NODES}" \
+  bash "${BOOTSTRAP_DIR}/autoscale_video_pool.sh"
+
 echo "Persisting backend inference pool configuration..."
 kubectl create configmap "${INFERENCE_CONFIG_MAP}" \
   --from-literal="CPU_INFERENCE_NODE_POOL=${CPU_POOL}" \
   --from-literal="GPU_INFERENCE_NODE_POOL=${GPU_POOL}" \
+  --from-literal="VIDEO_NODE_POOL=${VIDEO_POOL}" \
   --from-literal="INFERENCE_NODE_POOL=${INFERENCE_POOL}" \
   --from-literal="INFERENCE_GPU_COUNT=${INFERENCE_GPU_COUNT}" \
   --dry-run=client \
