@@ -17,3 +17,4 @@ backend/scripts/restart_deployment.sh
 !backend/tests/input_files/**/*.mp3
 !backend/tests/input_files/**/*.wav
 backend/scripts/admin/**
+node_modules/
