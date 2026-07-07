@@ -1,0 +1,227 @@
+name: Destroy GKE Cluster Deployment 
+run-name: Destroy GKE Cluster Deployment - ${{ github.actor }} on ${{ inputs.code_ref }} 
+
+on:
+  workflow_dispatch:
+    inputs:
+      code_ref:
+        description: "Branch, tag, or commit SHA containing the cleanup scripts to run"
+        required: true
+        default: "main"
+        type: string
+      delete_image:
+        description: "Delete the selected Artifact Registry image tag/digest"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      delete_dynamic_jobs:
+        description: "Delete dynamic Kubernetes Jobs that use the Benzaiten image"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      delete_cluster:
+        description: "Delete the GKE cluster after deployment cleanup"
+        required: true
+        default: false
+        type: boolean
+      confirm_cluster_name:
+        description: "Required when delete_cluster is true (i.e. enter 'benzaiten-inference-cluster-b' to proceed)"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Print cleanup commands without deleting resources"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  destroy:
+    name: Destroy Benzaiten GKE deployment
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      PROJECT_ID: project-0c6e9a84-c914-4d2f-ace
+      REGION: northamerica-northeast2
+      GKE_CLUSTER: benzaiten-inference-cluster-b
+      GKE_ZONE: northamerica-northeast2-b
+      REPOSITORY: benzaiten
+      IMAGE_NAME: benzaiten-inference
+      TAG: latest
+      DEPLOYMENT_NAME: benzaiten-inference-deployment
+      SERVICE_NAME: benzaiten-inference-service
+      SERVICE_ACCOUNT_NAME: benzaiten-backend-sa
+      ROLE_NAME: benzaiten-backend-role
+      ROLE_BINDING_NAME: benzaiten-backend-rolebinding
+      NAMESPACE: default
+      GCP_SERVICE_ACCOUNT: github-actions-sa@project-0c6e9a84-c914-4d2f-ace.iam.gserviceaccount.com
+
+    steps:
+      - name: Checkout code ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.code_ref }}
+
+      - name: Show checked-out code ref
+        env:
+          CODE_REF: ${{ inputs.code_ref }}
+        run: |
+          set -euo pipefail
+
+          echo "Destroying GKE deployment from code_ref=${CODE_REF}"
+          echo "Resolved commit:"
+          git rev-parse HEAD
+
+      - name: Validate required secrets
+        env:
+          WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${WORKLOAD_IDENTITY_PROVIDER}" ]]; then
+            echo "::error::WORKLOAD_IDENTITY_PROVIDER repository secret missing"
+            exit 1
+          fi
+
+      - name: Authenticate to GCP
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          version: latest
+          install_components: gke-gcloud-auth-plugin
+
+      - name: Verify GCP and GKE tooling
+        run: |
+          set -euo pipefail
+
+          echo "Authenticated gcloud account:"
+          gcloud auth list \
+            --filter="status:ACTIVE" \
+            --format="value(account)"
+
+          echo "Configured project:"
+          gcloud config get-value project
+
+          echo "gcloud version:"
+          gcloud --version
+
+          echo "kubectl client version:"
+          kubectl version --client
+
+          echo "GKE authentication plugin version:"
+          gke-gcloud-auth-plugin --version
+
+      - name: Destroy deployment resources
+        env:
+          PROJECT_ID: ${{ env.PROJECT_ID }}
+          REGION: ${{ env.REGION }}
+          ZONE: ${{ env.GKE_ZONE }}
+          CLUSTER: ${{ env.GKE_CLUSTER }}
+          REPOSITORY: ${{ env.REPOSITORY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          TAG: ${{ env.TAG }}
+          DEPLOYMENT_NAME: ${{ env.DEPLOYMENT_NAME }}
+          SERVICE_NAME: ${{ env.SERVICE_NAME }}
+          SERVICE_ACCOUNT_NAME: ${{ env.SERVICE_ACCOUNT_NAME }}
+          ROLE_NAME: ${{ env.ROLE_NAME }}
+          ROLE_BINDING_NAME: ${{ env.ROLE_BINDING_NAME }}
+          NAMESPACE: ${{ env.NAMESPACE }}
+          DELETE_IMAGE: ${{ inputs.delete_image }}
+          DELETE_DYNAMIC_JOBS: ${{ inputs.delete_dynamic_jobs }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          AUTO_CONFIRM: "true"
+        run: |
+          set -euo pipefail
+
+          bash destroy_benzaiten_deployment.sh
+
+      - name: Validate cluster deletion confirmation
+        if: ${{ inputs.delete_cluster }}
+        env:
+          CONFIRM_CLUSTER_NAME: ${{ inputs.confirm_cluster_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${CONFIRM_CLUSTER_NAME}" != "${GKE_CLUSTER}" ]]; then
+            echo "::error::Cluster deletion confirmation must exactly match ${GKE_CLUSTER}"
+            exit 1
+          fi
+
+      - name: Delete GKE cluster
+        if: ${{ inputs.delete_cluster }}
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          DELETE_COMMAND=(
+            gcloud container clusters delete "${GKE_CLUSTER}"
+            --zone="${GKE_ZONE}"
+            --project="${PROJECT_ID}"
+            --quiet
+          )
+
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            printf '[dry-run]'
+            printf ' %q' "${DELETE_COMMAND[@]}"
+            printf '\n'
+            exit 0
+          fi
+
+          "${DELETE_COMMAND[@]}"
+
+      - name: Verify retained cluster resources
+        if: ${{ !inputs.delete_cluster }}
+        run: |
+          set -euo pipefail
+
+          if ! gcloud container clusters describe "${GKE_CLUSTER}" \
+            --zone="${GKE_ZONE}" \
+            --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "Cluster ${GKE_CLUSTER} was not found; nothing to verify."
+            exit 0
+          fi
+
+          gcloud container clusters get-credentials "${GKE_CLUSTER}" \
+            --zone="${GKE_ZONE}" \
+            --project="${PROJECT_ID}"
+
+          kubectl get deployment,job,pod,service,serviceaccount,role,rolebinding \
+            --namespace "${NAMESPACE}" \
+            --request-timeout=15s \
+            2>/dev/null || true
+
+      - name: Verify deleted cluster
+        if: ${{ inputs.delete_cluster && inputs.dry_run != 'true' }}
+        run: |
+          set -euo pipefail
+
+          if gcloud container clusters describe "${GKE_CLUSTER}" \
+            --zone="${GKE_ZONE}" \
+            --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "::error::Cluster ${GKE_CLUSTER} still exists after deletion."
+            exit 1
+          fi
+
+          echo "Cluster ${GKE_CLUSTER} successfully destroyed."
