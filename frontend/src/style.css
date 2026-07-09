@@ -1786,7 +1786,7 @@ button:disabled {
   display: grid;
   min-width: 960px;
   height: 100vh;
-  grid-template-rows: 64px minmax(0, 1fr);
+  grid-template-rows: 64px auto minmax(0, 1fr);
   overflow: hidden;
   background: #f3f8fc;
 }
@@ -1869,6 +1869,30 @@ button:disabled {
 
 .editor-save-status.is-error {
   color: var(--danger);
+}
+
+.editor-volatile-warning {
+  display: grid;
+  min-height: 36px;
+  max-height: 36px;
+  place-items: center;
+  overflow: hidden;
+  padding: 0 18px;
+  border-bottom: 1px solid rgba(238, 145, 181, 0.32);
+  color: #94324d;
+  background:
+    linear-gradient(90deg, rgba(238, 145, 181, 0.16), rgba(85, 174, 230, 0.1)),
+    #fff8fb;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-volatile-warning[hidden] {
+  display: none;
 }
 
 .editor-main {
