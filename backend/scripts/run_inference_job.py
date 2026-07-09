@@ -689,7 +689,7 @@ def run_transcription_job():
         "gcs_links": output_dict["gcs_links"],
     }
 
-    result_path = output_dir / "result.json"
+    result_path = output_dir / "transcription_result.json"
 
     with open(result_path, "w") as f:
         json.dump(result, f)

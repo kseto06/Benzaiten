@@ -125,6 +125,26 @@
                     placeholder="Enter project name..."
                   />
                 </div>
+                <div class="field">
+                  <label for="executionModeInput">Inference mode</label>
+                  <select class="input" id="executionModeInput">
+                    <option value="cloud" selected>Cloud inference</option>
+                    <option value="self_hosted">Self-hosted</option>
+                  </select>
+                </div>
+                <div class="field field-wide self-hosted-backend-field" id="selfHostedBackendField" hidden>
+                  <label for="selfHostedApiBaseUrlInput">Self-hosted backend URL</label>
+                  <input
+                    class="input"
+                    id="selfHostedApiBaseUrlInput"
+                    inputmode="url"
+                    placeholder="http://localhost:8000"
+                  />
+                  <p>
+                    Start the Benzaiten backend on your machine, then paste its
+                    FastAPI base URL here.
+                  </p>
+                </div>
                 <label class="toggle-row field-wide">
                   <input id="shouldDecrowdInput" type="checkbox" />
                   <span class="toggle-copy">

@@ -11,6 +11,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import uuid
 import warnings
 from datetime import datetime, timezone, timedelta
@@ -98,6 +100,27 @@ EDITOR_RENDER_USE_K8S = os.environ.get(
 EDITOR_RENDER_JOB_TIMEOUT_SECONDS = int(
     os.environ.get("EDITOR_RENDER_JOB_TIMEOUT_SECONDS", "3600")
 )
+ENABLE_SELF_HOSTED_INFERENCE = os.environ.get(
+    "ENABLE_SELF_HOSTED_INFERENCE", "false"
+).lower() in {"1", "true", "yes"}
+SELF_HOSTED_RUNNER_PATH = (
+    PROJECT_ROOT / "backend" / "scripts" / "local-hosted" / "run_local_inference.py"
+)
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://kseto06.github.io",
+]
+SELF_HOSTED_ALLOWED_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.environ.get("SELF_HOSTED_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+ALLOWED_ORIGINS = DEFAULT_ALLOWED_ORIGINS + [
+    origin
+    for origin in SELF_HOSTED_ALLOWED_ORIGINS
+    if origin not in DEFAULT_ALLOWED_ORIGINS
+]
 
 
 class EditorSubtitleCue(BaseModel):
@@ -303,6 +326,16 @@ def get_current_user(
     if not uid:
         raise HTTPException(status_code=401, detail="Invalid authentication token.")
     return AuthenticatedUser(uid=uid, email=decoded.get("email"))
+
+
+@app.get("/health")
+def health_check() -> Dict[str, Union[str, bool]]:
+    return {
+        "status": "ok",
+        "self_hosted_inference_enabled": ENABLE_SELF_HOSTED_INFERENCE,
+        "self_hosted_runner_available": SELF_HOSTED_RUNNER_PATH.exists(),
+        "project_index_backend": PROJECT_INDEX_BACKEND,
+    }
 
 
 def _signed_gcs_url(bucket: storage.Bucket, blob_name: str) -> str:
@@ -1394,15 +1427,31 @@ async def create_orchestration_inference_pipeline_job(
     fast_decrowd: bool = Form(False),
     language: Union[str, None] = Form(None),
     project_title: Union[str, None] = Form(None),
+    execution_mode: str = Form("cloud"),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Dict:
     """
-    Create a Kubernetes orchestration Job and return immediately for frontend polling.
+    Create an orchestration job and return immediately for frontend polling.
     """
     from backend.scripts.orchestration_jobs.status import (
         try_write_inference_job_status,
         write_inference_job_status,
     )
+
+    execution_mode = execution_mode.strip().lower()
+    if execution_mode not in {"cloud", "self_hosted"}:
+        raise HTTPException(
+            status_code=400,
+            detail="execution_mode must be either 'cloud' or 'self_hosted'.",
+        )
+    if execution_mode == "self_hosted" and not ENABLE_SELF_HOSTED_INFERENCE:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Self-hosted inference is not enabled on this backend. "
+                "Set ENABLE_SELF_HOSTED_INFERENCE=true on a capable host."
+            ),
+        )
 
     job_id = create_job_id()
 
@@ -1426,6 +1475,7 @@ async def create_orchestration_inference_pipeline_job(
                 "title": clean_title,
                 "gcs_prefix": f"outputs/{job_id}/",
                 "input_blob_name": input_blob_name,
+                "execution_mode": execution_mode,
                 "status": "queued",
                 "created_at": (
                     firestore.SERVER_TIMESTAMP
@@ -1434,6 +1484,39 @@ async def create_orchestration_inference_pipeline_job(
                 ),
             },
         )
+
+        write_inference_job_status(job_id=job_id, status="queued")
+
+        if execution_mode == "self_hosted":
+            env = os.environ.copy()
+            env.update(
+                {
+                    "JOB_ID": job_id,
+                    "INPUT_BLOB_NAME": input_blob_name,
+                    "FILENAME": filename,
+                    "CONTENT_TYPE": file.content_type or "",
+                    "SHOULD_DECROWD": str(should_decrowd).lower(),
+                    "FAST_DECROWD": str(fast_decrowd).lower(),
+                    "GCS_BUCKET": GCS_BUCKET,
+                }
+            )
+            if language:
+                env["LANGUAGE"] = language
+
+            process = subprocess.Popen(
+                [sys.executable, str(SELF_HOSTED_RUNNER_PATH)],
+                cwd=str(PROJECT_ROOT),
+                env=env,
+                start_new_session=True,
+            )
+
+            return {
+                "status": "queued",
+                "job_id": job_id,
+                "execution_mode": execution_mode,
+                "local_process_id": process.pid,
+                "input_gcs_path": input_gcs_path,
+            }
 
         orchestration_job_name = create_k8s_orchestration_job(
             job_id=job_id,
@@ -1445,11 +1528,10 @@ async def create_orchestration_inference_pipeline_job(
             language=language,
         )
 
-        write_inference_job_status(job_id=job_id, status="queued")
-
         return {
             "status": "queued",
             "job_id": job_id,
+            "execution_mode": execution_mode,
             "k8s_job_name": orchestration_job_name,
             "input_gcs_path": input_gcs_path,
         }
@@ -1462,6 +1544,7 @@ async def create_orchestration_inference_pipeline_job(
                 {
                     "owner_uid": user.uid,
                     "owner_email": user.email,
+                    "execution_mode": execution_mode,
                     "status": "failed",
                     "error": str(e),
                 },
@@ -2024,7 +2107,8 @@ def get_inference_job_status(
     from kubernetes.client.rest import ApiException
 
     job_id = _validated_job_id(job_id)
-    _get_owned_project(job_id, user)
+    owned_project = _get_owned_project(job_id, user)
+    is_self_hosted_job = owned_project.get("execution_mode") == "self_hosted"
 
     def completed_result_response() -> Union[Dict[str, str], None]:
         res_path = Path(f"/tmp/{job_id}_result.json")
@@ -2113,6 +2197,28 @@ def get_inference_job_status(
             "error": status_result.get("error", "Inference job failed"),
         }
 
+    def non_failed_status_response() -> Union[Dict[str, str], None]:
+        status_path = Path(f"/tmp/{job_id}_status.json")
+
+        try:
+            download_file_from_gcs(
+                bucket_name=GCS_BUCKET,
+                source_blob_name=f"outputs/{job_id}/status.json",
+                local_path=str(status_path),
+            )
+        except Exception:
+            return None
+
+        with open(status_path, "r") as f:
+            status_result = json.load(f)
+
+        status = status_result.get("status")
+        if status in {"queued", "running"}:
+            return {"job_id": job_id, "status": status}
+
+        return None
+
+    status_response = None
     try:
         result_response = completed_result_response()
         if result_response is not None:
@@ -2121,6 +2227,8 @@ def get_inference_job_status(
         failed_response = failed_status_response()
         if failed_response is not None:
             return failed_response
+
+        status_response = non_failed_status_response()
 
         api_client = get_k8s_api_client()
         batch_v1 = client.BatchV1Api(api_client=api_client)
@@ -2142,6 +2250,8 @@ def get_inference_job_status(
             ).items
 
         if not jobs:
+            if is_self_hosted_job and status_response is not None:
+                return status_response
             return {"job_id": job_id, "status": "queued"}
 
         if any(job.status.failed and job.status.failed >= 1 for job in jobs):
@@ -2160,6 +2270,8 @@ def get_inference_job_status(
         return {"job_id": job_id, "status": "queued"}
 
     except Exception as e:
+        if is_self_hosted_job and status_response is not None:
+            return status_response
         raise HTTPException(
             status_code=500, detail=f"failed to get k8s job status: {str(e)}"
         )
@@ -2168,11 +2280,7 @@ def get_inference_job_status(
 # add CORS middleware to allow requests from the frontend (served on a different origin)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "https://kseto06.github.io",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=r"^http://(localhost|127\.0\.0\.1):\d+$",
     allow_credentials=True,
     allow_methods=["*"],

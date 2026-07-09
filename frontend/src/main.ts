@@ -17,6 +17,7 @@ import {
 
 const GCS_BUCKET = "benzaiten-outputs";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+const SELF_HOSTED_API_BASE_URL_STORAGE_KEY = "benzaiten-self-hosted-api-base-url";
 const FIREBASE_CONFIG = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -124,6 +125,7 @@ type EditorProject = {
   isLocalMedia?: boolean;
   karaokeEnabled?: boolean;
   karaokeHighlightColor?: string;
+  apiBaseUrl?: string;
 };
 
 type LibraryProject = {
@@ -136,6 +138,8 @@ type LibraryProject = {
   subtitleObject?: GcsObject;
   subtitleUrl?: string;
 };
+
+type InferenceMode = "cloud" | "self_hosted";
 
 type SubtitleTransform = {
   x: number;
@@ -248,8 +252,60 @@ async function authJsonFetch(input: string, init: RequestInit = {}): Promise<Res
   return authFetch(input, { ...init, headers });
 }
 
-async function downloadAuthenticatedFile(url: string, filename: string): Promise<void> {
-  const response = await authFetch(url);
+function normalizeApiBaseUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (!trimmed) {
+    return "";
+  }
+  const url = new URL(trimmed);
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("Backend URL must start with http:// or https://.");
+  }
+  return url.toString().replace(/\/+$/, "");
+}
+
+function getStoredSelfHostedApiBaseUrl(): string {
+  const rawValue = localStorage.getItem(SELF_HOSTED_API_BASE_URL_STORAGE_KEY) || "";
+  try {
+    return normalizeApiBaseUrl(rawValue);
+  } catch {
+    return "";
+  }
+}
+
+function getProjectApiBaseUrl(project: EditorProject): string {
+  return project.apiBaseUrl || API_BASE_URL;
+}
+
+async function validateSelfHostedBackend(apiBaseUrl: string): Promise<void> {
+  const response = await fetch(`${apiBaseUrl}/health`);
+  if (!response.ok) {
+    throw new Error(`Self-hosted backend health check failed with ${response.status}.`);
+  }
+  const payload = await response.json() as {
+    status?: string;
+    self_hosted_inference_enabled?: boolean;
+  };
+  if (payload.status !== "ok") {
+    throw new Error("Self-hosted backend did not return a healthy status.");
+  }
+  if (!payload.self_hosted_inference_enabled) {
+    throw new Error(
+      "Self-hosted inference is disabled on that backend. "
+      + "Start it with ENABLE_SELF_HOSTED_INFERENCE=true.",
+    );
+  }
+}
+
+async function downloadAuthenticatedFile(
+  url: string,
+  filename: string,
+  apiBaseUrl = API_BASE_URL,
+): Promise<void> {
+  const routedUrl = url.startsWith(API_BASE_URL)
+    ? `${apiBaseUrl}${url.slice(API_BASE_URL.length)}`
+    : url;
+  const response = await authFetch(routedUrl);
   if (!response.ok) {
     throw new Error(await getApiError(response));
   }
@@ -503,8 +559,8 @@ function getFuzzyMatchScore(query: string, candidate: string): number {
   return Math.max(tokenCoverage * 0.9, dice);
 }
 
-async function listJobObjects(jobId: string): Promise<GcsObject[]> {
-  const response = await authFetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/objects`);
+async function listJobObjects(jobId: string, apiBaseUrl = API_BASE_URL): Promise<GcsObject[]> {
+  const response = await authFetch(`${apiBaseUrl}/jobs/${encodeURIComponent(jobId)}/objects`);
   if (!response.ok) {
     throw new Error(await getApiError(response));
   }
@@ -606,6 +662,9 @@ function setupLandingInteractions(): void {
   const fileInput = queryElement<HTMLInputElement>("#fileInput");
   const uploadZone = queryElement<HTMLDivElement>("#uploadZone");
   const selectedFile = queryElement<HTMLDivElement>("#selectedFile");
+  const executionModeInput = queryElement<HTMLSelectElement>("#executionModeInput");
+  const selfHostedBackendField = queryElement<HTMLDivElement>("#selfHostedBackendField");
+  const selfHostedApiBaseUrlInput = queryElement<HTMLInputElement>("#selfHostedApiBaseUrlInput");
   const shouldDecrowd = queryElement<HTMLInputElement>("#shouldDecrowdInput");
   const fastDecrowd = queryElement<HTMLInputElement>("#fastDecrowdInput");
   const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
@@ -821,7 +880,30 @@ function setupLandingInteractions(): void {
     selectedFile.classList.add("is-visible");
   };
 
+  const syncSelfHostedBackendField = (): void => {
+    const isSelfHosted = executionModeInput.value === "self_hosted";
+    selfHostedBackendField.hidden = !isSelfHosted;
+    if (isSelfHosted && !selfHostedApiBaseUrlInput.value.trim()) {
+      selfHostedApiBaseUrlInput.value = getStoredSelfHostedApiBaseUrl();
+    }
+  };
+
   fileInput.addEventListener("change", showSelectedFile);
+  executionModeInput.addEventListener("change", syncSelfHostedBackendField);
+  selfHostedApiBaseUrlInput.addEventListener("change", () => {
+    const value = selfHostedApiBaseUrlInput.value.trim();
+    if (!value) {
+      localStorage.removeItem(SELF_HOSTED_API_BASE_URL_STORAGE_KEY);
+      return;
+    }
+    try {
+      const normalized = normalizeApiBaseUrl(value);
+      selfHostedApiBaseUrlInput.value = normalized;
+      localStorage.setItem(SELF_HOSTED_API_BASE_URL_STORAGE_KEY, normalized);
+    } catch (error) {
+      setLandingStatus(error instanceof Error ? error.message : String(error), true);
+    }
+  });
   for (const eventName of ["dragenter", "dragover"]) {
     uploadZone.addEventListener(eventName, () => uploadZone.classList.add("is-dragging"));
   }
@@ -835,6 +917,7 @@ function setupLandingInteractions(): void {
       fastDecrowd.checked = false;
     }
   });
+  syncSelfHostedBackendField();
 
   runButton.addEventListener("click", () => {
     void handleRunInference();
@@ -1718,6 +1801,8 @@ async function handleRunInference(): Promise<void> {
   const fileInput = queryElement<HTMLInputElement>("#fileInput");
   const languageInput = queryElement<HTMLInputElement>("#languageInput");
   const projectNameInput = queryElement<HTMLInputElement>("#projectNameInput");
+  const executionModeInput = queryElement<HTMLSelectElement>("#executionModeInput");
+  const selfHostedApiBaseUrlInput = queryElement<HTMLInputElement>("#selfHostedApiBaseUrlInput");
   const shouldDecrowdInput = queryElement<HTMLInputElement>("#shouldDecrowdInput");
   const fastDecrowdInput = queryElement<HTMLInputElement>("#fastDecrowdInput");
   const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
@@ -1736,15 +1821,39 @@ async function handleRunInference(): Promise<void> {
     setLandingStatus("Enter an audio language code.", true);
     return;
   }
+  const executionMode = executionModeInput.value as InferenceMode;
+  let inferenceApiBaseUrl = API_BASE_URL;
+  if (executionMode === "self_hosted") {
+    try {
+      inferenceApiBaseUrl = normalizeApiBaseUrl(
+        selfHostedApiBaseUrlInput.value || getStoredSelfHostedApiBaseUrl(),
+      );
+    } catch (error) {
+      setLandingStatus(error instanceof Error ? error.message : String(error), true);
+      return;
+    }
+    if (!inferenceApiBaseUrl) {
+      setLandingStatus("Enter the FastAPI URL for your self-hosted backend.", true);
+      selfHostedApiBaseUrlInput.focus();
+      return;
+    }
+    selfHostedApiBaseUrlInput.value = inferenceApiBaseUrl;
+    localStorage.setItem(SELF_HOSTED_API_BASE_URL_STORAGE_KEY, inferenceApiBaseUrl);
+  }
 
   runButton.disabled = true;
   const progress = createProgressController(shouldDecrowdInput.checked);
 
   try {
+    if (executionMode === "self_hosted") {
+      setLandingStatus("Checking self-hosted backend...");
+      await validateSelfHostedBackend(inferenceApiBaseUrl);
+    }
     setLandingStatus("Uploading media and starting orchestration...");
     const formData = new FormData();
     formData.append("file", file);
     formData.append("language", language);
+    formData.append("execution_mode", executionMode);
     formData.append("should_decrowd", shouldDecrowdInput.checked ? "true" : "false");
     formData.append(
       "fast_decrowd",
@@ -1755,7 +1864,7 @@ async function handleRunInference(): Promise<void> {
       formData.append("project_title", projectTitle);
     }
 
-    const response = await authFetch(`${API_BASE_URL}/jobs`, {
+    const response = await authFetch(`${inferenceApiBaseUrl}/jobs`, {
       method: "POST",
       body: formData,
     });
@@ -1766,7 +1875,7 @@ async function handleRunInference(): Promise<void> {
     const startData = await response.json() as JobStartResponse;
     localStorage.setItem("job_id", startData.job_id);
     setLandingStatus(`Job ${startData.job_id} is running.`);
-    const completed = await pollInferenceJob(startData.job_id, progress);
+    const completed = await pollInferenceJob(startData.job_id, progress, inferenceApiBaseUrl);
     if (completed.status === "failed") {
       throw new Error(completed.error || "Inference job failed");
     }
@@ -1787,6 +1896,7 @@ async function handleRunInference(): Promise<void> {
       subtitleUrl: completed.subtitle_url,
       subtitleObjectName: getGcsObjectName(completed.subtitle_url),
       mediaType: completed.video_url ? "video" : "audio",
+      apiBaseUrl: executionMode === "self_hosted" ? inferenceApiBaseUrl : undefined,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1801,11 +1911,12 @@ async function handleRunInference(): Promise<void> {
 async function pollInferenceJob(
   jobId: string,
   progress: ReturnType<typeof createProgressController>,
+  apiBaseUrl = API_BASE_URL,
 ): Promise<JobStatusResponse> {
   while (true) {
     const [statusResponse, jobObjects] = await Promise.all([
-      authFetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`),
-      listJobObjects(jobId).catch(() => []),
+      authFetch(`${apiBaseUrl}/jobs/${encodeURIComponent(jobId)}`),
+      listJobObjects(jobId, apiBaseUrl).catch(() => []),
     ]);
     if (!statusResponse.ok) {
       throw new Error(await getApiError(statusResponse));
@@ -3071,12 +3182,14 @@ function setupEditor(project: EditorProject): void {
     }
   });
 
+  const projectApiBaseUrl = getProjectApiBaseUrl(project);
+
   const getProjectDownloadUrl = (sourceBlobName: string): string => (
-    `${API_BASE_URL}/projects/download?source_blob_name=${encodeURIComponent(sourceBlobName)}`
+    `${projectApiBaseUrl}/projects/download?source_blob_name=${encodeURIComponent(sourceBlobName)}`
   );
 
   const getProjectAudioDownloadUrl = (sourceBlobName: string): string => (
-    `${API_BASE_URL}/projects/download-audio?source_blob_name=${encodeURIComponent(sourceBlobName)}`
+    `${projectApiBaseUrl}/projects/download-audio?source_blob_name=${encodeURIComponent(sourceBlobName)}`
   );
 
   const downloadVideoUrl = (url: string): void => {
@@ -3101,7 +3214,7 @@ function setupEditor(project: EditorProject): void {
     }
     const renderId = activeExportRenderId;
     activeExportRenderId = null;
-    void authFetch(`${API_BASE_URL}/projects/render-cancel/${encodeURIComponent(renderId)}`, {
+    void authFetch(`${projectApiBaseUrl}/projects/render-cancel/${encodeURIComponent(renderId)}`, {
       method: "POST",
       keepalive: true,
     }).catch(error => {
@@ -3277,6 +3390,7 @@ function setupEditor(project: EditorProject): void {
     void downloadAuthenticatedFile(
       getProjectDownloadUrl(project.mediaObjectName),
       `${project.title || "benzaiten-video"}.mp4`,
+      projectApiBaseUrl,
     ).catch(error => {
       const message = error instanceof Error ? error.message : String(error);
       editorSaveStatus.textContent = `Download failed: ${message}`;
@@ -3293,6 +3407,7 @@ function setupEditor(project: EditorProject): void {
     void downloadAuthenticatedFile(
       getProjectAudioDownloadUrl(project.mediaObjectName),
       `${project.title || "benzaiten-video"}.mp3`,
+      projectApiBaseUrl,
     ).catch(error => {
       const message = error instanceof Error ? error.message : String(error);
       editorSaveStatus.textContent = `Audio download failed: ${message}`;
@@ -3358,7 +3473,7 @@ function setupEditor(project: EditorProject): void {
       editorSaveStatus.textContent = "";
     }
     try {
-      const response = await authJsonFetch(`${API_BASE_URL}/projects/save`, {
+      const response = await authJsonFetch(`${projectApiBaseUrl}/projects/save`, {
         method: "POST",
         signal,
         body: JSON.stringify({
