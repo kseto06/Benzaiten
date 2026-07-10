@@ -36,6 +36,55 @@ let authReadyResolve: (() => void) | null = null;
 let firebaseConfigWarningLogged = false;
 let volatileEditorProject: EditorProject | null = null;
 
+type BrowserExportFormat = {
+  label: "MP4" | "WEBM";
+  extension: "mp4" | "webm";
+  mimeType: string;
+  isFallback: boolean;
+};
+
+const BROWSER_EXPORT_FORMAT_CANDIDATES: BrowserExportFormat[] = [
+  {
+    label: "MP4",
+    extension: "mp4",
+    mimeType: "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+    isFallback: false,
+  },
+  {
+    label: "MP4",
+    extension: "mp4",
+    mimeType: "video/mp4",
+    isFallback: false,
+  },
+  {
+    label: "WEBM",
+    extension: "webm",
+    mimeType: "video/webm;codecs=vp9,opus",
+    isFallback: true,
+  },
+  {
+    label: "WEBM",
+    extension: "webm",
+    mimeType: "video/webm;codecs=vp8,opus",
+    isFallback: true,
+  },
+  {
+    label: "WEBM",
+    extension: "webm",
+    mimeType: "video/webm",
+    isFallback: true,
+  },
+];
+
+function getPreferredBrowserExportFormat(): BrowserExportFormat | null {
+  if (!("MediaRecorder" in window)) {
+    return null;
+  }
+  return BROWSER_EXPORT_FORMAT_CANDIDATES.find(format => (
+    MediaRecorder.isTypeSupported(format.mimeType)
+  )) || null;
+}
+
 const authReadyPromise = new Promise<void>(resolve => {
   authReadyResolve = resolve;
 });
@@ -2029,6 +2078,7 @@ function setupEditor(project: EditorProject): void {
   let latestRenderedPreviewUrl: string | null = null;
   let volatileRenderedVideoUrl: string | null = null;
   let volatileRenderedVideoBlob: Blob | null = null;
+  let volatileRenderedVideoExtension: "mp4" | "webm" = "webm";
   let exportWasCancelled = false;
   let saveInFlight = false;
   let cues: SubtitleCue[] = [];
@@ -2144,8 +2194,11 @@ function setupEditor(project: EditorProject): void {
   editorVolatileWarning.textContent = volatileWarning;
   saveChangesButton.title = isVolatile ? volatileWarning : "";
   if (isVolatile) {
-    downloadVideoLabel.textContent = "WEBM";
-    downloadVideoNote.textContent = "Browser-rendered video";
+    const browserExportFormat = getPreferredBrowserExportFormat();
+    downloadVideoLabel.textContent = browserExportFormat?.label || "WEBM";
+    downloadVideoNote.textContent = browserExportFormat?.isFallback
+      ? "Browser-rendered fallback"
+      : "Browser-rendered video";
     downloadAudioNote.textContent = "Unavailable for guest export";
     downloadMp3Button.disabled = true;
   }
@@ -3181,15 +3234,6 @@ function setupEditor(project: EditorProject): void {
     link.remove();
   };
 
-  const getBrowserExportMimeType = (): string => {
-    const candidates = [
-      "video/webm;codecs=vp9,opus",
-      "video/webm;codecs=vp8,opus",
-      "video/webm",
-    ];
-    return candidates.find(candidate => MediaRecorder.isTypeSupported(candidate)) || "";
-  };
-
   const waitForMediaEvent = (
     element: HTMLMediaElement,
     eventName: string,
@@ -3351,28 +3395,34 @@ function setupEditor(project: EditorProject): void {
     context.restore();
   };
 
-  const renderVolatileProjectToWebm = async (signal: AbortSignal): Promise<string> => {
+  const renderVolatileProjectInBrowser = async (
+    signal: AbortSignal,
+  ): Promise<{ url: string; format: BrowserExportFormat }> => {
     if (!project.mediaUrl || project.mediaType !== "video") {
       throw new Error("Add a local video before exporting.");
     }
-    if (!("MediaRecorder" in window)) {
+    const exportFormat = getPreferredBrowserExportFormat();
+    if (!exportFormat) {
       throw new Error("This browser does not support guest video export.");
     }
-
-    stopExportProgress();
-    setExportProgress(2, "Preparing browser render...");
     if (volatileRenderedVideoUrl) {
       URL.revokeObjectURL(volatileRenderedVideoUrl);
       volatileRenderedVideoUrl = null;
       volatileRenderedVideoBlob = null;
     }
+    setExportProgress(
+      2,
+      exportFormat.isFallback
+        ? "MP4 is not supported in this browser. Rendering WebM instead..."
+        : "Preparing browser MP4 render...",
+    );
 
     const sourceVideo = document.createElement("video");
     sourceVideo.src = project.mediaUrl;
     sourceVideo.preload = "auto";
     sourceVideo.playsInline = true;
-    sourceVideo.muted = false;
-    sourceVideo.volume = Math.min(1, volumePercent / 100);
+    sourceVideo.muted = true;
+    sourceVideo.volume = 0;
     sourceVideo.playbackRate = playbackRate;
 
     await document.fonts?.ready;
@@ -3389,15 +3439,32 @@ function setupEditor(project: EditorProject): void {
     }
 
     const canvasStream = canvas.captureStream(30);
-    const sourceCapture = (
-      sourceVideo as HTMLVideoElement & { captureStream?: () => MediaStream }
-    ).captureStream?.();
+    let renderAudioContext: AudioContext | null = null;
+    let renderAudioSource: MediaElementAudioSourceNode | null = null;
+    let renderAudioGain: GainNode | null = null;
+    let renderAudioDestination: MediaStreamAudioDestinationNode | null = null;
+    try {
+      renderAudioContext = new AudioContext();
+      renderAudioSource = renderAudioContext.createMediaElementSource(sourceVideo);
+      renderAudioGain = renderAudioContext.createGain();
+      renderAudioGain.gain.value = volumePercent / 100;
+      renderAudioDestination = renderAudioContext.createMediaStreamDestination();
+      renderAudioSource.connect(renderAudioGain);
+      renderAudioGain.connect(renderAudioDestination);
+      sourceVideo.muted = false;
+      sourceVideo.volume = 1;
+    } catch (error) {
+      console.info(`${LOG_PREFIX} Guest export audio capture is unavailable`, error);
+      renderAudioContext = null;
+      renderAudioSource = null;
+      renderAudioGain = null;
+      renderAudioDestination = null;
+    }
     const stream = new MediaStream([
       ...canvasStream.getVideoTracks(),
-      ...(sourceCapture?.getAudioTracks() || []),
+      ...(renderAudioDestination?.stream.getAudioTracks() || []),
     ]);
-    const mimeType = getBrowserExportMimeType();
-    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    const recorder = new MediaRecorder(stream, { mimeType: exportFormat.mimeType });
     const chunks: BlobPart[] = [];
     let frameId: number | null = null;
     let settled = false;
@@ -3423,7 +3490,12 @@ function setupEditor(project: EditorProject): void {
       const progress = renderDuration > 0
         ? clamp((sourceVideo.currentTime / renderDuration) * 100, 2, 99)
         : 50;
-      setExportProgress(progress, "Rendering subtitles in your browser...");
+      setExportProgress(
+        progress,
+        exportFormat.isFallback
+          ? "Rendering WebM in your browser..."
+          : "Rendering MP4 in your browser...",
+      );
 
       if (sourceVideo.ended || sourceVideo.currentTime >= renderDuration - 0.03) {
         if (recorder.state !== "inactive") {
@@ -3443,6 +3515,11 @@ function setupEditor(project: EditorProject): void {
             window.cancelAnimationFrame(frameId);
             frameId = null;
           }
+          renderAudioSource?.disconnect();
+          renderAudioGain?.disconnect();
+          renderAudioContext?.close().catch(error => {
+            console.info(`${LOG_PREFIX} Guest export audio cleanup failed`, error);
+          });
           for (const track of stream.getTracks()) {
             track.stop();
           }
@@ -3472,7 +3549,7 @@ function setupEditor(project: EditorProject): void {
           }
           settled = true;
           cleanup();
-          resolve(new Blob(chunks, { type: mimeType || "video/webm" }));
+          resolve(new Blob(chunks, { type: exportFormat.mimeType }));
         }, { once: true });
         recorder.addEventListener("error", () => {
           if (settled) {
@@ -3485,7 +3562,15 @@ function setupEditor(project: EditorProject): void {
         signal.addEventListener("abort", onAbort, { once: true });
         sourceVideo.addEventListener("ended", onEnded, { once: true });
         recorder.start(500);
-        void sourceVideo.play().then(drawFrame).catch(error => {
+        void (async () => {
+          if (renderAudioContext?.state === "suspended") {
+            await renderAudioContext.resume().catch(error => {
+              console.info(`${LOG_PREFIX} Guest export audio context could not resume`, error);
+            });
+          }
+          await sourceVideo.play();
+          drawFrame();
+        })().catch(error => {
           if (!settled) {
             settled = true;
             if (recorder.state !== "inactive") {
@@ -3497,9 +3582,10 @@ function setupEditor(project: EditorProject): void {
         });
       });
       volatileRenderedVideoBlob = blob;
+      volatileRenderedVideoExtension = exportFormat.extension;
       volatileRenderedVideoUrl = URL.createObjectURL(blob);
       setExportProgress(100, "Preview ready.");
-      return volatileRenderedVideoUrl;
+      return { url: volatileRenderedVideoUrl, format: exportFormat };
     } finally {
       sourceVideo.pause();
       sourceVideo.removeAttribute("src");
@@ -3520,10 +3606,11 @@ function setupEditor(project: EditorProject): void {
     }
     const renderId = activeExportRenderId;
     activeExportRenderId = null;
-    void authFetch(`${API_BASE_URL}/projects/render-cancel/${encodeURIComponent(renderId)}`, {
-      method: "POST",
-      keepalive: true,
-    }).catch(error => {
+    if (isVolatile) {
+      return;
+    }
+    const cancelUrl = `${API_BASE_URL}/projects/render-cancel/${encodeURIComponent(renderId)}`;
+    void authFetch(cancelUrl, { method: "POST", keepalive: true }).catch(error => {
       console.info(`${LOG_PREFIX} Could not cancel export render`, error);
     });
   };
@@ -3644,10 +3731,18 @@ function setupEditor(project: EditorProject): void {
           return;
         }
         exportAbortController = new AbortController();
-        const previewUrl = await renderVolatileProjectToWebm(exportAbortController.signal);
+        const { url: previewUrl, format } = await renderVolatileProjectInBrowser(
+          exportAbortController.signal,
+        );
         exportAbortController = null;
         openExportPreview(previewUrl);
-        editorSaveStatus.textContent = "Browser export ready.";
+        downloadVideoLabel.textContent = format.label;
+        downloadVideoNote.textContent = format.isFallback
+          ? "Browser-rendered fallback"
+          : "Browser-rendered video";
+        editorSaveStatus.textContent = format.isFallback
+          ? "MP4 is not supported in this browser, exported WebM instead."
+          : "Browser MP4 export ready.";
         editorSaveStatus.classList.remove("is-error");
         return;
       }
@@ -3718,13 +3813,13 @@ function setupEditor(project: EditorProject): void {
   downloadMp4Button.addEventListener("click", () => {
     if (isVolatile) {
       if (!volatileRenderedVideoUrl || !volatileRenderedVideoBlob) {
-        editorSaveStatus.textContent = "Use Export Video to render a WebM download first.";
+        editorSaveStatus.textContent = "Use Export Video to render a download first.";
         editorSaveStatus.classList.add("is-error");
         return;
       }
       downloadBlobUrl(
         volatileRenderedVideoUrl,
-        `${project.title || "benzaiten-video"}.webm`,
+        `${project.title || "benzaiten-video"}.${volatileRenderedVideoExtension}`,
       );
       return;
     }
