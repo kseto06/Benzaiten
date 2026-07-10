@@ -26,12 +26,64 @@ const FIREBASE_CONFIG = {
 const PROJECT_STORAGE_KEY = "benzaiten-editor-project";
 const LOG_PREFIX = "[Benzaiten]";
 const DEFAULT_KARAOKE_HIGHLIGHT_COLOR = "#f4a6c1";
+const VOLATILE_SIGNED_OUT_WARNING = "You're not signed in, so your project won't be saved.";
+const VOLATILE_GOOGLE_ERROR_WARNING = "Google error - project won't be saved.";
 let landingDocumentListeners: AbortController | null = null;
 let firebaseAuth: Auth | null = null;
 let currentUser: User | null = null;
 let authReady = false;
 let authReadyResolve: (() => void) | null = null;
 let firebaseConfigWarningLogged = false;
+let volatileEditorProject: EditorProject | null = null;
+
+type BrowserExportFormat = {
+  label: "MP4" | "WEBM";
+  extension: "mp4" | "webm";
+  mimeType: string;
+  isFallback: boolean;
+};
+
+const BROWSER_EXPORT_FORMAT_CANDIDATES: BrowserExportFormat[] = [
+  {
+    label: "MP4",
+    extension: "mp4",
+    mimeType: "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+    isFallback: false,
+  },
+  {
+    label: "MP4",
+    extension: "mp4",
+    mimeType: "video/mp4",
+    isFallback: false,
+  },
+  {
+    label: "WEBM",
+    extension: "webm",
+    mimeType: "video/webm;codecs=vp9,opus",
+    isFallback: true,
+  },
+  {
+    label: "WEBM",
+    extension: "webm",
+    mimeType: "video/webm;codecs=vp8,opus",
+    isFallback: true,
+  },
+  {
+    label: "WEBM",
+    extension: "webm",
+    mimeType: "video/webm",
+    isFallback: true,
+  },
+];
+
+function getPreferredBrowserExportFormat(): BrowserExportFormat | null {
+  if (!("MediaRecorder" in window)) {
+    return null;
+  }
+  return BROWSER_EXPORT_FORMAT_CANDIDATES.find(format => (
+    MediaRecorder.isTypeSupported(format.mimeType)
+  )) || null;
+}
 
 const authReadyPromise = new Promise<void>(resolve => {
   authReadyResolve = resolve;
@@ -107,6 +159,9 @@ type GcsObjectListResponse = {
   nextPageToken?: string;
 };
 
+type ProjectPersistenceMode = "cloud" | "volatile";
+type VolatileProjectReason = "signed_out" | "google_error";
+
 type EditorProject = {
   title: string;
   originalTitle?: string;
@@ -122,6 +177,8 @@ type EditorProject = {
   playbackRate?: number;
   isBlank?: boolean;
   isLocalMedia?: boolean;
+  persistenceMode?: ProjectPersistenceMode;
+  volatileReason?: VolatileProjectReason;
   karaokeEnabled?: boolean;
   karaokeHighlightColor?: string;
 };
@@ -552,21 +609,40 @@ function openLibraryProject(project: LibraryProject): void {
   });
 }
 
-function openBlankEditor(): void {
+function getVolatileWarning(project: EditorProject): string {
+  return project.volatileReason === "google_error"
+    ? VOLATILE_GOOGLE_ERROR_WARNING
+    : VOLATILE_SIGNED_OUT_WARNING;
+}
+
+function isVolatileProject(project: EditorProject): boolean {
+  return project.persistenceMode === "volatile";
+}
+
+function openBlankEditor(volatileReason?: VolatileProjectReason): void {
   openEditor({
     title: "Untitled project",
     mediaUrl: "",
     mediaType: "video",
     isBlank: true,
     isLocalMedia: true,
+    persistenceMode: volatileReason ? "volatile" : "cloud",
+    volatileReason,
   });
 }
 
 function saveEditorProject(project: EditorProject): void {
+  if (isVolatileProject(project)) {
+    volatileEditorProject = project;
+    return;
+  }
   sessionStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(project));
 }
 
 function loadEditorProject(): EditorProject | null {
+  if (volatileEditorProject) {
+    return volatileEditorProject;
+  }
   const rawProject = sessionStorage.getItem(PROJECT_STORAGE_KEY);
   if (!rawProject) {
     return null;
@@ -651,6 +727,7 @@ function setupLandingInteractions(): void {
   let loadedLibraryUid: string | null = null;
   let libraryLoadPromise: Promise<void> | null = null;
   let authStateVersion = 0;
+  let libraryUnavailableReason: VolatileProjectReason | null = null;
   setupWorkflowZoom();
 
   const invalidateLibraryRequests = (): number => {
@@ -664,20 +741,20 @@ function setupLandingInteractions(): void {
     runButton.disabled = !enabled;
     searchButton.disabled = !enabled;
     searchInput.disabled = !enabled;
-    libraryToggle.disabled = !enabled;
+    libraryToggle.disabled = false;
   };
 
   const setLibraryAuthenticated = (authenticated: boolean, message: string): void => {
-    libraryAuthenticatedContent.hidden = !authenticated;
+    libraryAuthenticatedContent.hidden = false;
     librarySignedOutPrompt.hidden = authenticated;
     if (!authenticated) {
       libraryProjects = null;
       loadedLibraryUid = null;
-      libraryGrid.innerHTML = "";
       libraryStatus.hidden = true;
       libraryStatus.classList.remove("is-error");
       libraryStatus.textContent = "";
       librarySignedOutPrompt.textContent = message;
+      renderLibrary([]);
     }
   };
 
@@ -702,10 +779,11 @@ function setupLandingInteractions(): void {
       authUser.textContent = "";
       accountMenu.hidden = true;
       accountMenuButton.setAttribute("aria-expanded", "false");
+      libraryUnavailableReason = "signed_out";
       setProjectControlsEnabled(false);
       setLibraryAuthenticated(
         false,
-        "Project accounts are unavailable in this environment.",
+        "Project accounts are unavailable in this environment. You can still create a temporary project.",
       );
       return;
     }
@@ -714,10 +792,11 @@ function setupLandingInteractions(): void {
       authUser.textContent = "";
       accountMenu.hidden = true;
       accountMenuButton.setAttribute("aria-expanded", "false");
+      libraryUnavailableReason = "signed_out";
       setProjectControlsEnabled(false);
       setLibraryAuthenticated(
         false,
-        "Sign in to view your project library and create projects.",
+        "Sign in to search saved projects. You can still create a temporary project.",
       );
       return;
     }
@@ -740,6 +819,7 @@ function setupLandingInteractions(): void {
       accountAvatarFallback.hidden = false;
       accountMenuAvatarFallback.hidden = false;
     }
+    libraryUnavailableReason = null;
     setLibraryAuthenticated(true, "");
     setProjectControlsEnabled(true);
   };
@@ -772,6 +852,7 @@ function setupLandingInteractions(): void {
         }
         libraryProjects = projects;
         loadedLibraryUid = uid;
+        libraryUnavailableReason = null;
         renderLibrary(libraryProjects);
         libraryStatus.textContent = libraryProjects.length
           ? ""
@@ -780,11 +861,16 @@ function setupLandingInteractions(): void {
         if (requestVersion !== authStateVersion || currentUser?.uid !== uid) {
           return;
         }
+        libraryProjects = [];
         loadedLibraryUid = null;
+        libraryUnavailableReason = "google_error";
+        renderLibrary([]);
         libraryStatus.classList.add("is-error");
-        libraryStatus.textContent = error instanceof Error
-          ? error.message
-          : "Unable to load the project library.";
+        libraryStatus.hidden = false;
+        libraryStatus.textContent = (
+          "Google error - project library unavailable. You can still create a temporary project."
+        );
+        console.warn(`${LOG_PREFIX} Project library lookup failed`, error);
       } finally {
         if (libraryLoadPromise === loadPromise) {
           libraryLoadPromise = null;
@@ -1043,7 +1129,8 @@ function setupLandingInteractions(): void {
     await signOut(firebaseAuth);
     libraryProjects = null;
     loadedLibraryUid = null;
-    libraryGrid.innerHTML = "";
+    libraryUnavailableReason = "signed_out";
+    renderLibrary([]);
     setLandingStatus("Signed out.");
   });
   window.addEventListener("benzaiten-auth-changed", () => {
@@ -1053,11 +1140,6 @@ function setupLandingInteractions(): void {
   }, documentListenerOptions);
 
   const renderLibrary = (projects: LibraryProject[]): void => {
-    if (!currentUser) {
-      libraryStatus.hidden = true;
-      libraryGrid.innerHTML = "";
-      return;
-    }
     libraryStatus.hidden = true;
     if (!projects.length) {
       libraryStatus.textContent = "";
@@ -1072,7 +1154,9 @@ function setupLandingInteractions(): void {
         >
           <span class="library-create-plus" aria-hidden="true">+</span>
           <strong>Create new project</strong>
-          <span>Start with a blank editor</span>
+          <span>${currentUser && !libraryUnavailableReason
+            ? "Start with a blank editor"
+            : "Temporary browser project"}</span>
         </button>
       </article>
     ` + projects.map((project, index) => `
@@ -1337,6 +1421,10 @@ function setupLandingInteractions(): void {
     if (!isOpening || libraryProjects) {
       return;
     }
+    if (!currentUser) {
+      renderLibrary([]);
+      return;
+    }
 
     await refreshLibrary();
   });
@@ -1346,7 +1434,12 @@ function setupLandingInteractions(): void {
     const actionElement = target.closest<HTMLElement>("[data-library-action]");
     const action = actionElement?.dataset.libraryAction;
     if (action === "create") {
-      openBlankEditor();
+      const volatileReason = !firebaseAuth || !currentUser
+        ? "signed_out"
+        : libraryUnavailableReason === "google_error"
+          ? "google_error"
+          : undefined;
+      openBlankEditor(volatileReason);
       return;
     }
     const card = target.closest<HTMLElement>("[data-library-project]");
@@ -1934,6 +2027,7 @@ function setupEditor(project: EditorProject): void {
   const editorActions = queryElement<HTMLDivElement>(".editor-actions");
   const saveChangesButton = queryElement<HTMLButtonElement>("#saveChangesButton");
   const editorSaveStatus = queryElement<HTMLSpanElement>("#editorSaveStatus");
+  const editorVolatileWarning = queryElement<HTMLDivElement>("#editorVolatileWarning");
   const subtitleFontSizeInput = queryElement<HTMLInputElement>("#subtitleFontSizeInput");
   const karaokeToggleInput = queryElement<HTMLInputElement>("#karaokeToggleInput");
   const media = queryElement<HTMLVideoElement>("#editorMedia");
@@ -1975,10 +2069,16 @@ function setupEditor(project: EditorProject): void {
   const exportProgressFill = queryElement<HTMLDivElement>("#exportProgressFill");
   const downloadMp4Button = queryElement<HTMLButtonElement>("#downloadMp4Button");
   const downloadMp3Button = queryElement<HTMLButtonElement>("#downloadMp3Button");
+  const downloadVideoLabel = queryElement<HTMLElement>("strong", downloadMp4Button);
+  const downloadVideoNote = queryElement<HTMLElement>("small", downloadMp4Button);
+  const downloadAudioNote = queryElement<HTMLElement>("small", downloadMp3Button);
   let exportProgressTimer: number | null = null;
   let exportAbortController: AbortController | null = null;
   let activeExportRenderId: string | null = null;
   let latestRenderedPreviewUrl: string | null = null;
+  let volatileRenderedVideoUrl: string | null = null;
+  let volatileRenderedVideoBlob: Blob | null = null;
+  let volatileRenderedVideoExtension: "mp4" | "webm" = "webm";
   let exportWasCancelled = false;
   let saveInFlight = false;
   let cues: SubtitleCue[] = [];
@@ -1999,6 +2099,14 @@ function setupEditor(project: EditorProject): void {
   let playbackRate = clamp(project.playbackRate ?? 1, 0.25, 2);
   let karaokeEnabled = project.karaokeEnabled ?? true;
   const karaokeHighlightColor = project.karaokeHighlightColor || DEFAULT_KARAOKE_HIGHLIGHT_COLOR;
+  if (!isVolatileProject(project) && project.isBlank && project.isLocalMedia) {
+    if (!firebaseAuth || !currentUser) {
+      project.persistenceMode = "volatile";
+      project.volatileReason = "signed_out";
+    }
+  }
+  const isVolatile = isVolatileProject(project);
+  const volatileWarning = isVolatile ? getVolatileWarning(project) : "";
   let playbackRequested = false;
   let previewAnimationId: number | null = null;
   let audioContext: AudioContext | null = null;
@@ -2082,6 +2190,18 @@ function setupEditor(project: EditorProject): void {
   speedInput.value = playbackRate.toFixed(2);
   karaokeToggleInput.checked = karaokeEnabled;
   overlay.style.setProperty("--karaoke-highlight-color", karaokeHighlightColor);
+  editorVolatileWarning.hidden = !isVolatile;
+  editorVolatileWarning.textContent = volatileWarning;
+  saveChangesButton.title = isVolatile ? volatileWarning : "";
+  if (isVolatile) {
+    const browserExportFormat = getPreferredBrowserExportFormat();
+    downloadVideoLabel.textContent = browserExportFormat?.label || "WEBM";
+    downloadVideoNote.textContent = browserExportFormat?.isFallback
+      ? "Browser-rendered fallback"
+      : "Browser-rendered video";
+    downloadAudioNote.textContent = "Unavailable for guest export";
+    downloadMp3Button.disabled = true;
+  }
 
   const isMultiSelectEvent = (event: MouseEvent | PointerEvent): boolean => (
     event.metaKey || event.ctrlKey
@@ -2220,7 +2340,8 @@ function setupEditor(project: EditorProject): void {
 
   const updateSaveAvailability = (): void => {
     saveChangesButton.disabled = (
-      saveInFlight
+      isVolatile
+      || saveInFlight
       || project.mediaType !== "video"
       || project.isLocalMedia
       || !mediaReady
@@ -2228,6 +2349,13 @@ function setupEditor(project: EditorProject): void {
       || !hasPersistableChanges()
     );
     updateExportAvailability();
+  };
+
+  const showVolatileSaveWarning = (): void => {
+    editorSaveStatus.textContent = volatileWarning;
+    editorSaveStatus.classList.add("is-error");
+    editorVolatileWarning.hidden = false;
+    editorVolatileWarning.textContent = volatileWarning;
   };
 
   const markProjectClean = (): void => {
@@ -2241,6 +2369,15 @@ function setupEditor(project: EditorProject): void {
       || !mediaReady
       || !subtitlesReady
   );
+
+  const warnBeforeVolatileUnload = (event: BeforeUnloadEvent): void => {
+    if (!isVolatile || (!hasPersistableChanges() && !project.mediaUrl && project.isBlank)) {
+      return;
+    }
+    event.preventDefault();
+    event.returnValue = "";
+  };
+  window.addEventListener("beforeunload", warnBeforeVolatileUnload);
 
   const persistSubtitleTransform = (): void => {
     project.subtitleTransform = { ...subtitleTransform };
@@ -3088,6 +3225,374 @@ function setupEditor(project: EditorProject): void {
     link.remove();
   };
 
+  const downloadBlobUrl = (url: string, filename: string): void => {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  };
+
+  const waitForMediaEvent = (
+    element: HTMLMediaElement,
+    eventName: string,
+    signal?: AbortSignal,
+  ): Promise<void> => new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Export was cancelled.", "AbortError"));
+      return;
+    }
+    const cleanup = (): void => {
+      element.removeEventListener(eventName, onEvent);
+      element.removeEventListener("error", onError);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onEvent = (): void => {
+      cleanup();
+      resolve();
+    };
+    const onError = (): void => {
+      cleanup();
+      reject(new Error("Local media could not be loaded for export."));
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(new DOMException("Export was cancelled.", "AbortError"));
+    };
+    element.addEventListener(eventName, onEvent, { once: true });
+    element.addEventListener("error", onError, { once: true });
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+
+  const drawCanvasText = (
+    context: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    fillStyle: string,
+    fontSize: number,
+    glow = false,
+  ): void => {
+    context.save();
+    context.lineJoin = "round";
+    context.miterLimit = 2;
+    context.strokeStyle = glow ? "rgba(255, 248, 253, 0.95)" : "rgba(0, 0, 0, 0.88)";
+    context.lineWidth = glow ? Math.max(1, fontSize * 0.035) : Math.max(2, fontSize * 0.12);
+    context.shadowColor = glow ? "rgba(255, 210, 230, 0.7)" : "rgba(0, 0, 0, 0.8)";
+    context.shadowBlur = glow ? fontSize * 0.18 : fontSize * 0.12;
+    context.shadowOffsetY = glow ? fontSize * 0.04 : fontSize * 0.08;
+    context.strokeText(text, x, y);
+    context.fillStyle = fillStyle;
+    context.fillText(text, x, y);
+    context.restore();
+  };
+
+  const drawKaraokeLineOnCanvas = (
+    context: CanvasRenderingContext2D,
+    cue: SubtitleCue,
+    line: string,
+    centerX: number,
+    baselineY: number,
+    fontSize: number,
+    time: number,
+  ): void => {
+    const tokens = getKaraokeLineTokens(line);
+    if (!tokens.length) {
+      return;
+    }
+    const text = tokens.map(token => token.text).join("");
+    const totalWidth = context.measureText(text).width;
+    let cursorX = centerX - totalWidth / 2;
+    const cueDuration = Math.max(0.01, cue.end - cue.start);
+    const lineWeight = tokens.reduce((total, token) => total + token.weight, 0);
+    let tokenStart = cue.start;
+
+    drawCanvasText(context, text, centerX, baselineY, "#fff", fontSize);
+
+    context.save();
+    context.textAlign = "left";
+    for (const token of tokens) {
+      const tokenDuration = cueDuration * (token.weight / Math.max(0.25, lineWeight));
+      const tokenEnd = tokenStart + tokenDuration;
+      const tokenWidth = context.measureText(token.text).width;
+      const progress = clamp((time - tokenStart) / Math.max(0.01, tokenDuration), 0, 1);
+      if (progress > 0) {
+        context.save();
+        context.beginPath();
+        context.rect(
+          cursorX - fontSize * 0.08,
+          baselineY - fontSize,
+          tokenWidth * progress + fontSize * 0.16,
+          fontSize * 1.35,
+        );
+        context.clip();
+        drawCanvasText(
+          context,
+          token.text,
+          cursorX,
+          baselineY,
+          karaokeHighlightColor,
+          fontSize,
+          true,
+        );
+        context.restore();
+      }
+      cursorX += tokenWidth;
+      tokenStart = tokenEnd;
+    }
+    context.restore();
+  };
+
+  const drawSubtitleOverlayOnCanvas = (
+    context: CanvasRenderingContext2D,
+    canvasWidth: number,
+    canvasHeight: number,
+    time: number,
+  ): void => {
+    const activeCue = activeCueAt(time);
+    if (!activeCue) {
+      return;
+    }
+    const scale = canvasWidth / previewReferenceWidth;
+    const fontSize = (project.subtitleFontSize || 30) * scale;
+    const lines = activeCue.text.replace(/\r/g, "").split("\n");
+    const lineHeight = fontSize * 1.25;
+    const centerX = canvasWidth * subtitleTransform.x / 100;
+    const centerY = canvasHeight * subtitleTransform.y / 100;
+    const maxWidth = Math.max(80, canvasWidth * subtitleTransform.width / 100);
+
+    context.save();
+    context.translate(centerX, centerY);
+    context.rotate(subtitleTransform.rotation * Math.PI / 180);
+    context.font = `700 ${fontSize}px "DM Sans", Arial, sans-serif`;
+    context.textAlign = "center";
+    context.textBaseline = "alphabetic";
+
+    const startY = -((lines.length - 1) * lineHeight) / 2;
+    for (const [lineIndex, line] of lines.entries()) {
+      const baselineY = startY + lineIndex * lineHeight + fontSize * 0.35;
+      const measuredWidth = context.measureText(line).width;
+      const lineScale = measuredWidth > maxWidth ? maxWidth / measuredWidth : 1;
+      context.save();
+      context.scale(lineScale, 1);
+      const scaledCenterX = 0;
+      if (karaokeEnabled) {
+        drawKaraokeLineOnCanvas(
+          context,
+          activeCue,
+          line,
+          scaledCenterX,
+          baselineY,
+          fontSize,
+          time,
+        );
+      } else {
+        drawCanvasText(context, line, scaledCenterX, baselineY, "#fff", fontSize);
+      }
+      context.restore();
+    }
+    context.restore();
+  };
+
+  const renderVolatileProjectInBrowser = async (
+    signal: AbortSignal,
+  ): Promise<{ url: string; format: BrowserExportFormat }> => {
+    if (!project.mediaUrl || project.mediaType !== "video") {
+      throw new Error("Add a local video before exporting.");
+    }
+    const exportFormat = getPreferredBrowserExportFormat();
+    if (!exportFormat) {
+      throw new Error("This browser does not support guest video export.");
+    }
+    if (volatileRenderedVideoUrl) {
+      URL.revokeObjectURL(volatileRenderedVideoUrl);
+      volatileRenderedVideoUrl = null;
+      volatileRenderedVideoBlob = null;
+    }
+    setExportProgress(
+      2,
+      exportFormat.isFallback
+        ? "MP4 is not supported in this browser. Rendering WebM instead..."
+        : "Preparing browser MP4 render...",
+    );
+
+    const sourceVideo = document.createElement("video");
+    sourceVideo.src = project.mediaUrl;
+    sourceVideo.preload = "auto";
+    sourceVideo.playsInline = true;
+    sourceVideo.muted = true;
+    sourceVideo.volume = 0;
+    sourceVideo.playbackRate = playbackRate;
+
+    await document.fonts?.ready;
+    await waitForMediaEvent(sourceVideo, "loadedmetadata", signal);
+    const renderDuration = Number.isFinite(sourceVideo.duration)
+      ? sourceVideo.duration
+      : duration;
+    const canvas = document.createElement("canvas");
+    canvas.width = 1280;
+    canvas.height = 720;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Canvas export is not available in this browser.");
+    }
+
+    const canvasStream = canvas.captureStream(30);
+    let renderAudioContext: AudioContext | null = null;
+    let renderAudioSource: MediaElementAudioSourceNode | null = null;
+    let renderAudioGain: GainNode | null = null;
+    let renderAudioDestination: MediaStreamAudioDestinationNode | null = null;
+    try {
+      renderAudioContext = new AudioContext();
+      renderAudioSource = renderAudioContext.createMediaElementSource(sourceVideo);
+      renderAudioGain = renderAudioContext.createGain();
+      renderAudioGain.gain.value = volumePercent / 100;
+      renderAudioDestination = renderAudioContext.createMediaStreamDestination();
+      renderAudioSource.connect(renderAudioGain);
+      renderAudioGain.connect(renderAudioDestination);
+      sourceVideo.muted = false;
+      sourceVideo.volume = 1;
+    } catch (error) {
+      console.info(`${LOG_PREFIX} Guest export audio capture is unavailable`, error);
+      renderAudioContext = null;
+      renderAudioSource = null;
+      renderAudioGain = null;
+      renderAudioDestination = null;
+    }
+    const stream = new MediaStream([
+      ...canvasStream.getVideoTracks(),
+      ...(renderAudioDestination?.stream.getAudioTracks() || []),
+    ]);
+    const recorder = new MediaRecorder(stream, { mimeType: exportFormat.mimeType });
+    const chunks: BlobPart[] = [];
+    let frameId: number | null = null;
+    let settled = false;
+
+    const drawFrame = (): void => {
+      if (signal.aborted || settled) {
+        return;
+      }
+      const videoWidth = sourceVideo.videoWidth || canvas.width;
+      const videoHeight = sourceVideo.videoHeight || canvas.height;
+      const scale = Math.min(canvas.width / videoWidth, canvas.height / videoHeight);
+      const drawWidth = videoWidth * scale;
+      const drawHeight = videoHeight * scale;
+      const drawX = (canvas.width - drawWidth) / 2;
+      const drawY = (canvas.height - drawHeight) / 2;
+
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = "#000";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(sourceVideo, drawX, drawY, drawWidth, drawHeight);
+      drawSubtitleOverlayOnCanvas(context, canvas.width, canvas.height, sourceVideo.currentTime);
+
+      const progress = renderDuration > 0
+        ? clamp((sourceVideo.currentTime / renderDuration) * 100, 2, 99)
+        : 50;
+      setExportProgress(
+        progress,
+        exportFormat.isFallback
+          ? "Rendering WebM in your browser..."
+          : "Rendering MP4 in your browser...",
+      );
+
+      if (sourceVideo.ended || sourceVideo.currentTime >= renderDuration - 0.03) {
+        if (recorder.state !== "inactive") {
+          recorder.stop();
+        }
+        return;
+      }
+      frameId = window.requestAnimationFrame(drawFrame);
+    };
+
+    try {
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        const cleanup = (): void => {
+          signal.removeEventListener("abort", onAbort);
+          sourceVideo.removeEventListener("ended", onEnded);
+          if (frameId !== null) {
+            window.cancelAnimationFrame(frameId);
+            frameId = null;
+          }
+          renderAudioSource?.disconnect();
+          renderAudioGain?.disconnect();
+          renderAudioContext?.close().catch(error => {
+            console.info(`${LOG_PREFIX} Guest export audio cleanup failed`, error);
+          });
+          for (const track of stream.getTracks()) {
+            track.stop();
+          }
+        };
+        const onAbort = (): void => {
+          settled = true;
+          sourceVideo.pause();
+          if (recorder.state !== "inactive") {
+            recorder.stop();
+          }
+          cleanup();
+          reject(new DOMException("Export was cancelled.", "AbortError"));
+        };
+        const onEnded = (): void => {
+          if (recorder.state !== "inactive") {
+            recorder.stop();
+          }
+        };
+        recorder.addEventListener("dataavailable", event => {
+          if (event.data.size > 0) {
+            chunks.push(event.data);
+          }
+        });
+        recorder.addEventListener("stop", () => {
+          if (settled || signal.aborted) {
+            return;
+          }
+          settled = true;
+          cleanup();
+          resolve(new Blob(chunks, { type: exportFormat.mimeType }));
+        }, { once: true });
+        recorder.addEventListener("error", () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          cleanup();
+          reject(new Error("Browser video export failed."));
+        }, { once: true });
+        signal.addEventListener("abort", onAbort, { once: true });
+        sourceVideo.addEventListener("ended", onEnded, { once: true });
+        recorder.start(500);
+        void (async () => {
+          if (renderAudioContext?.state === "suspended") {
+            await renderAudioContext.resume().catch(error => {
+              console.info(`${LOG_PREFIX} Guest export audio context could not resume`, error);
+            });
+          }
+          await sourceVideo.play();
+          drawFrame();
+        })().catch(error => {
+          if (!settled) {
+            settled = true;
+            if (recorder.state !== "inactive") {
+              recorder.stop();
+            }
+            cleanup();
+            reject(error);
+          }
+        });
+      });
+      volatileRenderedVideoBlob = blob;
+      volatileRenderedVideoExtension = exportFormat.extension;
+      volatileRenderedVideoUrl = URL.createObjectURL(blob);
+      setExportProgress(100, "Preview ready.");
+      return { url: volatileRenderedVideoUrl, format: exportFormat };
+    } finally {
+      sourceVideo.pause();
+      sourceVideo.removeAttribute("src");
+      sourceVideo.load();
+    }
+  };
+
   const stopExportProgress = (): void => {
     if (exportProgressTimer !== null) {
       window.clearInterval(exportProgressTimer);
@@ -3101,10 +3606,11 @@ function setupEditor(project: EditorProject): void {
     }
     const renderId = activeExportRenderId;
     activeExportRenderId = null;
-    void authFetch(`${API_BASE_URL}/projects/render-cancel/${encodeURIComponent(renderId)}`, {
-      method: "POST",
-      keepalive: true,
-    }).catch(error => {
+    if (isVolatile) {
+      return;
+    }
+    const cancelUrl = `${API_BASE_URL}/projects/render-cancel/${encodeURIComponent(renderId)}`;
+    void authFetch(cancelUrl, { method: "POST", keepalive: true }).catch(error => {
       console.info(`${LOG_PREFIX} Could not cancel export render`, error);
     });
   };
@@ -3166,6 +3672,10 @@ function setupEditor(project: EditorProject): void {
     () => {
       if (window.location.hash !== "#editor") {
         cancelExportRenderForNavigation();
+        window.removeEventListener("beforeunload", warnBeforeVolatileUnload);
+        if (isVolatile) {
+          volatileEditorProject = null;
+        }
         editorNavigationAbortController.abort();
       }
     },
@@ -3213,6 +3723,30 @@ function setupEditor(project: EditorProject): void {
     editorSaveStatus.textContent = "Preparing export...";
     openExportProgress();
     try {
+      if (isVolatile) {
+        if (project.mediaType !== "video" || project.isBlank || !project.mediaUrl) {
+          editorSaveStatus.textContent = "Add a local video before exporting.";
+          editorSaveStatus.classList.add("is-error");
+          closeExportPreview();
+          return;
+        }
+        exportAbortController = new AbortController();
+        const { url: previewUrl, format } = await renderVolatileProjectInBrowser(
+          exportAbortController.signal,
+        );
+        exportAbortController = null;
+        openExportPreview(previewUrl);
+        downloadVideoLabel.textContent = format.label;
+        downloadVideoNote.textContent = format.isFallback
+          ? "Browser-rendered fallback"
+          : "Browser-rendered video";
+        editorSaveStatus.textContent = format.isFallback
+          ? "MP4 is not supported in this browser, exported WebM instead."
+          : "Browser MP4 export ready.";
+        editorSaveStatus.classList.remove("is-error");
+        return;
+      }
+
       if (project.isLocalMedia && project.mediaType === "video" && project.mediaUrl) {
         openExportPreview(project.mediaUrl);
         editorSaveStatus.textContent = "";
@@ -3256,6 +3790,18 @@ function setupEditor(project: EditorProject): void {
       openExportPreview(latestRenderedPreviewUrl);
       editorSaveStatus.textContent = "Export preview ready.";
       editorSaveStatus.classList.remove("is-error");
+    } catch (error) {
+      const wasAbort = error instanceof DOMException && error.name === "AbortError";
+      if (wasAbort || exportWasCancelled) {
+        editorSaveStatus.textContent = "Export cancelled.";
+        editorSaveStatus.classList.remove("is-error");
+      } else {
+        const message = error instanceof Error ? error.message : "Unable to export video.";
+        editorSaveStatus.textContent = `Export failed: ${message}`;
+        editorSaveStatus.classList.add("is-error");
+        console.error(`${LOG_PREFIX} Export failed`, error);
+      }
+      closeExportPreview();
     } finally {
       exportAbortController = null;
       activeExportRenderId = null;
@@ -3265,6 +3811,18 @@ function setupEditor(project: EditorProject): void {
   });
 
   downloadMp4Button.addEventListener("click", () => {
+    if (isVolatile) {
+      if (!volatileRenderedVideoUrl || !volatileRenderedVideoBlob) {
+        editorSaveStatus.textContent = "Use Export Video to render a download first.";
+        editorSaveStatus.classList.add("is-error");
+        return;
+      }
+      downloadBlobUrl(
+        volatileRenderedVideoUrl,
+        `${project.title || "benzaiten-video"}.${volatileRenderedVideoExtension}`,
+      );
+      return;
+    }
     if (project.isLocalMedia && project.mediaType === "video" && project.mediaUrl) {
       downloadVideoUrl(project.mediaUrl);
       return;
@@ -3285,6 +3843,11 @@ function setupEditor(project: EditorProject): void {
   });
 
   downloadMp3Button.addEventListener("click", () => {
+    if (isVolatile) {
+      editorSaveStatus.textContent = "Audio-only export is not available for temporary projects yet.";
+      editorSaveStatus.classList.add("is-error");
+      return;
+    }
     if (!project.mediaObjectName || project.isLocalMedia) {
       editorSaveStatus.textContent = "Audio export is only available for rendered GCS projects.";
       editorSaveStatus.classList.add("is-error");
@@ -3328,6 +3891,12 @@ function setupEditor(project: EditorProject): void {
     if (saveInFlight) {
       if (!background) {
         editorSaveStatus.textContent = "A save or export is already running.";
+      }
+      return false;
+    }
+    if (isVolatile) {
+      if (!background) {
+        showVolatileSaveWarning();
       }
       return false;
     }
@@ -3435,6 +4004,11 @@ function setupEditor(project: EditorProject): void {
   });
 
   backButton.addEventListener("click", () => {
+    if (isVolatile) {
+      volatileEditorProject = null;
+      window.location.hash = "";
+      return;
+    }
     if (!hasSavePrerequisites() && !saveInFlight && hasPersistableChanges()) {
       void saveProjectChanges(true);
     }
