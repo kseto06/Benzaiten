@@ -11,6 +11,7 @@ if __name__ == "__main__":
     should_decrowd = os.environ.get("SHOULD_DECROWD", "false").lower() == "true"
     fast_decrowd = os.environ.get("FAST_DECROWD", "false").lower() == "true"
     language = os.environ.get("LANGUAGE") or None
+    target_language = os.environ.get("TARGET_LANGUAGE") or "en"
 
     run_orchestration_inference_pipeline(
         job_id=job_id,
@@ -20,4 +21,5 @@ if __name__ == "__main__":
         should_decrowd=should_decrowd,
         fast_decrowd=fast_decrowd,
         language=language,
+        target_language=target_language,
     )

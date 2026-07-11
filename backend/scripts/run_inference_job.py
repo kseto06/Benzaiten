@@ -63,6 +63,7 @@ def run_inference_job() -> Dict:
     filename = os.environ["FILENAME"]
     should_decrowd = os.environ.get("SHOULD_DECROWD", "false").lower() == "true"
     language: Optional[str] = os.environ.get("LANGUAGE") or None
+    target_language: Optional[str] = os.environ.get("TARGET_LANGUAGE") or "en"
     content_type = os.environ.get("CONTENT_TYPE", "video/mp4")
 
     # created the tmp input and output dirs for storing local videos as the pipeline runs
@@ -158,7 +159,10 @@ def run_inference_job() -> Dict:
 
     # transcription/translation pipeline
     srt_output_path = run_srt_inference(
-        audio_path=str(vocals_path), output_path=str(output_dir), language=language
+        audio_path=str(vocals_path),
+        output_path=str(output_dir),
+        language=language,
+        target_language=target_language,
     )
 
     srt_output_path = Path(srt_output_path)
@@ -614,6 +618,7 @@ def run_transcription_job():
     """
     job_id = os.environ["JOB_ID"]
     language: Optional[str] = os.environ.get("LANGUAGE") or None
+    target_language: Optional[str] = os.environ.get("TARGET_LANGUAGE") or "en"
     gcs_bucket = os.environ.get("GCS_BUCKET", GCS_BUCKET)
 
     output_dir = Path(f"/tmp/outputs/{job_id}")
@@ -632,7 +637,10 @@ def run_transcription_job():
     )
 
     srt_output_path = run_srt_inference(
-        audio_path=str(vocals_path), output_path=str(output_dir), language=language
+        audio_path=str(vocals_path),
+        output_path=str(output_dir),
+        language=language,
+        target_language=target_language,
     )
 
     srt_output_path = Path(srt_output_path)

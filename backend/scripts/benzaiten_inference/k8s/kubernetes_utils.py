@@ -82,6 +82,7 @@ def create_k8s_inference_job(
     filename: str,
     should_decrowd: bool,
     language: Union[str, None] = "mul",
+    target_language: str = "en",
     content_type: Union[str, None] = "video/mp4",
 ):
     """
@@ -106,6 +107,7 @@ def create_k8s_inference_job(
         client.V1EnvVar(name="FILENAME", value=filename),
         client.V1EnvVar(name="SHOULD_DECROWD", value=str(should_decrowd).lower()),
         client.V1EnvVar(name="LANGUAGE", value=language),
+        client.V1EnvVar(name="TARGET_LANGUAGE", value=target_language),
         client.V1EnvVar(name="CONTENT_TYPE", value=content_type),
     ]
 
@@ -189,6 +191,7 @@ def create_k8s_orchestration_job(
     fast_decrowd: bool = False,
     content_type: Union[str, None] = "video/mp4",
     language: Union[str, None] = "mul",
+    target_language: str = "en",
 ) -> str:
     """
     Function to create a lightweight k8s job solely for coordinating job orchestration in the pipeline
@@ -217,6 +220,7 @@ def create_k8s_orchestration_job(
         _env("SHOULD_DECROWD", str(should_decrowd).lower()),
         _env("FAST_DECROWD", str(fast_decrowd).lower()),
         _env("LANGUAGE", language),
+        _env("TARGET_LANGUAGE", target_language),
     ]
 
     container = client.V1Container(
@@ -461,6 +465,7 @@ def create_k8s_transcription_inference_job(
     job_id: str,
     filename: str,
     language: Union[str, None] = "mul",
+    target_language: str = "en",
 ) -> str:
     """
     do a transcription operation on the input audio and write the transcriptions and translations as the srt/vtt to GCS bucket
@@ -479,6 +484,7 @@ def create_k8s_transcription_inference_job(
         env_vars=[
             _env("FILENAME", filename),
             _env("LANGUAGE", language),
+            _env("TARGET_LANGUAGE", target_language),
             _env(
                 "INPUT_AUDIO_BLOB_NAME",
                 _stage_blob(job_id, "source_separation", "vocals.mp3"),

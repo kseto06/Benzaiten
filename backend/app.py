@@ -1111,7 +1111,10 @@ def download_file(job_id: str, filename: str):
 
 @app.post("/transcribe")
 async def run_transcription(
-    job_id: str, filename: str = "vocals.mp3", language: str = None
+    job_id: str,
+    filename: str = "vocals.mp3",
+    language: str = None,
+    target_language: str = "en",
 ) -> Dict:
     """
     Run transcription on a vocals file given the job id, returning the srt file which is saved to GCS bucket
@@ -1139,10 +1142,12 @@ async def run_transcription(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        target_language = (target_language or "en").strip() or "en"
         srt_output_path = run_srt_inference(
             audio_path=str(local_audio_path),
             output_path=str(output_dir),
             language=language,
+            target_language=target_language,
         )
 
         # upload srt output to gcs bucket
@@ -1170,6 +1175,7 @@ async def run_full_inference(
     file: UploadFile = File(...),
     should_decrowd: bool = Form(False),
     language: Union[str, None] = Form(None),
+    target_language: str = Form("en"),
 ) -> Dict:
     """
     Runs the full inference pipeline: source separation -> transcription -> translation -> romanization -> remove (temp) GCS files -> construct video with subtitles
@@ -1188,7 +1194,11 @@ async def run_full_inference(
     output_dict, job_id = await run_inference(file=file, should_decrowd=should_decrowd)
 
     # if model_name == "bs-roformer":
-    transcription_res = await run_transcription(job_id=job_id, language=language)
+    transcription_res = await run_transcription(
+        job_id=job_id,
+        language=language,
+        target_language=(target_language or "en").strip() or "en",
+    )
     # after transcription, we can remove the temp vocals file from gcs bucket
     output_dict["srt_link"] = transcription_res["srt_link"]
     remove_file_from_gcs(
@@ -1347,6 +1357,7 @@ async def create_inference_job(
     file: UploadFile = File(...),
     should_decrowd: bool = Form(False),
     language: Union[str, None] = Form(None),
+    target_language: str = Form("en"),
 ) -> Dict:
     """
     Adapted function from run_full_inference to support K8 job creation to run inference on GKE per request, versus keeping the pod open in an always "on-deployment" state.
@@ -1355,12 +1366,14 @@ async def create_inference_job(
         file: the input file from the user, either video or audio, uploaded through the FastAPI endpoint
         should_decrowd: whether to run the decrowding model after source separation
         language: input file audio language
+        target_language: target language to translate to
     Returns:
         dict containing job_id and status message
     """
     job_id = create_job_id()
 
     try:
+        target_language = (target_language or "en").strip() or "en"
         input_gcs_path, input_blob_name, filename = await upload_input_file_to_gcs(
             file=file, job_id=job_id
         )
@@ -1372,6 +1385,7 @@ async def create_inference_job(
             filename=filename,
             should_decrowd=should_decrowd,
             language=language,
+            target_language=target_language,
             content_type=file.content_type,
         )
 
@@ -1393,6 +1407,7 @@ async def create_orchestration_inference_pipeline_job(
     should_decrowd: bool = Form(False),
     fast_decrowd: bool = Form(False),
     language: Union[str, None] = Form(None),
+    target_language: str = Form("en"),
     project_title: Union[str, None] = Form(None),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Dict:
@@ -1407,6 +1422,7 @@ async def create_orchestration_inference_pipeline_job(
     job_id = create_job_id()
 
     try:
+        target_language = (target_language or "en").strip() or "en"
         input_gcs_path, input_blob_name, filename = await upload_input_file_to_gcs(
             file=file,
             job_id=job_id,
@@ -1443,6 +1459,7 @@ async def create_orchestration_inference_pipeline_job(
             should_decrowd=should_decrowd,
             fast_decrowd=fast_decrowd,
             language=language,
+            target_language=target_language,
         )
 
         write_inference_job_status(job_id=job_id, status="queued")

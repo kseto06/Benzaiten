@@ -42,5 +42,8 @@ spec:
           - name: LANGUAGE
             value: "mul"
 
+          - name: TARGET_LANGUAGE
+            value: "en"
+
           - name: CONTENT_TYPE
             value: "video/mp4"
