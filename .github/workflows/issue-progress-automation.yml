@@ -1,0 +1,219 @@
+name: Issue Progress Automation
+run-name: Issue Progress Automation - ${{ github.actor }} on #${{ github.event.pull_request.number }}
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - converted_to_draft
+      - closed
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  repository-projects: write
+
+jobs:
+  sync-issue-progress:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Update linked issue labels and project status
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const IN_PROGRESS_LABEL = 'IN PROGRESS';
+            const DONE_LABEL = 'DONE';
+
+            const isClosedEvent = context.payload.action === 'closed';
+            const isMergedToMain =
+              isClosedEvent &&
+              context.payload.pull_request?.merged === true &&
+              context.payload.pull_request?.base?.ref === 'main';
+
+            if (isClosedEvent && !isMergedToMain) {
+              core.info('PR closed without merge to main. Skipping automation.');
+              return;
+            }
+
+            const targetLabel = isMergedToMain ? DONE_LABEL : IN_PROGRESS_LABEL;
+            const targetStatusName = isMergedToMain ? 'DONE' : 'IN PROGRESS';
+            const otherLabel = isMergedToMain ? IN_PROGRESS_LABEL : DONE_LABEL;
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pullNumber = context.payload.pull_request.number;
+
+            const repoLabels = await github.paginate(github.rest.issues.listLabelsForRepo, {
+              owner,
+              repo,
+              per_page: 100,
+            });
+            const labelNames = new Set(repoLabels.map((label) => label.name));
+
+            if (!labelNames.has(targetLabel)) {
+              core.setFailed(`Required label \"${targetLabel}\" does not exist in ${owner}/${repo}.`);
+              return;
+            }
+
+            const prResult = await github.graphql(
+              `query ($owner: String!, $repo: String!, $pullNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $pullNumber) {
+                    closingIssuesReferences(first: 50) {
+                      nodes {
+                        id
+                        number
+                        title
+                      }
+                    }
+                  }
+                }
+              }`,
+              { owner, repo, pullNumber },
+            );
+
+            const linkedIssues =
+              prResult?.repository?.pullRequest?.closingIssuesReferences?.nodes ?? [];
+
+            if (linkedIssues.length === 0) {
+              core.info('No linked issues were found for this PR.');
+              return;
+            }
+
+            const normalize = (value) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const normalizedTargetStatus = normalize(targetStatusName);
+
+            for (const issue of linkedIssues) {
+              core.info(`Updating issue #${issue.number}: ${issue.title}`);
+
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  name: otherLabel,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: issue.number,
+                labels: [targetLabel],
+              });
+
+              const issueProjectsResult = await github.graphql(
+                `query ($issueId: ID!) {
+                  node(id: $issueId) {
+                    ... on Issue {
+                      projectItems(first: 50) {
+                        nodes {
+                          id
+                          project {
+                            id
+                            title
+                          }
+                        }
+                      }
+                    }
+                  }
+                }`,
+                { issueId: issue.id },
+              );
+
+              const items = issueProjectsResult?.node?.projectItems?.nodes ?? [];
+              if (items.length === 0) {
+                core.info(`Issue #${issue.number} is not in a project board.`);
+                continue;
+              }
+
+              for (const item of items) {
+                const projectId = item.project?.id;
+                if (!projectId) {
+                  continue;
+                }
+
+                const projectFieldsResult = await github.graphql(
+                  `query ($projectId: ID!) {
+                    node(id: $projectId) {
+                      ... on ProjectV2 {
+                        id
+                        title
+                        fields(first: 100) {
+                          nodes {
+                            ... on ProjectV2SingleSelectField {
+                              id
+                              name
+                              options {
+                                id
+                                name
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }`,
+                  { projectId },
+                );
+
+                const fields = projectFieldsResult?.node?.fields?.nodes ?? [];
+                const statusField = fields.find(
+                  (field) => field?.name?.toLowerCase() === 'status',
+                );
+
+                if (!statusField) {
+                  core.info(
+                    `Project ${item.project?.title ?? projectId} has no Status field. Skipping item update.`,
+                  );
+                  continue;
+                }
+
+                const statusOption = (statusField.options ?? []).find(
+                  (option) => normalize(option.name) === normalizedTargetStatus,
+                );
+
+                if (!statusOption) {
+                  core.info(
+                    `Project ${item.project?.title ?? projectId} has no status option matching \"${targetStatusName}\".`,
+                  );
+                  continue;
+                }
+
+                await github.graphql(
+                  `mutation ($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                    updateProjectV2ItemFieldValue(
+                      input: {
+                        projectId: $projectId
+                        itemId: $itemId
+                        fieldId: $fieldId
+                        value: { singleSelectOptionId: $optionId }
+                      }
+                    ) {
+                      projectV2Item {
+                        id
+                      }
+                    }
+                  }`,
+                  {
+                    projectId,
+                    itemId: item.id,
+                    fieldId: statusField.id,
+                    optionId: statusOption.id,
+                  },
+                );
+
+                core.info(
+                  `Updated project item ${item.id} in ${item.project?.title ?? projectId} to ${statusOption.name}.`,
+                );
+              }
+            }
