@@ -44,6 +44,7 @@ srt_output = Path(
     run_srt_inference(
         audio_path=str(input_audio),
         language="ko",
+        target_language="en",
         model_size="large-v3-turbo",
         output_path=str(output_file),
     )
