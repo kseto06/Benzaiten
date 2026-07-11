@@ -26,6 +26,7 @@ jobs:
         uses: actions/github-script@v8
         with:
           script: |
+            const OPEN_LABEL = 'OPEN';
             const IN_PROGRESS_LABEL = 'IN PROGRESS';
             const DONE_LABEL = 'DONE';
 
@@ -91,16 +92,26 @@ jobs:
             for (const issue of linkedIssues) {
               core.info(`Updating issue #${issue.number}: ${issue.title}`);
 
-              try {
-                await github.rest.issues.removeLabel({
-                  owner,
-                  repo,
-                  issue_number: issue.number,
-                  name: otherLabel,
-                });
-              } catch (error) {
-                if (error.status !== 404) {
-                  throw error;
+              const labelsToRemove = [OPEN_LABEL, otherLabel];
+
+              for (const labelToRemove of labelsToRemove) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    name: labelToRemove,
+                  });
+
+                  core.info(`Removed "${labelToRemove}" from issue #${issue.number}.`);
+                } catch (error) {
+                  if (error.status === 404) {
+                    core.info(
+                      `Issue #${issue.number} does not currently have "${labelToRemove}".`,
+                    );
+                  } else {
+                    throw error;
+                  }
                 }
               }
 
@@ -110,6 +121,8 @@ jobs:
                 issue_number: issue.number,
                 labels: [targetLabel],
               });
+
+              core.info(`Added "${targetLabel}" to issue #${issue.number}.`);
 
               const issueProjectsResult = await github.graphql(
                 `query ($issueId: ID!) {
