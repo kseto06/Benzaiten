@@ -33,6 +33,7 @@ def seconds_to_srt_time(seconds: float) -> str:
 def transcribe(
     audio_path: str,
     language: Optional[str] = None,
+    target_language: Optional[str] = "en",
     model_size: str = "large-v3-turbo",
     batch_size: int = 8,
 ) -> List[Dict[str, Any]]:
@@ -41,7 +42,7 @@ def transcribe(
     If language is different than English, model will save in the .srt file three lines per timestamp:
         1. Original transcription in the original language
         2. Romanization of the original transcription (if applicable)
-        3. English translation of the original transcription
+        3. Target-language translation of the original transcription
 
     Args:
         audio_path:
@@ -58,6 +59,8 @@ def transcribe(
         language:
             Language code (e.g. "en", "fr", "de") for the input audio. If not specified, the language will be detected
             automatically within the first 30s of the audio.
+        target_language:
+            Language code to translate subtitles into. Defaults to "en".
     """
     results = []
     device = "cuda" if torch.cuda.is_available() else "auto"
@@ -91,7 +94,8 @@ def transcribe(
     # language settings for translation model init
     if language is None:
         language = info.language
-    init(translate_language_code=language)
+    target_language = (target_language or "en").strip() or "en"
+    init(translate_language_code=language, target_language_code=target_language)
 
     for segment in segments:
         # print("[%.2fs -> %.2fs] %s" % (segment.start, segment.end, segment.text))
@@ -117,6 +121,7 @@ def transcribe(
 def run_srt_inference(
     audio_path: str,
     language: Optional[str] = None,
+    target_language: Optional[str] = "en",
     model_size: str = "large-v3-turbo",
     output_path: str = "./backend/tests/transcription_outputs",
 ) -> str:
@@ -125,6 +130,7 @@ def run_srt_inference(
     Args:
         segments: List of dictionaries containing 'start', 'end', and 'text' for each segment.
         language: Language code (e.g. "en", "fr", "de") for the input audio.
+        target_language: Language code to translate subtitles into.
         output_path: Path to save the output .srt file.
     """
     output_path = Path(output_path)
@@ -136,7 +142,10 @@ def run_srt_inference(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     segments = transcribe(
-        audio_path=audio_path, model_size=model_size, language=language
+        audio_path=audio_path,
+        model_size=model_size,
+        language=language,
+        target_language=target_language,
     )
 
     with open(output_path, "w", encoding="utf-8") as f:

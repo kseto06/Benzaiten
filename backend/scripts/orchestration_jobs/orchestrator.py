@@ -19,6 +19,7 @@ def run_orchestration_inference_pipeline(
     should_decrowd: bool,
     fast_decrowd: bool,
     language: Union[str, None],
+    target_language: str = "en",
 ) -> None:
     """
     The structure of the orchestration pipeline is:
@@ -58,6 +59,7 @@ def run_orchestration_inference_pipeline(
             job_id=job_id,
             filename=filename,
             language=language,
+            target_language=target_language,
         )
         parallel_jobs.append(transcription_job_name)
 
