@@ -3,7 +3,7 @@ kind: Job
 metadata:
   name: benzaiten-orchestration-job
 spec:
-  backoffLimit: 1
+  backoffLimit: 0
   ttlSecondsAfterFinished: 600
   template:
     metadata:
@@ -45,6 +45,8 @@ spec:
               value: "false"
             - name: LANGUAGE
               value: "mul"
+            - name: TARGET_LANGUAGE
+              value: "en"
             - name: FAST_DECROWD
               value: "false"
           resources:
@@ -197,6 +199,8 @@ spec:
               value: "outputs/job-id-placeholder/transcription/vocals.vtt"
             - name: LANGUAGE
               value: "mul"
+            - name: TARGET_LANGUAGE
+              value: "en"
           resources:
             requests:
               cpu: "2"

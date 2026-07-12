@@ -1810,12 +1810,14 @@ function createProgressController(shouldDecrowd: boolean): {
 async function handleRunInference(): Promise<void> {
   const fileInput = queryElement<HTMLInputElement>("#fileInput");
   const languageInput = queryElement<HTMLInputElement>("#languageInput");
+  const targetLanguageInput = queryElement<HTMLInputElement>("#targetLanguageInput");
   const projectNameInput = queryElement<HTMLInputElement>("#projectNameInput");
   const shouldDecrowdInput = queryElement<HTMLInputElement>("#shouldDecrowdInput");
   const fastDecrowdInput = queryElement<HTMLInputElement>("#fastDecrowdInput");
   const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
   const file = fileInput.files?.[0];
   const language = languageInput.value.trim();
+  const targetLanguage = targetLanguageInput.value.trim() || "en";
 
   if (!file) {
     setLandingStatus("Choose a video or audio file first.", true);
@@ -1838,6 +1840,7 @@ async function handleRunInference(): Promise<void> {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("language", language);
+    formData.append("target_language", targetLanguage);
     formData.append("should_decrowd", shouldDecrowdInput.checked ? "true" : "false");
     formData.append(
       "fast_decrowd",
