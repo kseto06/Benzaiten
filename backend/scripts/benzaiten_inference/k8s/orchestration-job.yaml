@@ -3,7 +3,7 @@ kind: Job
 metadata:
   name: benzaiten-orchestration-job
 spec:
-  backoffLimit: 1
+  backoffLimit: 0
   ttlSecondsAfterFinished: 600
   template:
     metadata:
