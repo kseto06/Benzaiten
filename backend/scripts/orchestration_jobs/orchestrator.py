@@ -18,6 +18,7 @@ def run_orchestration_inference_pipeline(
     content_type: Union[str, None],
     should_decrowd: bool,
     fast_decrowd: bool,
+    should_transcribe: bool,
     language: Union[str, None],
     target_language: str = "en",
 ) -> None:
@@ -26,7 +27,7 @@ def run_orchestration_inference_pipeline(
 
     audio --> vocal/instrumental source separation
             |--> decrowding job if chosen
-            |--> transcription/translation job
+            |--> transcription/translation job if chosen
           --> combine both job outputs to build the final video
 
     This attempts to make the pipeline more modular and efficient via parallelizing k8 jobs
@@ -54,22 +55,25 @@ def run_orchestration_inference_pipeline(
             )
             parallel_jobs.append(decrowd_job_name)
 
-        # 3. create k8s job for transcription/translation/romanization
-        transcription_job_name = create_k8s_transcription_inference_job(
-            job_id=job_id,
-            filename=filename,
-            language=language,
-            target_language=target_language,
-        )
-        parallel_jobs.append(transcription_job_name)
+        # 3. create k8s job for transcription/translation/romanization if chosen
+        if should_transcribe:
+            transcription_job_name = create_k8s_transcription_inference_job(
+                job_id=job_id,
+                filename=filename,
+                language=language,
+                target_language=target_language,
+            )
+            parallel_jobs.append(transcription_job_name)
 
-        wait_for_jobs(parallel_jobs)
+        if parallel_jobs:
+            wait_for_jobs(parallel_jobs)
 
         # 4. building the final video
         build_video_job = create_k8s_build_video_job(
             job_id=job_id,
             filename=filename,
             should_decrowd=should_decrowd,
+            should_transcribe=should_transcribe,
             input_blob_name=input_blob_name,
             content_type=content_type,
         )
