@@ -21,6 +21,14 @@ on:
         options:
           - "true"
           - "false"
+      run_transcription:
+        description: "Whether to run transcription and subtitle generation in the pipeline test"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
       no_cache:
         description: "Build Docker image without cache"
         required: false
@@ -269,6 +277,7 @@ jobs:
           retention-days: 1
 
   transcription-pipeline-test:
+    if: ${{ inputs.run_transcription == 'true' }}
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     needs: source-separation-pipeline-test
@@ -332,7 +341,7 @@ jobs:
           retention-days: 1
 
   build-video-pipeline-test:
-    if: ${{ always() && needs.transcription-pipeline-test.result == 'success' && (inputs.run_decrowd == 'false' || needs.decrowd-pipeline-test.result == 'success') }}
+    if: ${{ always() && (inputs.run_transcription == 'false' || needs.transcription-pipeline-test.result == 'success') && (inputs.run_decrowd == 'false' || needs.decrowd-pipeline-test.result == 'success') }}
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 45
     needs:
@@ -382,6 +391,7 @@ jobs:
           path: test_outputs
 
       - name: Download transcription outputs
+        if: ${{ inputs.run_transcription == 'true' }}
         uses: actions/download-artifact@v5
         with:
           name: transcription-outputs
@@ -392,6 +402,7 @@ jobs:
           docker run --rm \
             -e BENZAITEN_SMOKE_OUTPUT_DIR="${{ env.BENZAITEN_SMOKE_OUTPUT_DIR }}" \
             -e BENZAITEN_RUN_DECROWD="${{ inputs.run_decrowd }}" \
+            -e BENZAITEN_RUN_TRANSCRIPTION="${{ inputs.run_transcription }}" \
             -v "$PWD/test_harness/backend/scripts/ci/stages:/app/backend/scripts/ci/stages:ro" \
             -v "$PWD/test_outputs:/app/test_outputs" \
             benzaiten-inference:test \

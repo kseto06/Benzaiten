@@ -99,7 +99,7 @@ type JobStatusResponse = {
   job_id: string;
   video_url?: string;
   audio_url?: string;
-  subtitle_url?: string;
+  subtitle_url?: string | null;
   error?: string;
 };
 
@@ -491,7 +491,7 @@ function getFirebaseAuthErrorMessage(error: unknown): string {
   }
 }
 
-function getGcsObjectName(url?: string): string | undefined {
+function getGcsObjectName(url?: string | null): string | undefined {
   if (!url) {
     return undefined;
   }
@@ -1695,7 +1695,7 @@ function renderPipelineStages(stages: PipelineStage[], activeIndex: number): voi
   }).join("");
 }
 
-function createProgressController(shouldDecrowd: boolean): {
+function createProgressController(shouldDecrowd: boolean, shouldTranscribe: boolean): {
   update: (objects: GcsObject[], status: JobStatusResponse["status"]) => void;
   finish: () => void;
   stop: () => void;
@@ -1717,7 +1717,12 @@ function createProgressController(shouldDecrowd: boolean): {
       complete: !shouldDecrowd,
       skipped: !shouldDecrowd,
     },
-    { id: "transcribe", label: "Transcribe lyrics", complete: false },
+    {
+      id: "transcribe",
+      label: shouldTranscribe ? "Transcribe lyrics" : "Transcription skipped",
+      complete: !shouldTranscribe,
+      skipped: !shouldTranscribe,
+    },
     { id: "compose", label: "Compose video", complete: false },
   ];
 
@@ -1751,7 +1756,7 @@ function createProgressController(shouldDecrowd: boolean): {
       name.includes("/decrowd/")
       || name.endsWith("/instrumental_(decrowd).mp3")
     ));
-    const transcriptionComplete = names.some(name => (
+    const transcriptionComplete = !shouldTranscribe || names.some(name => (
       name.includes("/transcription/vocals.vtt")
       || name.endsWith("/vocals.vtt")
     ));
@@ -1786,9 +1791,14 @@ function createProgressController(shouldDecrowd: boolean): {
       detail.textContent = shouldDecrowd
         ? "Crowd reduction and transcription are running."
         : "Transcription is running.";
+      if (!shouldTranscribe) {
+        detail.textContent = "Crowd reduction is running.";
+      }
     } else {
       title.textContent = "Composing the final media";
-      detail.textContent = "Combining the processed audio, video, and subtitles.";
+      detail.textContent = shouldTranscribe
+        ? "Combining the processed audio, video, and subtitles."
+        : "Combining the processed audio and video.";
     }
   };
 
@@ -1812,6 +1822,7 @@ async function handleRunInference(): Promise<void> {
   const languageInput = queryElement<HTMLInputElement>("#languageInput");
   const targetLanguageInput = queryElement<HTMLInputElement>("#targetLanguageInput");
   const projectNameInput = queryElement<HTMLInputElement>("#projectNameInput");
+  const shouldTranscribeInput = queryElement<HTMLInputElement>("#shouldTranscribeInput");
   const shouldDecrowdInput = queryElement<HTMLInputElement>("#shouldDecrowdInput");
   const fastDecrowdInput = queryElement<HTMLInputElement>("#fastDecrowdInput");
   const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
@@ -1827,13 +1838,16 @@ async function handleRunInference(): Promise<void> {
     setLandingStatus("The selected file must be video or audio.", true);
     return;
   }
-  if (!language) {
+  if (shouldTranscribeInput.checked && !language) {
     setLandingStatus("Enter an audio language code.", true);
     return;
   }
 
   runButton.disabled = true;
-  const progress = createProgressController(shouldDecrowdInput.checked);
+  const progress = createProgressController(
+    shouldDecrowdInput.checked,
+    shouldTranscribeInput.checked,
+  );
 
   try {
     setLandingStatus("Uploading media and starting orchestration...");
@@ -1841,6 +1855,7 @@ async function handleRunInference(): Promise<void> {
     formData.append("file", file);
     formData.append("language", language);
     formData.append("target_language", targetLanguage);
+    formData.append("should_transcribe", shouldTranscribeInput.checked ? "true" : "false");
     formData.append("should_decrowd", shouldDecrowdInput.checked ? "true" : "false");
     formData.append(
       "fast_decrowd",
@@ -1880,7 +1895,7 @@ async function handleRunInference(): Promise<void> {
       jobId: startData.job_id,
       mediaUrl,
       mediaObjectName: getGcsObjectName(mediaUrl),
-      subtitleUrl: completed.subtitle_url,
+      subtitleUrl: completed.subtitle_url || undefined,
       subtitleObjectName: getGcsObjectName(completed.subtitle_url),
       mediaType: completed.video_url ? "video" : "audio",
     });

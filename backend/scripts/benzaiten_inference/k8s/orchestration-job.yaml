@@ -43,6 +43,8 @@ spec:
               value: "video/mp4"
             - name: SHOULD_DECROWD
               value: "false"
+            - name: SHOULD_TRANSCRIBE
+              value: "true"
             - name: LANGUAGE
               value: "mul"
             - name: TARGET_LANGUAGE
@@ -248,6 +250,8 @@ spec:
             - name: FILENAME
               value: "placeholder.mp4"
             - name: IS_VIDEO
+              value: "true"
+            - name: SHOULD_TRANSCRIBE
               value: "true"
             - name: INPUT_BLOB_NAME
               value: "inputs/job-id-placeholder/placeholder.mp4"

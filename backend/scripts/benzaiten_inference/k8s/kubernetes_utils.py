@@ -81,6 +81,7 @@ def create_k8s_inference_job(
     input_blob_name: str,
     filename: str,
     should_decrowd: bool,
+    should_transcribe: bool = True,
     language: Union[str, None] = "mul",
     target_language: str = "en",
     content_type: Union[str, None] = "video/mp4",
@@ -106,6 +107,7 @@ def create_k8s_inference_job(
         client.V1EnvVar(name="INPUT_BLOB_NAME", value=input_blob_name),
         client.V1EnvVar(name="FILENAME", value=filename),
         client.V1EnvVar(name="SHOULD_DECROWD", value=str(should_decrowd).lower()),
+        client.V1EnvVar(name="SHOULD_TRANSCRIBE", value=str(should_transcribe).lower()),
         client.V1EnvVar(name="LANGUAGE", value=language),
         client.V1EnvVar(name="TARGET_LANGUAGE", value=target_language),
         client.V1EnvVar(name="CONTENT_TYPE", value=content_type),
@@ -189,6 +191,7 @@ def create_k8s_orchestration_job(
     filename: str,
     should_decrowd: bool,
     fast_decrowd: bool = False,
+    should_transcribe: bool = True,
     content_type: Union[str, None] = "video/mp4",
     language: Union[str, None] = "mul",
     target_language: str = "en",
@@ -219,6 +222,7 @@ def create_k8s_orchestration_job(
         _env("CONTENT_TYPE", content_type),
         _env("SHOULD_DECROWD", str(should_decrowd).lower()),
         _env("FAST_DECROWD", str(fast_decrowd).lower()),
+        _env("SHOULD_TRANSCRIBE", str(should_transcribe).lower()),
         _env("LANGUAGE", language),
         _env("TARGET_LANGUAGE", target_language),
     ]
@@ -511,6 +515,7 @@ def create_k8s_build_video_job(
     job_id: str,
     filename: str,
     should_decrowd: bool,
+    should_transcribe: bool,
     input_blob_name: str,
     content_type: Union[str, None] = "video/mp4",
     video_gcs_path: Union[str, None] = None,
@@ -548,6 +553,7 @@ def create_k8s_build_video_job(
         env_vars=[
             _env("FILENAME", filename),
             _env("IS_VIDEO", str(is_video).lower()),
+            _env("SHOULD_TRANSCRIBE", str(should_transcribe).lower()),
             _env("INPUT_BLOB_NAME", input_blob_name),
             _env(
                 "VIDEO_BLOB_NAME",

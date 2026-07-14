@@ -1406,6 +1406,7 @@ async def create_orchestration_inference_pipeline_job(
     file: UploadFile = File(...),
     should_decrowd: bool = Form(False),
     fast_decrowd: bool = Form(False),
+    should_transcribe: bool = Form(True),
     language: Union[str, None] = Form(None),
     target_language: str = Form("en"),
     project_title: Union[str, None] = Form(None),
@@ -1458,6 +1459,7 @@ async def create_orchestration_inference_pipeline_job(
             content_type=file.content_type,
             should_decrowd=should_decrowd,
             fast_decrowd=fast_decrowd,
+            should_transcribe=should_transcribe,
             language=language,
             target_language=target_language,
         )
