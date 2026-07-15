@@ -45,6 +45,8 @@ spec:
               value: "false"
             - name: SHOULD_TRANSCRIBE
               value: "true"
+            - name: SHOULD_TRANSLATE
+              value: "true"
             - name: LANGUAGE
               value: "mul"
             - name: TARGET_LANGUAGE
@@ -203,6 +205,8 @@ spec:
               value: "mul"
             - name: TARGET_LANGUAGE
               value: "en"
+            - name: SHOULD_TRANSLATE
+              value: "true"
           resources:
             requests:
               cpu: "2"

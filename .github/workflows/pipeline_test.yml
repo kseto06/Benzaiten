@@ -29,6 +29,14 @@ on:
         options:
           - "true"
           - "false"
+      run_translation:
+        description: "Whether to run translation during the transcription pipeline test"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
       no_cache:
         description: "Build Docker image without cache"
         required: false
@@ -257,6 +265,7 @@ jobs:
         run: |
           docker run --rm \
             -e BENZAITEN_SMOKE_OUTPUT_DIR="${{ env.BENZAITEN_SMOKE_OUTPUT_DIR }}" \
+            -e BENZAITEN_RUN_TRANSLATION="${{ inputs.run_translation }}" \
             -v "$PWD/test_harness/backend/scripts/ci/stages:/app/backend/scripts/ci/stages:ro" \
             -v "$PWD/test_outputs:/app/test_outputs" \
             benzaiten-inference:test \

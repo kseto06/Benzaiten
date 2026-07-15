@@ -82,6 +82,7 @@ def create_k8s_inference_job(
     filename: str,
     should_decrowd: bool,
     should_transcribe: bool = True,
+    should_translate: bool = True,
     language: Union[str, None] = "mul",
     target_language: str = "en",
     content_type: Union[str, None] = "video/mp4",
@@ -95,6 +96,7 @@ def create_k8s_inference_job(
         input_blob_name: The blob name of the input file in GCS.
         filename: The original filename of the input file.
         should_decrowd: Boolean indicating whether to run decrowding during inference.
+        should_translate: Boolean indicating whether to translate subtitle lines after transcription.
     """
     api_client = get_k8s_api_client()
     batch_v1 = client.BatchV1Api(api_client=api_client)
@@ -108,6 +110,7 @@ def create_k8s_inference_job(
         client.V1EnvVar(name="FILENAME", value=filename),
         client.V1EnvVar(name="SHOULD_DECROWD", value=str(should_decrowd).lower()),
         client.V1EnvVar(name="SHOULD_TRANSCRIBE", value=str(should_transcribe).lower()),
+        client.V1EnvVar(name="SHOULD_TRANSLATE", value=str(should_translate).lower()),
         client.V1EnvVar(name="LANGUAGE", value=language),
         client.V1EnvVar(name="TARGET_LANGUAGE", value=target_language),
         client.V1EnvVar(name="CONTENT_TYPE", value=content_type),
@@ -192,6 +195,7 @@ def create_k8s_orchestration_job(
     should_decrowd: bool,
     fast_decrowd: bool = False,
     should_transcribe: bool = True,
+    should_translate: bool = True,
     content_type: Union[str, None] = "video/mp4",
     language: Union[str, None] = "mul",
     target_language: str = "en",
@@ -223,6 +227,7 @@ def create_k8s_orchestration_job(
         _env("SHOULD_DECROWD", str(should_decrowd).lower()),
         _env("FAST_DECROWD", str(fast_decrowd).lower()),
         _env("SHOULD_TRANSCRIBE", str(should_transcribe).lower()),
+        _env("SHOULD_TRANSLATE", str(should_translate).lower()),
         _env("LANGUAGE", language),
         _env("TARGET_LANGUAGE", target_language),
     ]
@@ -470,6 +475,7 @@ def create_k8s_transcription_inference_job(
     filename: str,
     language: Union[str, None] = "mul",
     target_language: str = "en",
+    should_translate: bool = True,
 ) -> str:
     """
     do a transcription operation on the input audio and write the transcriptions and translations as the srt/vtt to GCS bucket
@@ -478,6 +484,7 @@ def create_k8s_transcription_inference_job(
         job_id: Unique identifier for the job, used as part of the K8s job name; generated in fastapi app
         filename: The original filename of the input file.
         language: The language code for the transcription (e.g. "en", "ko"; "mul" for multilingual)
+        should_translate: Whether to include target-language translation subtitle lines.
     Returns:
         The name of the created K8s job
     """
@@ -489,6 +496,7 @@ def create_k8s_transcription_inference_job(
             _env("FILENAME", filename),
             _env("LANGUAGE", language),
             _env("TARGET_LANGUAGE", target_language),
+            _env("SHOULD_TRANSLATE", str(should_translate).lower()),
             _env(
                 "INPUT_AUDIO_BLOB_NAME",
                 _stage_blob(job_id, "source_separation", "vocals.mp3"),
