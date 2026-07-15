@@ -19,6 +19,7 @@ def run_orchestration_inference_pipeline(
     should_decrowd: bool,
     fast_decrowd: bool,
     should_transcribe: bool,
+    should_translate: bool,
     language: Union[str, None],
     target_language: str = "en",
 ) -> None:
@@ -62,6 +63,7 @@ def run_orchestration_inference_pipeline(
                 filename=filename,
                 language=language,
                 target_language=target_language,
+                should_translate=should_translate,
             )
             parallel_jobs.append(transcription_job_name)
 

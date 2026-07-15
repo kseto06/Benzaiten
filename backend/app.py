@@ -1115,6 +1115,7 @@ async def run_transcription(
     filename: str = "vocals.mp3",
     language: str = None,
     target_language: str = "en",
+    should_translate: bool = Form(True),
 ) -> Dict:
     """
     Run transcription on a vocals file given the job id, returning the srt file which is saved to GCS bucket
@@ -1148,6 +1149,7 @@ async def run_transcription(
             output_path=str(output_dir),
             language=language,
             target_language=target_language,
+            should_translate=should_translate,
         )
 
         # upload srt output to gcs bucket
@@ -1174,6 +1176,7 @@ async def run_transcription(
 async def run_full_inference(
     file: UploadFile = File(...),
     should_decrowd: bool = Form(False),
+    should_translate: bool = Form(True),
     language: Union[str, None] = Form(None),
     target_language: str = Form("en"),
 ) -> Dict:
@@ -1198,6 +1201,7 @@ async def run_full_inference(
         job_id=job_id,
         language=language,
         target_language=(target_language or "en").strip() or "en",
+        should_translate=should_translate,
     )
     # after transcription, we can remove the temp vocals file from gcs bucket
     output_dict["srt_link"] = transcription_res["srt_link"]
@@ -1356,6 +1360,7 @@ def convert_to_vtt(
 async def create_inference_job(
     file: UploadFile = File(...),
     should_decrowd: bool = Form(False),
+    should_translate: bool = Form(True),
     language: Union[str, None] = Form(None),
     target_language: str = Form("en"),
 ) -> Dict:
@@ -1384,6 +1389,7 @@ async def create_inference_job(
             input_blob_name=input_blob_name,
             filename=filename,
             should_decrowd=should_decrowd,
+            should_translate=should_translate,
             language=language,
             target_language=target_language,
             content_type=file.content_type,
@@ -1407,6 +1413,7 @@ async def create_orchestration_inference_pipeline_job(
     should_decrowd: bool = Form(False),
     fast_decrowd: bool = Form(False),
     should_transcribe: bool = Form(True),
+    should_translate: bool = Form(True),
     language: Union[str, None] = Form(None),
     target_language: str = Form("en"),
     project_title: Union[str, None] = Form(None),
@@ -1460,6 +1467,7 @@ async def create_orchestration_inference_pipeline_job(
             should_decrowd=should_decrowd,
             fast_decrowd=fast_decrowd,
             should_transcribe=should_transcribe,
+            should_translate=should_translate,
             language=language,
             target_language=target_language,
         )

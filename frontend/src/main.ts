@@ -682,6 +682,9 @@ function setupLandingInteractions(): void {
   const fileInput = queryElement<HTMLInputElement>("#fileInput");
   const uploadZone = queryElement<HTMLDivElement>("#uploadZone");
   const selectedFile = queryElement<HTMLDivElement>("#selectedFile");
+  const targetLanguageInput = queryElement<HTMLInputElement>("#targetLanguageInput");
+  const shouldTranscribe = queryElement<HTMLInputElement>("#shouldTranscribeInput");
+  const shouldTranslate = queryElement<HTMLInputElement>("#shouldTranslateInput");
   const shouldDecrowd = queryElement<HTMLInputElement>("#shouldDecrowdInput");
   const fastDecrowd = queryElement<HTMLInputElement>("#fastDecrowdInput");
   const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
@@ -914,6 +917,28 @@ function setupLandingInteractions(): void {
   for (const eventName of ["dragleave", "drop"]) {
     uploadZone.addEventListener(eventName, () => uploadZone.classList.remove("is-dragging"));
   }
+
+  let lastTranslateChoice = shouldTranslate.checked;
+  const syncTranslationControls = (): void => {
+    if (!shouldTranscribe.checked) {
+      lastTranslateChoice = shouldTranslate.checked;
+      shouldTranslate.checked = false;
+      shouldTranslate.disabled = true;
+      targetLanguageInput.disabled = true;
+      return;
+    }
+
+    shouldTranslate.disabled = false;
+    shouldTranslate.checked = lastTranslateChoice;
+    targetLanguageInput.disabled = !shouldTranslate.checked;
+  };
+
+  shouldTranscribe.addEventListener("change", syncTranslationControls);
+  shouldTranslate.addEventListener("change", () => {
+    lastTranslateChoice = shouldTranslate.checked;
+    targetLanguageInput.disabled = !shouldTranslate.checked;
+  });
+  syncTranslationControls();
 
   shouldDecrowd.addEventListener("change", () => {
     fastDecrowd.disabled = !shouldDecrowd.checked;
@@ -1823,12 +1848,14 @@ async function handleRunInference(): Promise<void> {
   const targetLanguageInput = queryElement<HTMLInputElement>("#targetLanguageInput");
   const projectNameInput = queryElement<HTMLInputElement>("#projectNameInput");
   const shouldTranscribeInput = queryElement<HTMLInputElement>("#shouldTranscribeInput");
+  const shouldTranslateInput = queryElement<HTMLInputElement>("#shouldTranslateInput");
   const shouldDecrowdInput = queryElement<HTMLInputElement>("#shouldDecrowdInput");
   const fastDecrowdInput = queryElement<HTMLInputElement>("#fastDecrowdInput");
   const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
   const file = fileInput.files?.[0];
   const language = languageInput.value.trim();
   const targetLanguage = targetLanguageInput.value.trim() || "en";
+  const shouldTranslate = shouldTranscribeInput.checked && shouldTranslateInput.checked;
 
   if (!file) {
     setLandingStatus("Choose a video or audio file first.", true);
@@ -1856,6 +1883,7 @@ async function handleRunInference(): Promise<void> {
     formData.append("language", language);
     formData.append("target_language", targetLanguage);
     formData.append("should_transcribe", shouldTranscribeInput.checked ? "true" : "false");
+    formData.append("should_translate", shouldTranslate ? "true" : "false");
     formData.append("should_decrowd", shouldDecrowdInput.checked ? "true" : "false");
     formData.append(
       "fast_decrowd",

@@ -63,6 +63,7 @@ def run_inference_job() -> Dict:
     filename = os.environ["FILENAME"]
     should_decrowd = os.environ.get("SHOULD_DECROWD", "false").lower() == "true"
     should_transcribe = os.environ.get("SHOULD_TRANSCRIBE", "true").lower() == "true"
+    should_translate = os.environ.get("SHOULD_TRANSLATE", "true").lower() == "true"
     language: Optional[str] = os.environ.get("LANGUAGE") or None
     target_language: Optional[str] = os.environ.get("TARGET_LANGUAGE") or "en"
     content_type = os.environ.get("CONTENT_TYPE", "video/mp4")
@@ -169,6 +170,7 @@ def run_inference_job() -> Dict:
             output_path=str(output_dir),
             language=language,
             target_language=target_language,
+            should_translate=should_translate,
         )
 
         srt_output_path = Path(srt_output_path)
@@ -643,6 +645,7 @@ def run_transcription_job():
     job_id = os.environ["JOB_ID"]
     language: Optional[str] = os.environ.get("LANGUAGE") or None
     target_language: Optional[str] = os.environ.get("TARGET_LANGUAGE") or "en"
+    should_translate = os.environ.get("SHOULD_TRANSLATE", "true").lower() == "true"
     gcs_bucket = os.environ.get("GCS_BUCKET", GCS_BUCKET)
 
     output_dir = Path(f"/tmp/outputs/{job_id}")
@@ -665,6 +668,7 @@ def run_transcription_job():
         output_path=str(output_dir),
         language=language,
         target_language=target_language,
+        should_translate=should_translate,
     )
 
     srt_output_path = Path(srt_output_path)
