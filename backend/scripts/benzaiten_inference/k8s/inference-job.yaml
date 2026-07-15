@@ -45,6 +45,9 @@ spec:
           - name: SHOULD_TRANSLATE
             value: "true"
 
+          - name: SHOULD_ROMANIZE
+            value: "true"
+
           - name: LANGUAGE
             value: "mul"
 

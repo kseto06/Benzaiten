@@ -47,6 +47,8 @@ spec:
               value: "true"
             - name: SHOULD_TRANSLATE
               value: "true"
+            - name: SHOULD_ROMANIZE
+              value: "true"
             - name: LANGUAGE
               value: "mul"
             - name: TARGET_LANGUAGE
@@ -206,6 +208,8 @@ spec:
             - name: TARGET_LANGUAGE
               value: "en"
             - name: SHOULD_TRANSLATE
+              value: "true"
+            - name: SHOULD_ROMANIZE
               value: "true"
           resources:
             requests:

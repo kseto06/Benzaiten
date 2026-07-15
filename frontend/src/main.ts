@@ -684,6 +684,7 @@ function setupLandingInteractions(): void {
   const selectedFile = queryElement<HTMLDivElement>("#selectedFile");
   const targetLanguageInput = queryElement<HTMLInputElement>("#targetLanguageInput");
   const shouldTranscribe = queryElement<HTMLInputElement>("#shouldTranscribeInput");
+  const shouldRomanize = queryElement<HTMLInputElement>("#shouldRomanizeInput");
   const shouldTranslate = queryElement<HTMLInputElement>("#shouldTranslateInput");
   const shouldDecrowd = queryElement<HTMLInputElement>("#shouldDecrowdInput");
   const fastDecrowd = queryElement<HTMLInputElement>("#fastDecrowdInput");
@@ -919,26 +920,35 @@ function setupLandingInteractions(): void {
   }
 
   let lastTranslateChoice = shouldTranslate.checked;
-  const syncTranslationControls = (): void => {
+  let lastRomanizeChoice = shouldRomanize.checked;
+  const syncTranscriptionDependentControls = (): void => {
     if (!shouldTranscribe.checked) {
+      lastRomanizeChoice = shouldRomanize.checked;
       lastTranslateChoice = shouldTranslate.checked;
+      shouldRomanize.checked = false;
+      shouldRomanize.disabled = true;
       shouldTranslate.checked = false;
       shouldTranslate.disabled = true;
       targetLanguageInput.disabled = true;
       return;
     }
 
+    shouldRomanize.disabled = false;
+    shouldRomanize.checked = lastRomanizeChoice;
     shouldTranslate.disabled = false;
     shouldTranslate.checked = lastTranslateChoice;
     targetLanguageInput.disabled = !shouldTranslate.checked;
   };
 
-  shouldTranscribe.addEventListener("change", syncTranslationControls);
+  shouldTranscribe.addEventListener("change", syncTranscriptionDependentControls);
+  shouldRomanize.addEventListener("change", () => {
+    lastRomanizeChoice = shouldRomanize.checked;
+  });
   shouldTranslate.addEventListener("change", () => {
     lastTranslateChoice = shouldTranslate.checked;
     targetLanguageInput.disabled = !shouldTranslate.checked;
   });
-  syncTranslationControls();
+  syncTranscriptionDependentControls();
 
   shouldDecrowd.addEventListener("change", () => {
     fastDecrowd.disabled = !shouldDecrowd.checked;
@@ -1848,6 +1858,7 @@ async function handleRunInference(): Promise<void> {
   const targetLanguageInput = queryElement<HTMLInputElement>("#targetLanguageInput");
   const projectNameInput = queryElement<HTMLInputElement>("#projectNameInput");
   const shouldTranscribeInput = queryElement<HTMLInputElement>("#shouldTranscribeInput");
+  const shouldRomanizeInput = queryElement<HTMLInputElement>("#shouldRomanizeInput");
   const shouldTranslateInput = queryElement<HTMLInputElement>("#shouldTranslateInput");
   const shouldDecrowdInput = queryElement<HTMLInputElement>("#shouldDecrowdInput");
   const fastDecrowdInput = queryElement<HTMLInputElement>("#fastDecrowdInput");
@@ -1855,6 +1866,7 @@ async function handleRunInference(): Promise<void> {
   const file = fileInput.files?.[0];
   const language = languageInput.value.trim();
   const targetLanguage = targetLanguageInput.value.trim() || "en";
+  const shouldRomanize = shouldTranscribeInput.checked && shouldRomanizeInput.checked;
   const shouldTranslate = shouldTranscribeInput.checked && shouldTranslateInput.checked;
 
   if (!file) {
@@ -1883,6 +1895,7 @@ async function handleRunInference(): Promise<void> {
     formData.append("language", language);
     formData.append("target_language", targetLanguage);
     formData.append("should_transcribe", shouldTranscribeInput.checked ? "true" : "false");
+    formData.append("should_romanize", shouldRomanize ? "true" : "false");
     formData.append("should_translate", shouldTranslate ? "true" : "false");
     formData.append("should_decrowd", shouldDecrowdInput.checked ? "true" : "false");
     formData.append(

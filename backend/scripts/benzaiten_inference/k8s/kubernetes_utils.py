@@ -83,6 +83,7 @@ def create_k8s_inference_job(
     should_decrowd: bool,
     should_transcribe: bool = True,
     should_translate: bool = True,
+    should_romanize: bool = True,
     language: Union[str, None] = "mul",
     target_language: str = "en",
     content_type: Union[str, None] = "video/mp4",
@@ -97,6 +98,7 @@ def create_k8s_inference_job(
         filename: The original filename of the input file.
         should_decrowd: Boolean indicating whether to run decrowding during inference.
         should_translate: Boolean indicating whether to translate subtitle lines after transcription.
+        should_romanize: Boolean indicating whether to romanize subtitle lines after transcription.
     """
     api_client = get_k8s_api_client()
     batch_v1 = client.BatchV1Api(api_client=api_client)
@@ -111,6 +113,7 @@ def create_k8s_inference_job(
         client.V1EnvVar(name="SHOULD_DECROWD", value=str(should_decrowd).lower()),
         client.V1EnvVar(name="SHOULD_TRANSCRIBE", value=str(should_transcribe).lower()),
         client.V1EnvVar(name="SHOULD_TRANSLATE", value=str(should_translate).lower()),
+        client.V1EnvVar(name="SHOULD_ROMANIZE", value=str(should_romanize).lower()),
         client.V1EnvVar(name="LANGUAGE", value=language),
         client.V1EnvVar(name="TARGET_LANGUAGE", value=target_language),
         client.V1EnvVar(name="CONTENT_TYPE", value=content_type),
@@ -196,6 +199,7 @@ def create_k8s_orchestration_job(
     fast_decrowd: bool = False,
     should_transcribe: bool = True,
     should_translate: bool = True,
+    should_romanize: bool = True,
     content_type: Union[str, None] = "video/mp4",
     language: Union[str, None] = "mul",
     target_language: str = "en",
@@ -228,6 +232,7 @@ def create_k8s_orchestration_job(
         _env("FAST_DECROWD", str(fast_decrowd).lower()),
         _env("SHOULD_TRANSCRIBE", str(should_transcribe).lower()),
         _env("SHOULD_TRANSLATE", str(should_translate).lower()),
+        _env("SHOULD_ROMANIZE", str(should_romanize).lower()),
         _env("LANGUAGE", language),
         _env("TARGET_LANGUAGE", target_language),
     ]
@@ -476,6 +481,7 @@ def create_k8s_transcription_inference_job(
     language: Union[str, None] = "mul",
     target_language: str = "en",
     should_translate: bool = True,
+    should_romanize: bool = True,
 ) -> str:
     """
     do a transcription operation on the input audio and write the transcriptions and translations as the srt/vtt to GCS bucket
@@ -485,6 +491,7 @@ def create_k8s_transcription_inference_job(
         filename: The original filename of the input file.
         language: The language code for the transcription (e.g. "en", "ko"; "mul" for multilingual)
         should_translate: Whether to include target-language translation subtitle lines.
+        should_romanize: Whether to include romanized subtitle lines.
     Returns:
         The name of the created K8s job
     """
@@ -497,6 +504,7 @@ def create_k8s_transcription_inference_job(
             _env("LANGUAGE", language),
             _env("TARGET_LANGUAGE", target_language),
             _env("SHOULD_TRANSLATE", str(should_translate).lower()),
+            _env("SHOULD_ROMANIZE", str(should_romanize).lower()),
             _env(
                 "INPUT_AUDIO_BLOB_NAME",
                 _stage_blob(job_id, "source_separation", "vocals.mp3"),
