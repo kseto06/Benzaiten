@@ -36,7 +36,7 @@ def transcribe(
     target_language: Optional[str] = "en",
     model_size: str = "large-v3-turbo",
     should_translate: bool = True,
-    batch_size: int = 8,
+    should_romanize: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Run inference on the Whisper model. Transcribes input data and outputs segments with timestamps into .srt file.
@@ -64,6 +64,8 @@ def transcribe(
             Language code to translate subtitles into. Defaults to "en".
         should_translate:
             Whether to load the translation model and add translated subtitle lines.
+        should_romanize:
+            Whether to add romanized subtitle lines.
     """
     results = []
     device = "cuda" if torch.cuda.is_available() else "auto"
@@ -111,8 +113,14 @@ def transcribe(
                 "end": seconds_to_srt_time(segment.end),
                 "text": {  # text, romanized, translated
                     "original": text,
-                    "romanization": romanize(
-                        text=text, translate_language_code=language
+                    **(
+                        {
+                            "romanization": romanize(
+                                text=text, translate_language_code=language
+                            )
+                        }
+                        if should_romanize
+                        else {}
                     ),
                     **(
                         {"translation": translate(text=text)}
@@ -132,6 +140,7 @@ def run_srt_inference(
     target_language: Optional[str] = "en",
     model_size: str = "large-v3-turbo",
     should_translate: bool = True,
+    should_romanize: bool = True,
     output_path: str = "./backend/tests/transcription_outputs",
 ) -> str:
     """
@@ -141,6 +150,7 @@ def run_srt_inference(
         language: Language code (e.g. "en", "fr", "de") for the input audio.
         target_language: Language code to translate subtitles into.
         should_translate: Whether to add target-language translation subtitle lines.
+        should_romanize: Whether to add romanized subtitle lines.
         output_path: Path to save the output .srt file.
     """
     output_path = Path(output_path)
@@ -157,16 +167,16 @@ def run_srt_inference(
         language=language,
         target_language=target_language,
         should_translate=should_translate,
+        should_romanize=should_romanize,
     )
 
     with open(output_path, "w", encoding="utf-8") as f:
         for i, segment in enumerate(segments, start=1):
             f.write(f"{i}\n")
             f.write(f"{segment['start']} --> {segment['end']}\n")
-            text_lines = [
-                segment["text"]["original"],
-                segment["text"]["romanization"],
-            ]
+            text_lines = [segment["text"]["original"]]
+            if should_romanize and "romanization" in segment["text"]:
+                text_lines.append(segment["text"]["romanization"])
             if should_translate and "translation" in segment["text"]:
                 text_lines.append(segment["text"]["translation"])
             f.write("\n".join(text_lines) + "\n\n")
