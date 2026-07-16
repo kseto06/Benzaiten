@@ -225,6 +225,14 @@ def create_k8s_orchestration_job(
 
     env_vars = [
         _env("JOB_ID", job_id),
+        _env("GCS_BUCKET", GCS_BUCKET),
+        _env("IMAGE", IMAGE),
+        _env("K8S_NAMESPACE", K8S_NAMESPACE),
+        _env("CPU_INFERENCE_NODE_POOL", CPU_INFERENCE_NODE_POOL),
+        _env("GPU_INFERENCE_NODE_POOL", GPU_INFERENCE_NODE_POOL),
+        _env("VIDEO_NODE_POOL", VIDEO_NODE_POOL),
+        _env("INFERENCE_NODE_POOL", INFERENCE_NODE_POOL),
+        _env("INFERENCE_GPU_COUNT", str(INFERENCE_GPU_COUNT)),
         _env("INPUT_BLOB_NAME", input_blob_name),
         _env("FILENAME", filename),
         _env("CONTENT_TYPE", content_type),
