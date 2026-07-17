@@ -62,6 +62,9 @@ def run_inference_job() -> Dict:
     input_blob_name = os.environ["INPUT_BLOB_NAME"]
     filename = os.environ["FILENAME"]
     should_decrowd = os.environ.get("SHOULD_DECROWD", "false").lower() == "true"
+    should_transcribe = os.environ.get("SHOULD_TRANSCRIBE", "true").lower() == "true"
+    should_translate = os.environ.get("SHOULD_TRANSLATE", "true").lower() == "true"
+    should_romanize = os.environ.get("SHOULD_ROMANIZE", "true").lower() == "true"
     language: Optional[str] = os.environ.get("LANGUAGE") or None
     target_language: Optional[str] = os.environ.get("TARGET_LANGUAGE") or "en"
     content_type = os.environ.get("CONTENT_TYPE", "video/mp4")
@@ -157,30 +160,37 @@ def run_inference_job() -> Dict:
     else:
         final_audio_path = instrumental_path
 
-    # transcription/translation pipeline
-    srt_output_path = run_srt_inference(
-        audio_path=str(vocals_path),
-        output_path=str(output_dir),
-        language=language,
-        target_language=target_language,
-    )
-
-    srt_output_path = Path(srt_output_path)
-
-    if not srt_output_path.exists():
-        raise FileNotFoundError(
-            f"expected output file from transcription missing: {srt_output_path}"
+    srt_output_path = None
+    vtt_path = None
+    srt_blob = None
+    vtt_blob = None
+    if should_transcribe:
+        # transcription/translation pipeline
+        srt_output_path = run_srt_inference(
+            audio_path=str(vocals_path),
+            output_path=str(output_dir),
+            language=language,
+            target_language=target_language,
+            should_translate=should_translate,
+            should_romanize=should_romanize,
         )
 
-    output_dict["srt"] = srt_output_path.name
+        srt_output_path = Path(srt_output_path)
 
-    # srt -> vtt conversion
-    vtt_path = output_dir / "vocals.vtt"
-    convert_srt_to_vtt(srt_path=str(srt_output_path), vtt_path=str(vtt_path))
-    if not vtt_path.exists():
-        raise FileNotFoundError(
-            f"expected output file from srt to vtt conversion missing: {vtt_path}"
-        )
+        if not srt_output_path.exists():
+            raise FileNotFoundError(
+                f"expected output file from transcription missing: {srt_output_path}"
+            )
+
+        output_dict["srt"] = srt_output_path.name
+
+        # srt -> vtt conversion
+        vtt_path = output_dir / "vocals.vtt"
+        convert_srt_to_vtt(srt_path=str(srt_output_path), vtt_path=str(vtt_path))
+        if not vtt_path.exists():
+            raise FileNotFoundError(
+                f"expected output file from srt to vtt conversion missing: {vtt_path}"
+            )
 
     # building the final video
     final_video_path, final_video_blob = None, None
@@ -192,7 +202,7 @@ def run_inference_job() -> Dict:
         build_video(
             video_path=str(video_path),
             audio_path=str(final_audio_path),
-            srt_path=str(srt_output_path),
+            srt_path=str(srt_output_path) if srt_output_path else None,
             output_path=str(final_video_path),
         )
 
@@ -211,21 +221,27 @@ def run_inference_job() -> Dict:
 
         output_dict["gcs_links"]["video"] = final_video_link
 
-    # upload final subtitle files
-    srt_blob, vtt_blob = f"outputs/{job_id}/vocals.srt", f"outputs/{job_id}/vocals.vtt"
+    if should_transcribe and srt_output_path and vtt_path:
+        # upload final subtitle files
+        srt_blob, vtt_blob = (
+            f"outputs/{job_id}/vocals.srt",
+            f"outputs/{job_id}/vocals.vtt",
+        )
 
-    srt_link = upload_file_to_gcs(
-        local_path=str(srt_output_path),
-        bucket_name=GCS_BUCKET,
-        destination_blob_name=srt_blob,
-    )
+        srt_link = upload_file_to_gcs(
+            local_path=str(srt_output_path),
+            bucket_name=GCS_BUCKET,
+            destination_blob_name=srt_blob,
+        )
 
-    vtt_link = upload_file_to_gcs(
-        local_path=str(vtt_path), bucket_name=GCS_BUCKET, destination_blob_name=vtt_blob
-    )
+        vtt_link = upload_file_to_gcs(
+            local_path=str(vtt_path),
+            bucket_name=GCS_BUCKET,
+            destination_blob_name=vtt_blob,
+        )
 
-    output_dict["gcs_links"]["srt"] = srt_link
-    output_dict["gcs_links"]["vtt"] = vtt_link
+        output_dict["gcs_links"]["srt"] = srt_link
+        output_dict["gcs_links"]["vtt"] = vtt_link
 
     # remove the original input file from gcs to save space
     remove_file_from_gcs(bucket_name=GCS_BUCKET, blob_name=input_blob_name)
@@ -238,9 +254,21 @@ def run_inference_job() -> Dict:
             if final_video_blob is not None
             else None
         ),
-        "subtitle_url": f"https://storage.googleapis.com/{GCS_BUCKET}/{vtt_blob}",
-        "vtt_url": f"https://storage.googleapis.com/{GCS_BUCKET}/{vtt_blob}",
-        "srt_url": f"https://storage.googleapis.com/{GCS_BUCKET}/{srt_blob}",
+        "subtitle_url": (
+            f"https://storage.googleapis.com/{GCS_BUCKET}/{vtt_blob}"
+            if vtt_blob
+            else None
+        ),
+        "vtt_url": (
+            f"https://storage.googleapis.com/{GCS_BUCKET}/{vtt_blob}"
+            if vtt_blob
+            else None
+        ),
+        "srt_url": (
+            f"https://storage.googleapis.com/{GCS_BUCKET}/{srt_blob}"
+            if srt_blob
+            else None
+        ),
     }
 
     result_path = output_dir / "result.json"
@@ -619,6 +647,8 @@ def run_transcription_job():
     job_id = os.environ["JOB_ID"]
     language: Optional[str] = os.environ.get("LANGUAGE") or None
     target_language: Optional[str] = os.environ.get("TARGET_LANGUAGE") or "en"
+    should_translate = os.environ.get("SHOULD_TRANSLATE", "true").lower() == "true"
+    should_romanize = os.environ.get("SHOULD_ROMANIZE", "true").lower() == "true"
     gcs_bucket = os.environ.get("GCS_BUCKET", GCS_BUCKET)
 
     output_dir = Path(f"/tmp/outputs/{job_id}")
@@ -641,6 +671,8 @@ def run_transcription_job():
         output_path=str(output_dir),
         language=language,
         target_language=target_language,
+        should_translate=should_translate,
+        should_romanize=should_romanize,
     )
 
     srt_output_path = Path(srt_output_path)
@@ -751,6 +783,7 @@ def run_build_video_job():
     """
     job_id = os.environ["JOB_ID"]
     is_video = os.environ.get("IS_VIDEO", "false").lower() == "true"
+    should_transcribe = os.environ.get("SHOULD_TRANSCRIBE", "true").lower() == "true"
     gcs_bucket = os.environ.get("GCS_BUCKET", GCS_BUCKET)
 
     output_dir = Path(f"/tmp/outputs/{job_id}")
@@ -812,18 +845,20 @@ def run_build_video_job():
             gcs_bucket=gcs_bucket,
             audio_blob=audio_blob,
         )
-        srt_output_path = Path(
-            download_file_from_gcs(
-                bucket_name=gcs_bucket,
-                source_blob_name=srt_blob,
-                local_path=f"/tmp/{job_id}/vocals.srt",
+        srt_output_path = None
+        if should_transcribe:
+            srt_output_path = Path(
+                download_file_from_gcs(
+                    bucket_name=gcs_bucket,
+                    source_blob_name=srt_blob,
+                    local_path=f"/tmp/{job_id}/vocals.srt",
+                )
             )
-        )
 
         build_video(
             video_path=str(video_path),
             audio_path=str(final_audio_local),
-            srt_path=str(srt_output_path),
+            srt_path=str(srt_output_path) if srt_output_path else None,
             output_path=str(final_video_path),
         )
 
@@ -861,8 +896,9 @@ def run_build_video_job():
 
         output_dict["gcs_links"]["audio"] = final_audio_link
 
-    output_dict["gcs_links"]["srt"] = f"gs://{gcs_bucket}/{srt_blob}"
-    output_dict["gcs_links"]["vtt"] = f"gs://{gcs_bucket}/{vtt_blob}"
+    if should_transcribe:
+        output_dict["gcs_links"]["srt"] = f"gs://{gcs_bucket}/{srt_blob}"
+        output_dict["gcs_links"]["vtt"] = f"gs://{gcs_bucket}/{vtt_blob}"
 
     # remove the original input file from gcs to save space
     input_blob_name = os.environ.get("INPUT_BLOB_NAME")
@@ -882,9 +918,21 @@ def run_build_video_job():
             if final_audio_blob is not None
             else None
         ),
-        "subtitle_url": f"https://storage.googleapis.com/{gcs_bucket}/{vtt_blob}",
-        "vtt_url": f"https://storage.googleapis.com/{gcs_bucket}/{vtt_blob}",
-        "srt_url": f"https://storage.googleapis.com/{gcs_bucket}/{srt_blob}",
+        "subtitle_url": (
+            f"https://storage.googleapis.com/{gcs_bucket}/{vtt_blob}"
+            if should_transcribe
+            else None
+        ),
+        "vtt_url": (
+            f"https://storage.googleapis.com/{gcs_bucket}/{vtt_blob}"
+            if should_transcribe
+            else None
+        ),
+        "srt_url": (
+            f"https://storage.googleapis.com/{gcs_bucket}/{srt_blob}"
+            if should_transcribe
+            else None
+        ),
     }
 
     result_path = output_dir / "result.json"
@@ -899,7 +947,9 @@ def run_build_video_job():
     )
 
     # remove all files except for the final video and subtitle files in gcs to save space
-    keep_blob_names = [srt_blob, vtt_blob, f"outputs/{job_id}/result.json"]
+    keep_blob_names = [f"outputs/{job_id}/result.json"]
+    if should_transcribe:
+        keep_blob_names.extend([srt_blob, vtt_blob])
     if final_video_blob is not None:
         keep_blob_names.append(final_video_blob)
     if final_audio_blob is not None:

@@ -325,7 +325,10 @@ def split_sources(video_path: str, output_dir: str) -> Tuple[Path, Path]:
 
 
 def build_video(
-    video_path: str, audio_path: str, srt_path: str, output_path: str
+    video_path: str,
+    audio_path: str,
+    srt_path: Optional[str],
+    output_path: str,
 ) -> Path:
     """
     Combines video and audio sources into a single video file with subtitles.
@@ -333,7 +336,8 @@ def build_video(
     Args:
         video_path (str): The path to the input video file (without audio).
         audio_path (str): The path to the input audio file.
-        srt_path (str): The path to the input subtitle file (.srt).
+        srt_path (Optional[str]): The path to the input subtitle file (.srt).
+            If omitted, the output video is built with video and audio only.
         output_path (str): The path where the output video file will be saved.
 
     Returns:
@@ -341,37 +345,57 @@ def build_video(
     """
     video_path = Path(video_path)
     audio_path = Path(audio_path)
-    srt_path = Path(srt_path)
     output_path = Path(output_path)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    command = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(video_path),
-        "-i",
-        str(audio_path),
-        "-i",
-        str(srt_path),
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
-        "-map",
-        "2:s:0",
-        "-c:v",
-        "copy",
-        "-c:a",
-        "aac",
-        "-c:s",
-        "mov_text",
-        "-disposition:s:0",
-        "default",
-        # "-shortest",
-        str(output_path),
-    ]
+    if srt_path:
+        srt_path = Path(srt_path)
+        command = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(video_path),
+            "-i",
+            str(audio_path),
+            "-i",
+            str(srt_path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-map",
+            "2:s:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-c:s",
+            "mov_text",
+            "-disposition:s:0",
+            "default",
+            # "-shortest",
+            str(output_path),
+        ]
+    else:
+        command = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(video_path),
+            "-i",
+            str(audio_path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            # "-shortest",
+            str(output_path),
+        ]
 
     try:
         subprocess.run(command, check=True)

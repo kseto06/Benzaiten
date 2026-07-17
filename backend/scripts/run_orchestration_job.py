@@ -10,6 +10,9 @@ if __name__ == "__main__":
     content_type = os.environ.get("CONTENT_TYPE")
     should_decrowd = os.environ.get("SHOULD_DECROWD", "false").lower() == "true"
     fast_decrowd = os.environ.get("FAST_DECROWD", "false").lower() == "true"
+    should_transcribe = os.environ.get("SHOULD_TRANSCRIBE", "true").lower() == "true"
+    should_translate = os.environ.get("SHOULD_TRANSLATE", "true").lower() == "true"
+    should_romanize = os.environ.get("SHOULD_ROMANIZE", "true").lower() == "true"
     language = os.environ.get("LANGUAGE") or None
     target_language = os.environ.get("TARGET_LANGUAGE") or "en"
 
@@ -20,6 +23,9 @@ if __name__ == "__main__":
         content_type=content_type,
         should_decrowd=should_decrowd,
         fast_decrowd=fast_decrowd,
+        should_transcribe=should_transcribe,
+        should_translate=should_translate,
+        should_romanize=should_romanize,
         language=language,
         target_language=target_language,
     )

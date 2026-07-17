@@ -99,7 +99,7 @@ type JobStatusResponse = {
   job_id: string;
   video_url?: string;
   audio_url?: string;
-  subtitle_url?: string;
+  subtitle_url?: string | null;
   error?: string;
 };
 
@@ -491,7 +491,7 @@ function getFirebaseAuthErrorMessage(error: unknown): string {
   }
 }
 
-function getGcsObjectName(url?: string): string | undefined {
+function getGcsObjectName(url?: string | null): string | undefined {
   if (!url) {
     return undefined;
   }
@@ -682,6 +682,10 @@ function setupLandingInteractions(): void {
   const fileInput = queryElement<HTMLInputElement>("#fileInput");
   const uploadZone = queryElement<HTMLDivElement>("#uploadZone");
   const selectedFile = queryElement<HTMLDivElement>("#selectedFile");
+  const targetLanguageInput = queryElement<HTMLInputElement>("#targetLanguageInput");
+  const shouldTranscribe = queryElement<HTMLInputElement>("#shouldTranscribeInput");
+  const shouldRomanize = queryElement<HTMLInputElement>("#shouldRomanizeInput");
+  const shouldTranslate = queryElement<HTMLInputElement>("#shouldTranslateInput");
   const shouldDecrowd = queryElement<HTMLInputElement>("#shouldDecrowdInput");
   const fastDecrowd = queryElement<HTMLInputElement>("#fastDecrowdInput");
   const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
@@ -914,6 +918,37 @@ function setupLandingInteractions(): void {
   for (const eventName of ["dragleave", "drop"]) {
     uploadZone.addEventListener(eventName, () => uploadZone.classList.remove("is-dragging"));
   }
+
+  let lastTranslateChoice = shouldTranslate.checked;
+  let lastRomanizeChoice = shouldRomanize.checked;
+  const syncTranscriptionDependentControls = (): void => {
+    if (!shouldTranscribe.checked) {
+      lastRomanizeChoice = shouldRomanize.checked;
+      lastTranslateChoice = shouldTranslate.checked;
+      shouldRomanize.checked = false;
+      shouldRomanize.disabled = true;
+      shouldTranslate.checked = false;
+      shouldTranslate.disabled = true;
+      targetLanguageInput.disabled = true;
+      return;
+    }
+
+    shouldRomanize.disabled = false;
+    shouldRomanize.checked = lastRomanizeChoice;
+    shouldTranslate.disabled = false;
+    shouldTranslate.checked = lastTranslateChoice;
+    targetLanguageInput.disabled = !shouldTranslate.checked;
+  };
+
+  shouldTranscribe.addEventListener("change", syncTranscriptionDependentControls);
+  shouldRomanize.addEventListener("change", () => {
+    lastRomanizeChoice = shouldRomanize.checked;
+  });
+  shouldTranslate.addEventListener("change", () => {
+    lastTranslateChoice = shouldTranslate.checked;
+    targetLanguageInput.disabled = !shouldTranslate.checked;
+  });
+  syncTranscriptionDependentControls();
 
   shouldDecrowd.addEventListener("change", () => {
     fastDecrowd.disabled = !shouldDecrowd.checked;
@@ -1695,7 +1730,7 @@ function renderPipelineStages(stages: PipelineStage[], activeIndex: number): voi
   }).join("");
 }
 
-function createProgressController(shouldDecrowd: boolean): {
+function createProgressController(shouldDecrowd: boolean, shouldTranscribe: boolean): {
   update: (objects: GcsObject[], status: JobStatusResponse["status"]) => void;
   finish: () => void;
   stop: () => void;
@@ -1717,7 +1752,12 @@ function createProgressController(shouldDecrowd: boolean): {
       complete: !shouldDecrowd,
       skipped: !shouldDecrowd,
     },
-    { id: "transcribe", label: "Transcribe lyrics", complete: false },
+    {
+      id: "transcribe",
+      label: shouldTranscribe ? "Transcribe lyrics" : "Transcription skipped",
+      complete: !shouldTranscribe,
+      skipped: !shouldTranscribe,
+    },
     { id: "compose", label: "Compose video", complete: false },
   ];
 
@@ -1751,7 +1791,7 @@ function createProgressController(shouldDecrowd: boolean): {
       name.includes("/decrowd/")
       || name.endsWith("/instrumental_(decrowd).mp3")
     ));
-    const transcriptionComplete = names.some(name => (
+    const transcriptionComplete = !shouldTranscribe || names.some(name => (
       name.includes("/transcription/vocals.vtt")
       || name.endsWith("/vocals.vtt")
     ));
@@ -1786,9 +1826,14 @@ function createProgressController(shouldDecrowd: boolean): {
       detail.textContent = shouldDecrowd
         ? "Crowd reduction and transcription are running."
         : "Transcription is running.";
+      if (!shouldTranscribe) {
+        detail.textContent = "Crowd reduction is running.";
+      }
     } else {
       title.textContent = "Composing the final media";
-      detail.textContent = "Combining the processed audio, video, and subtitles.";
+      detail.textContent = shouldTranscribe
+        ? "Combining the processed audio, video, and subtitles."
+        : "Combining the processed audio and video.";
     }
   };
 
@@ -1812,12 +1857,17 @@ async function handleRunInference(): Promise<void> {
   const languageInput = queryElement<HTMLInputElement>("#languageInput");
   const targetLanguageInput = queryElement<HTMLInputElement>("#targetLanguageInput");
   const projectNameInput = queryElement<HTMLInputElement>("#projectNameInput");
+  const shouldTranscribeInput = queryElement<HTMLInputElement>("#shouldTranscribeInput");
+  const shouldRomanizeInput = queryElement<HTMLInputElement>("#shouldRomanizeInput");
+  const shouldTranslateInput = queryElement<HTMLInputElement>("#shouldTranslateInput");
   const shouldDecrowdInput = queryElement<HTMLInputElement>("#shouldDecrowdInput");
   const fastDecrowdInput = queryElement<HTMLInputElement>("#fastDecrowdInput");
   const runButton = queryElement<HTMLButtonElement>("#runInferenceButton");
   const file = fileInput.files?.[0];
   const language = languageInput.value.trim();
   const targetLanguage = targetLanguageInput.value.trim() || "en";
+  const shouldRomanize = shouldTranscribeInput.checked && shouldRomanizeInput.checked;
+  const shouldTranslate = shouldTranscribeInput.checked && shouldTranslateInput.checked;
 
   if (!file) {
     setLandingStatus("Choose a video or audio file first.", true);
@@ -1827,13 +1877,16 @@ async function handleRunInference(): Promise<void> {
     setLandingStatus("The selected file must be video or audio.", true);
     return;
   }
-  if (!language) {
+  if (shouldTranscribeInput.checked && !language) {
     setLandingStatus("Enter an audio language code.", true);
     return;
   }
 
   runButton.disabled = true;
-  const progress = createProgressController(shouldDecrowdInput.checked);
+  const progress = createProgressController(
+    shouldDecrowdInput.checked,
+    shouldTranscribeInput.checked,
+  );
 
   try {
     setLandingStatus("Uploading media and starting orchestration...");
@@ -1841,6 +1894,9 @@ async function handleRunInference(): Promise<void> {
     formData.append("file", file);
     formData.append("language", language);
     formData.append("target_language", targetLanguage);
+    formData.append("should_transcribe", shouldTranscribeInput.checked ? "true" : "false");
+    formData.append("should_romanize", shouldRomanize ? "true" : "false");
+    formData.append("should_translate", shouldTranslate ? "true" : "false");
     formData.append("should_decrowd", shouldDecrowdInput.checked ? "true" : "false");
     formData.append(
       "fast_decrowd",
@@ -1880,7 +1936,7 @@ async function handleRunInference(): Promise<void> {
       jobId: startData.job_id,
       mediaUrl,
       mediaObjectName: getGcsObjectName(mediaUrl),
-      subtitleUrl: completed.subtitle_url,
+      subtitleUrl: completed.subtitle_url || undefined,
       subtitleObjectName: getGcsObjectName(completed.subtitle_url),
       mediaType: completed.video_url ? "video" : "audio",
     });
