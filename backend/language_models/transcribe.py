@@ -35,14 +35,15 @@ def transcribe(
     language: Optional[str] = None,
     target_language: Optional[str] = "en",
     model_size: str = "large-v3-turbo",
-    batch_size: int = 8,
+    should_translate: bool = True,
+    should_romanize: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Run inference on the Whisper model. Transcribes input data and outputs segments with timestamps into .srt file.
-    If language is different than English, model will save in the .srt file three lines per timestamp:
+    Model output is saved as up to three lines per timestamp:
         1. Original transcription in the original language
         2. Romanization of the original transcription (if applicable)
-        3. Target-language translation of the original transcription
+        3. Target-language translation of the original transcription, when enabled
 
     Args:
         audio_path:
@@ -61,6 +62,10 @@ def transcribe(
             automatically within the first 30s of the audio.
         target_language:
             Language code to translate subtitles into. Defaults to "en".
+        should_translate:
+            Whether to load the translation model and add translated subtitle lines.
+        should_romanize:
+            Whether to add romanized subtitle lines.
     """
     results = []
     device = "cuda" if torch.cuda.is_available() else "auto"
@@ -95,7 +100,8 @@ def transcribe(
     if language is None:
         language = info.language
     target_language = (target_language or "en").strip() or "en"
-    init(translate_language_code=language, target_language_code=target_language)
+    if should_translate:
+        init(translate_language_code=language, target_language_code=target_language)
 
     for segment in segments:
         # print("[%.2fs -> %.2fs] %s" % (segment.start, segment.end, segment.text))
@@ -107,10 +113,20 @@ def transcribe(
                 "end": seconds_to_srt_time(segment.end),
                 "text": {  # text, romanized, translated
                     "original": text,
-                    "romanization": romanize(
-                        text=text, translate_language_code=language
+                    **(
+                        {
+                            "romanization": romanize(
+                                text=text, translate_language_code=language
+                            )
+                        }
+                        if should_romanize
+                        else {}
                     ),
-                    "translation": translate(text=text),
+                    **(
+                        {"translation": translate(text=text)}
+                        if should_translate
+                        else {}
+                    ),
                 },
             }
         )
@@ -123,6 +139,8 @@ def run_srt_inference(
     language: Optional[str] = None,
     target_language: Optional[str] = "en",
     model_size: str = "large-v3-turbo",
+    should_translate: bool = True,
+    should_romanize: bool = True,
     output_path: str = "./backend/tests/transcription_outputs",
 ) -> str:
     """
@@ -131,6 +149,8 @@ def run_srt_inference(
         segments: List of dictionaries containing 'start', 'end', and 'text' for each segment.
         language: Language code (e.g. "en", "fr", "de") for the input audio.
         target_language: Language code to translate subtitles into.
+        should_translate: Whether to add target-language translation subtitle lines.
+        should_romanize: Whether to add romanized subtitle lines.
         output_path: Path to save the output .srt file.
     """
     output_path = Path(output_path)
@@ -146,17 +166,20 @@ def run_srt_inference(
         model_size=model_size,
         language=language,
         target_language=target_language,
+        should_translate=should_translate,
+        should_romanize=should_romanize,
     )
 
     with open(output_path, "w", encoding="utf-8") as f:
         for i, segment in enumerate(segments, start=1):
             f.write(f"{i}\n")
             f.write(f"{segment['start']} --> {segment['end']}\n")
-            f.write(
-                f"{segment['text']['original']}\n"
-                f"{segment['text']['romanization']}\n"
-                f"{segment['text']['translation']}\n\n"
-            )
+            text_lines = [segment["text"]["original"]]
+            if should_romanize and "romanization" in segment["text"]:
+                text_lines.append(segment["text"]["romanization"])
+            if should_translate and "translation" in segment["text"]:
+                text_lines.append(segment["text"]["translation"])
+            f.write("\n".join(text_lines) + "\n\n")
 
     return str(output_path)
 

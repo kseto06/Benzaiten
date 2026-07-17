@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)
 OUTPUT_ROOT="${BENZAITEN_SMOKE_OUTPUT_DIR:-$ROOT_DIR/test_outputs/local_pipeline_smoke}"
 RUN_DECROWD="${BENZAITEN_RUN_DECROWD:-true}"
+RUN_TRANSCRIPTION="${BENZAITEN_RUN_TRANSCRIPTION:-true}"
 
 VIDEO_INPUT="$OUTPUT_ROOT/source_separation/input_video.mp4"
 SRT_INPUT="$OUTPUT_ROOT/transcription/i_miss_you_cut_test.srt"
@@ -18,7 +19,17 @@ else
   exit 1
 fi
 
-for input_path in "$VIDEO_INPUT" "$AUDIO_INPUT" "$SRT_INPUT"; do
+if [[ "$RUN_TRANSCRIPTION" != "true" && "$RUN_TRANSCRIPTION" != "false" ]]; then
+  echo "Invalid BENZAITEN_RUN_TRANSCRIPTION value: $RUN_TRANSCRIPTION. Expected 'true' or 'false'." >&2
+  exit 1
+fi
+
+required_inputs=("$VIDEO_INPUT" "$AUDIO_INPUT")
+if [[ "$RUN_TRANSCRIPTION" == "true" ]]; then
+  required_inputs+=("$SRT_INPUT")
+fi
+
+for input_path in "${required_inputs[@]}"; do
   if [[ ! -f "$input_path" ]]; then
     echo "Expected pipeline input is missing: $input_path" >&2
     exit 1
@@ -31,7 +42,7 @@ mkdir -p "$OUTPUT_DIR"
 
 cd "$ROOT_DIR"
 
-python - "$VIDEO_INPUT" "$AUDIO_INPUT" "$SRT_INPUT" "$OUTPUT_DIR" <<'PY'
+python - "$VIDEO_INPUT" "$AUDIO_INPUT" "$SRT_INPUT" "$OUTPUT_DIR" "$RUN_TRANSCRIPTION" "$RUN_DECROWD" <<'PY'
 import subprocess
 import sys
 from pathlib import Path
@@ -69,18 +80,22 @@ def probe_duration(path: Path) -> float:
 
 video_input = Path(sys.argv[1]).resolve()
 audio_input = Path(sys.argv[2]).resolve()
-srt_input = Path(sys.argv[3]).resolve()
+srt_input = Path(sys.argv[3]).resolve() if sys.argv[5] == "true" else None
 output_dir = Path(sys.argv[4]).resolve()
+run_transcription = sys.argv[5]
+run_decrowd = sys.argv[6] if len(sys.argv) > 6 else "unknown"
 
-for path in [video_input, audio_input, srt_input]:
+for path in [video_input, audio_input]:
     require_file(path)
+if srt_input is not None:
+    require_file(srt_input)
 
 final_video = output_dir / "final_video.mp4"
 
 build_video(
     video_path=str(video_input),
     audio_path=str(audio_input),
-    srt_path=str(srt_input),
+    srt_path=str(srt_input) if srt_input else None,
     output_path=str(final_video),
 )
 
@@ -91,7 +106,8 @@ if final_duration <= 0:
     raise RuntimeError(f"Expected a non-zero video duration, got {final_duration}")
 
 print("Build video stage outputs verified successfully")
-print(f"run_decrowd={sys.argv[5] if len(sys.argv) > 5 else 'unknown'}")
+print(f"run_decrowd={run_decrowd}")
+print(f"run_transcription={run_transcription}")
 print(f"video_input={video_input}")
 print(f"audio_input={audio_input}")
 print(f"srt_input={srt_input}")

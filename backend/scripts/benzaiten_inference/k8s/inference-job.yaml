@@ -39,6 +39,15 @@ spec:
           - name: SHOULD_DECROWD
             value: "true"
 
+          - name: SHOULD_TRANSCRIBE
+            value: "true"
+
+          - name: SHOULD_TRANSLATE
+            value: "true"
+
+          - name: SHOULD_ROMANIZE
+            value: "true"
+
           - name: LANGUAGE
             value: "mul"
 
