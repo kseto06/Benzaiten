@@ -1,56 +1,78 @@
 <div class="app-shell">
-  <header class="site-header">
-    <a class="brand" href="#top" aria-label="Benzaiten home">
-      <span class="brand-mark">B</span>
-      <span>Benzaiten</span>
-    </a>
-    <nav class="header-nav" aria-label="Main navigation">
-      <a href="#create">Create</a>
-      <a href="#library">Library</a>
-      <a href="#workflow">Workflow</a>
-      <a class="button button-quiet" href="#create">Start a project</a>
-    </nav>
-    <div class="auth-panel" id="authPanel">
-      <span class="auth-status" id="authStatus">Checking sign-in...</span>
-      <span class="auth-user" id="authUser" hidden></span>
-      <button class="auth-signin-button" id="loginButton" type="button">
-        <span>Sign In</span>
-      </button>
-      <button
-        class="auth-avatar-button"
-        id="accountMenuButton"
-        type="button"
-        aria-label="Open account menu"
-        aria-haspopup="menu"
-        aria-expanded="false"
-        hidden
-      >
-        <span class="auth-avatar auth-avatar-placeholder" id="accountAvatarFallback" aria-hidden="true">
-          <svg viewBox="0 0 24 24">
-            <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0"></path>
-          </svg>
-        </span>
-        <img class="auth-avatar-image" id="accountAvatarImage" alt="" hidden />
-      </button>
-      <div class="account-menu" id="accountMenu" role="menu" hidden>
-        <div class="account-menu-profile">
-          <span class="auth-avatar auth-avatar-placeholder" id="accountMenuAvatarFallback" aria-hidden="true">
+  <div class="landing-sticky-header">
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Benzaiten home">
+        <span class="brand-mark">B</span>
+        <span>Benzaiten</span>
+      </a>
+      <nav class="header-nav" aria-label="Main navigation">
+        <a href="#create">Create</a>
+        <a href="#library">Library</a>
+        <a href="#workflow">Workflow</a>
+        <a class="button button-quiet" href="#create">Start a project</a>
+      </nav>
+      <div class="auth-panel" id="authPanel">
+        <span class="auth-status" id="authStatus">Checking sign-in...</span>
+        <span class="auth-user" id="authUser" hidden></span>
+        <button class="auth-signin-button" id="loginButton" type="button">
+          <span>Sign In</span>
+        </button>
+        <button
+          class="auth-avatar-button"
+          id="accountMenuButton"
+          type="button"
+          aria-label="Open account menu"
+          aria-haspopup="menu"
+          aria-expanded="false"
+          hidden
+        >
+          <span class="auth-avatar auth-avatar-placeholder" id="accountAvatarFallback" aria-hidden="true">
             <svg viewBox="0 0 24 24">
               <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0"></path>
             </svg>
           </span>
-          <img class="auth-avatar-image" id="accountMenuAvatarImage" alt="" hidden />
-          <div>
-            <strong id="accountMenuName">Benzaiten user</strong>
-            <span id="accountMenuEmail">Signed in</span>
-          </div>
-        </div>
-        <button class="account-menu-item" id="logoutButton" type="button" role="menuitem">
-          Sign out
+          <img class="auth-avatar-image" id="accountAvatarImage" alt="" hidden />
         </button>
+        <div class="account-menu" id="accountMenu" role="menu" hidden>
+          <div class="account-menu-profile">
+            <span class="auth-avatar auth-avatar-placeholder" id="accountMenuAvatarFallback" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0"></path>
+              </svg>
+            </span>
+            <img class="auth-avatar-image" id="accountMenuAvatarImage" alt="" hidden />
+            <div>
+              <strong id="accountMenuName">Benzaiten user</strong>
+              <span id="accountMenuEmail">Signed in</span>
+            </div>
+          </div>
+          <button class="account-menu-item" id="logoutButton" type="button" role="menuitem">
+            Sign out
+          </button>
+        </div>
       </div>
+    </header>
+    <div
+      class="landing-backend-warning"
+      id="landingBackendWarning"
+      role="status"
+      aria-live="polite"
+      hidden
+    ></div>
+  </div>
+
+  <div
+    class="landing-loading"
+    id="landingLoading"
+    aria-hidden="true"
+    hidden
+  >
+    <div class="landing-loading-card" role="status" aria-live="polite">
+      <div class="landing-loading-spinner" aria-hidden="true"></div>
+      <p class="section-kicker" id="landingLoadingKicker">Loading</p>
+      <h2 id="landingLoadingTitle">Loading Benzaiten...</h2>
     </div>
-  </header>
+  </div>
 
   <main>
     <section class="hero-section" id="top">

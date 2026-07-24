@@ -1,7 +1,14 @@
 import { createUserWithEmailAndPassword, GoogleAuthProvider, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup, signOut } from "firebase/auth";
 import landingPageHtml from "../../pages/landing.html?raw";
 import { app } from "./appRoot";
-import { API_BASE_URL, LOG_PREFIX } from "../common/config";
+import {
+  API_BASE_URL,
+  BACKEND_READINESS_POLL_INTERVAL_MS,
+  BACKEND_READINESS_TIMEOUT_MS,
+  BACKEND_UNAVAILABLE_WARNING,
+  LANDING_STARTUP_LOADING_TIMEOUT_MS,
+  LOG_PREFIX,
+} from "../common/config";
 import {
   authFetch,
   authJsonFetch,
@@ -11,7 +18,7 @@ import {
   getFirebaseAuthErrorMessage,
   waitForAuthReady,
 } from "./auth";
-import { listJobObjects, listLibraryProjects } from "./api";
+import { checkBackendReadiness, listJobObjects, listLibraryProjects } from "./api";
 import { getApiError } from "../common/errors";
 import { escapeHtml, queryElement } from "../common/dom";
 import { editorProjectFromLibraryProject } from "../editor/state";
@@ -37,6 +44,89 @@ let landingDocumentListeners: AbortController | null = null;
 let firebaseConfigWarningLogged = false;
 let activeLandingCallbacks: LandingCallbacks | null = null;
 
+function setupBackendReadinessWarning(
+  warning: HTMLElement,
+  landingSignal: AbortSignal,
+): Promise<void> {
+  let lastReadyState: boolean | null = null;
+  let requestInFlight = false;
+  let initialCheckComplete = false;
+  let resolveInitialCheck!: () => void;
+  const initialCheck = new Promise<void>(resolve => {
+    resolveInitialCheck = resolve;
+  });
+
+  const completeInitialCheck = (): void => {
+    if (!initialCheckComplete) {
+      initialCheckComplete = true;
+      resolveInitialCheck();
+    }
+  };
+
+  const updateWarning = (isReady: boolean): void => {
+    warning.textContent = isReady ? "" : BACKEND_UNAVAILABLE_WARNING;
+    warning.hidden = isReady;
+    if (lastReadyState !== isReady) {
+      const message = isReady
+        ? "GCP backend services are ready."
+        : "GCP backend services are unavailable.";
+      (isReady ? console.info : console.warn)(`${LOG_PREFIX} ${message}`);
+      lastReadyState = isReady;
+    }
+  };
+
+  const checkReadiness = async (): Promise<void> => {
+    if (requestInFlight || landingSignal.aborted) {
+      return;
+    }
+
+    requestInFlight = true;
+    const requestController = new AbortController();
+    const abortRequest = (): void => requestController.abort();
+    landingSignal.addEventListener("abort", abortRequest, { once: true });
+    const timeout = window.setTimeout(
+      () => requestController.abort(),
+      BACKEND_READINESS_TIMEOUT_MS,
+    );
+
+    try {
+      updateWarning(await checkBackendReadiness(requestController.signal));
+    } catch {
+      if (!landingSignal.aborted) {
+        updateWarning(false);
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      landingSignal.removeEventListener("abort", abortRequest);
+      requestInFlight = false;
+      completeInitialCheck();
+    }
+  };
+
+  const interval = window.setInterval(
+    () => void checkReadiness(),
+    BACKEND_READINESS_POLL_INTERVAL_MS,
+  );
+  landingSignal.addEventListener("abort", () => {
+    window.clearInterval(interval);
+    completeInitialCheck();
+  }, { once: true });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      void checkReadiness();
+    }
+  }, { signal: landingSignal });
+  window.addEventListener("online", () => void checkReadiness(), {
+    signal: landingSignal,
+  });
+  window.addEventListener("offline", () => updateWarning(false), {
+    signal: landingSignal,
+  });
+
+  void checkReadiness();
+  return initialCheck;
+}
+
 function getLandingCallbacks(): LandingCallbacks {
   if (!activeLandingCallbacks) {
     throw new Error("Landing callbacks have not been initialized.");
@@ -54,17 +144,42 @@ function setLandingStatus(message: string, isError = false): void {
   console.log(`${LOG_PREFIX} ${message}`);
 }
 
+function setLandingLoading(
+  isVisible: boolean,
+  copy?: { kicker: string; title: string; detail: string },
+): void {
+  const loadingPage = queryElement<HTMLDivElement>("#landingLoading");
+  if (copy) {
+    queryElement<HTMLElement>("#landingLoadingKicker").textContent = copy.kicker;
+    queryElement<HTMLElement>("#landingLoadingTitle").textContent = copy.title;
+    const detail = document.querySelector<HTMLElement>("#landingLoadingDetail");
+    if (detail) {
+      detail.textContent = copy.detail;
+    }
+  }
+  loadingPage.hidden = !isVisible;
+  loadingPage.setAttribute("aria-hidden", isVisible ? "false" : "true");
+  document.body.classList.toggle("is-landing-loading", isVisible);
+}
+
 export function renderLanding(callbacks: LandingCallbacks): void {
   activeLandingCallbacks = callbacks;
   document.title = "Benzaiten | AI-Powered Karaoke Orchestration Video Studio";
   app.innerHTML = landingPageHtml;
+  setLandingLoading(true, {
+    kicker: "Checking cloud services & preparing the workspace...",
+    title: "Loading Benzaiten...",
+    detail: "",
+  });
   setupLandingInteractions(callbacks);
 }
 
 function setupLandingInteractions(callbacks: LandingCallbacks): void {
   landingDocumentListeners?.abort();
   landingDocumentListeners = new AbortController();
-  const documentListenerOptions = { signal: landingDocumentListeners.signal };
+  const landingSignal = landingDocumentListeners.signal;
+  const documentListenerOptions = { signal: landingSignal };
+  const backendWarning = queryElement<HTMLDivElement>("#landingBackendWarning");
   const fileInput = queryElement<HTMLInputElement>("#fileInput");
   const uploadZone = queryElement<HTMLDivElement>("#uploadZone");
   const selectedFile = queryElement<HTMLDivElement>("#selectedFile");
@@ -118,6 +233,10 @@ function setupLandingInteractions(callbacks: LandingCallbacks): void {
   let libraryLoadPromise: Promise<void> | null = null;
   let authStateVersion = 0;
   let libraryUnavailableReason: VolatileProjectReason | null = null;
+  const initialReadinessCheck = setupBackendReadinessWarning(
+    backendWarning,
+    landingSignal,
+  );
   setupWorkflowZoom();
 
   const invalidateLibraryRequests = (): number => {
@@ -991,11 +1110,26 @@ function setupLandingInteractions(callbacks: LandingCallbacks): void {
     }
   }, documentListenerOptions);
 
-  void (async () => {
+  const initialAuthAndLibraryLoad = (async () => {
     await waitForAuthReady();
     renderAuthState();
     await refreshLibrary();
   })();
+  const startupLoadingTimeout = window.setTimeout(() => {
+    if (!landingSignal.aborted) {
+      setLandingLoading(false);
+    }
+  }, LANDING_STARTUP_LOADING_TIMEOUT_MS);
+  landingSignal.addEventListener("abort", () => {
+    window.clearTimeout(startupLoadingTimeout);
+    document.body.classList.remove("is-landing-loading");
+  }, { once: true });
+  void Promise.allSettled([initialReadinessCheck, initialAuthAndLibraryLoad]).then(() => {
+    window.clearTimeout(startupLoadingTimeout);
+    if (!landingSignal.aborted) {
+      setLandingLoading(false);
+    }
+  });
 }
 
 function setupWorkflowZoom(): void {
@@ -1269,12 +1403,16 @@ async function handleRunInference(): Promise<void> {
   }
 
   runButton.disabled = true;
-  const progress = createProgressController(
-    shouldDecrowdInput.checked,
-    shouldTranscribeInput.checked,
-  );
+  const progressPanel = queryElement<HTMLDivElement>("#progressPanel");
+  progressPanel.classList.remove("is-visible");
+  let progress: ReturnType<typeof createProgressController> | null = null;
 
   try {
+    setLandingLoading(true, {
+      kicker: "Preparing orchestration",
+      title: "Starting your project",
+      detail: "Uploading your media and preparing the cloud pipeline.",
+    });
     setLandingStatus("Uploading media and starting orchestration...");
     const formData = new FormData();
     formData.append("file", file);
@@ -1303,6 +1441,14 @@ async function handleRunInference(): Promise<void> {
 
     const startData = await response.json() as JobStartResponse;
     localStorage.setItem("job_id", startData.job_id);
+    setLandingLoading(false);
+    progress = createProgressController(
+      shouldDecrowdInput.checked,
+      shouldTranscribeInput.checked,
+    );
+    window.requestAnimationFrame(() => {
+      progressPanel.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
     setLandingStatus(`Job ${startData.job_id} is running.`);
     const completed = await pollInferenceJob(startData.job_id, progress);
     if (completed.status === "failed") {
@@ -1331,7 +1477,8 @@ async function handleRunInference(): Promise<void> {
     setLandingStatus(`Inference failed: ${message}`, true);
     console.error(`${LOG_PREFIX} Inference failed`, error);
   } finally {
-    progress.stop();
+    setLandingLoading(false);
+    progress?.stop();
     runButton.disabled = false;
   }
 }

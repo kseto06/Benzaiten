@@ -1,7 +1,26 @@
 import { API_BASE_URL } from "../common/config";
 import { getApiError } from "../common/errors";
-import type { GcsObject, GcsObjectListResponse, LibraryProject, ProjectListResponse } from "../common/types";
+import type {
+  BackendReadinessResponse,
+  GcsObject,
+  GcsObjectListResponse,
+  LibraryProject,
+  ProjectListResponse,
+} from "../common/types";
 import { authFetch } from "./auth";
+
+export async function checkBackendReadiness(signal?: AbortSignal): Promise<boolean> {
+  const response = await fetch(`${API_BASE_URL}/health/check_gke_ready`, {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    return false;
+  }
+  const data = await response.json() as BackendReadinessResponse;
+  return data.status === "ready";
+}
 
 export async function listJobObjects(jobId: string): Promise<GcsObject[]> {
   const response = await authFetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/objects`);

@@ -13,6 +13,13 @@ export const LOG_PREFIX = "[Benzaiten]";
 export const DEFAULT_KARAOKE_HIGHLIGHT_COLOR = "#f4a6c1";
 export const VOLATILE_SIGNED_OUT_WARNING = "You're not signed in, so your project won't be saved.";
 export const VOLATILE_GOOGLE_ERROR_WARNING = "Google error - project won't be saved.";
+export const BACKEND_UNAVAILABLE_WARNING = (
+  "⚠️ Our GCP backend services are currently down, functionalities are limited at the moment.\n" +
+  "You can still start a new project in the video editor."
+);
+export const BACKEND_READINESS_POLL_INTERVAL_MS = 30_000;
+export const BACKEND_READINESS_TIMEOUT_MS = 5_000;
+export const LANDING_STARTUP_LOADING_TIMEOUT_MS = 8_000;
 
 export const BROWSER_EXPORT_FORMAT_CANDIDATES: BrowserExportFormat[] = [
   {

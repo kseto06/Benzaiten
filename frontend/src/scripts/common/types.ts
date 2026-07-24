@@ -9,6 +9,10 @@ export type BrowserExportFormat = {
   isFallback: boolean;
 };
 
+export type BackendReadinessResponse = {
+  status: "ready" | "unavailable";
+};
+
 export type JobStartResponse = {
   status: "queued";
   job_id: string;
