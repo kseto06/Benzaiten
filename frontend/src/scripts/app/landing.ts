@@ -47,6 +47,10 @@ let activeLandingCallbacks: LandingCallbacks | null = null;
 function setupBackendReadinessWarning(
   warning: HTMLElement,
   landingSignal: AbortSignal,
+  onReadinessChange?: (
+    isReady: boolean,
+    previousReadyState: boolean | null,
+  ) => void,
 ): Promise<void> {
   let lastReadyState: boolean | null = null;
   let requestInFlight = false;
@@ -64,14 +68,16 @@ function setupBackendReadinessWarning(
   };
 
   const updateWarning = (isReady: boolean): void => {
+    const previousReadyState = lastReadyState;
     warning.textContent = isReady ? "" : BACKEND_UNAVAILABLE_WARNING;
     warning.hidden = isReady;
-    if (lastReadyState !== isReady) {
+    if (previousReadyState !== isReady) {
       const message = isReady
         ? "GCP backend services are ready."
         : "GCP backend services are unavailable.";
       (isReady ? console.info : console.warn)(`${LOG_PREFIX} ${message}`);
       lastReadyState = isReady;
+      onReadinessChange?.(isReady, previousReadyState);
     }
   };
 
@@ -233,9 +239,15 @@ function setupLandingInteractions(callbacks: LandingCallbacks): void {
   let libraryLoadPromise: Promise<void> | null = null;
   let authStateVersion = 0;
   let libraryUnavailableReason: VolatileProjectReason | null = null;
+  let refreshBackendDependentState: (() => void) | null = null;
   const initialReadinessCheck = setupBackendReadinessWarning(
     backendWarning,
     landingSignal,
+    (isReady, previousReadyState) => {
+      if (isReady && previousReadyState === false) {
+        refreshBackendDependentState?.();
+      }
+    },
   );
   setupWorkflowZoom();
 
@@ -388,6 +400,13 @@ function setupLandingInteractions(callbacks: LandingCallbacks): void {
     })();
     libraryLoadPromise = loadPromise;
     await loadPromise;
+  };
+  refreshBackendDependentState = () => {
+    if (!currentUser || landingSignal.aborted) {
+      return;
+    }
+    const requestVersion = invalidateLibraryRequests();
+    void refreshLibrary(requestVersion);
   };
 
   const closeLibraryMenus = (): void => {
@@ -1409,9 +1428,9 @@ async function handleRunInference(): Promise<void> {
 
   try {
     setLandingLoading(true, {
-      kicker: "Preparing orchestration",
-      title: "Starting your project",
-      detail: "Uploading your media and preparing the cloud pipeline.",
+      kicker: "Uploading your media and preparing the orchestration pipeline.",
+      title: "Starting karaoke inference...",
+      detail: "",
     });
     setLandingStatus("Uploading media and starting orchestration...");
     const formData = new FormData();
