@@ -1,5 +1,5 @@
 from fastapi import Depends, FastAPI, Header, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from google.cloud import storage
@@ -951,6 +951,39 @@ def root():
     Note: this is basically only here for testing if the server is running successfully with curl
     """
     return {"status": "ok", "message": "inference server is running"}
+
+
+@app.get("/health/check_gke_ready")
+def check_gke_readiness():
+    """
+    Check and report whether this API can reach the Kubernetes Jobs API used for orchestration.
+
+    This endpoint is intentionally public so the landing page can report backend
+    availability before a user signs in.
+    """
+    api_client = None
+    try:
+        from kubernetes import client
+
+        api_client = get_k8s_api_client()
+        batch_v1 = client.BatchV1Api(api_client=api_client)
+        batch_v1.list_namespaced_job(
+            namespace=K8S_NAMESPACE,
+            limit=1,
+            _request_timeout=(2, 4),
+        )
+        return {"status": "ready"}
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable"},
+        )
+    finally:
+        if api_client is not None:
+            try:
+                api_client.close()
+            except Exception:
+                pass
 
 
 def create_job_id() -> str:
