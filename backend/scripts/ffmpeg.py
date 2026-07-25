@@ -1,3 +1,4 @@
+import math
 import subprocess
 import threading
 from pathlib import Path
@@ -36,6 +37,49 @@ def clear_ffmpeg_process_cancelled(process_id: Optional[str]) -> None:
         return
     with _ACTIVE_FFMPEG_LOCK:
         _CANCELLED_FFMPEG_PROCESS_IDS.discard(process_id)
+
+
+def _media_has_audio(media_path: Path) -> bool:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+            str(media_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return bool(result.stdout.strip())
+
+
+def editor_audio_output_args(
+    media_path: Path,
+    pitch_semitones: float = 0,
+) -> Sequence[str]:
+    if not -12 <= pitch_semitones <= 12:
+        raise ValueError("pitch_semitones must be between -12 and 12")
+    if not _media_has_audio(media_path):
+        return ()
+    if math.isclose(pitch_semitones, 0, abs_tol=1e-9):
+        return ("-c:a", "copy")
+
+    pitch_ratio = 2 ** (pitch_semitones / 12)
+    return (
+        "-af",
+        f"rubberband=tempo=1:pitch={pitch_ratio:.10f}",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+    )
 
 
 def get_media_duration(media_path: str) -> float:
@@ -411,6 +455,7 @@ def render_video_with_ass_subtitles(
     output_path: str,
     fonts_dir: Optional[str] = None,
     process_id: Optional[str] = None,
+    pitch_semitones: float = 0,
 ) -> Path:
     """
     Re-encode a video with the edited ASS subtitle track burned into its frames
@@ -455,8 +500,7 @@ def render_video_with_ass_subtitles(
         "18",
         "-pix_fmt",
         "yuv420p",
-        "-c:a",
-        "copy",
+        *editor_audio_output_args(video_path, pitch_semitones),
         "-movflags",
         "+faststart",
         str(output_path),
@@ -500,6 +544,7 @@ def render_video_with_png_overlay(
     *,
     frame_rate: float,
     process_id: Optional[str] = None,
+    pitch_semitones: float = 0,
 ) -> Path:
     video_path = Path(video_path)
     output_path = Path(output_path)
@@ -530,8 +575,7 @@ def render_video_with_png_overlay(
         "18",
         "-pix_fmt",
         "yuv420p",
-        "-c:a",
-        "copy",
+        *editor_audio_output_args(video_path, pitch_semitones),
         "-movflags",
         "+faststart",
         "-shortest",

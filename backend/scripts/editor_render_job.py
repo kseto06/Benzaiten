@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict
@@ -67,6 +68,7 @@ def run_editor_render_job() -> Dict[str, Any]:
     client = storage.Client()
     bucket = client.bucket(bucket_name)
     work_dir.mkdir(parents=True, exist_ok=True)
+    render_started_at = time.monotonic()
 
     try:
         _write_status(
@@ -117,6 +119,7 @@ def run_editor_render_job() -> Dict[str, Any]:
                 process_id=render_id,
                 reference_width=EDITOR_REFERENCE_WIDTH,
                 reference_height=EDITOR_REFERENCE_HEIGHT,
+                pitch_semitones=request.pitch_semitones,
             )
         except BrowserSubtitleRendererUnavailable:
             render_video_with_ass_subtitles(
@@ -125,6 +128,7 @@ def run_editor_render_job() -> Dict[str, Any]:
                 output_path=str(rendered_path),
                 fonts_dir=str(render_font_dir),
                 process_id=render_id,
+                pitch_semitones=request.pitch_semitones,
             )
         except Exception as error:
             if "cancelled" in str(error).lower():
@@ -135,6 +139,7 @@ def run_editor_render_job() -> Dict[str, Any]:
                 output_path=str(rendered_path),
                 fonts_dir=str(render_font_dir),
                 process_id=render_id,
+                pitch_semitones=request.pitch_semitones,
             )
 
         if not rendered_path.exists() or rendered_path.stat().st_size == 0:
@@ -153,6 +158,8 @@ def run_editor_render_job() -> Dict[str, Any]:
             "vtt_size": vtt_path.stat().st_size,
             "staging_video_blob_name": staging_video_blob_name,
             "staging_vtt_blob_name": staging_vtt_blob_name,
+            "pitch_semitones": request.pitch_semitones,
+            "render_seconds": round(time.monotonic() - render_started_at, 3),
         }
         _write_status(bucket, status_blob_name, result)
         return result
