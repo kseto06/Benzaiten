@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN ffmpeg -hide_banner -filters 2>&1 | grep -Eq '(^|[[:space:]])rubberband([[:space:]]|$)' \
-    || (echo "FFmpeg must include the rubberband audio filter for editor pitch rendering." >&2; exit 1)
+    || (echo "Error: ffmpeg needs to include the rubberband audio filter for editor pitch rendering" >&2; exit 1)
 
 COPY requirements.txt ./requirements.txt
 
