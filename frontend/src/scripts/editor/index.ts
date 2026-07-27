@@ -5,6 +5,7 @@ import { getApiError } from "../common/errors";
 import { app } from "../app/appRoot";
 import { escapeHtml, queryElement } from "../common/dom";
 import { setPlayButtonState as renderPlayButtonState } from "./mediaControls";
+import { EditorAudioGraph } from "./audio";
 import { drawCanvasText, drawKaraokeLineOnCanvas, waitForMediaEvent } from "./export";
 import { clearVolatileEditorProject, getVolatileWarning, isVolatileProject, saveEditorProject } from "./state";
 import {
@@ -70,12 +71,16 @@ function setupEditor(project: EditorProject): void {
   const mediaAdjustments = queryElement<HTMLDivElement>("#mediaAdjustments");
   const volumeButton = queryElement<HTMLButtonElement>("#volumeButton");
   const speedButton = queryElement<HTMLButtonElement>("#speedButton");
+  const pitchButton = queryElement<HTMLButtonElement>("#pitchButton");
   const volumePopover = queryElement<HTMLDivElement>("#volumePopover");
   const speedPopover = queryElement<HTMLDivElement>("#speedPopover");
+  const pitchPopover = queryElement<HTMLDivElement>("#pitchPopover");
   const volumeSlider = queryElement<HTMLInputElement>("#volumeSlider");
   const volumeInput = queryElement<HTMLInputElement>("#volumeInput");
   const speedSlider = queryElement<HTMLInputElement>("#speedSlider");
   const speedInput = queryElement<HTMLInputElement>("#speedInput");
+  const pitchSlider = queryElement<HTMLInputElement>("#pitchSlider");
+  const pitchInput = queryElement<HTMLInputElement>("#pitchInput");
   const exportPreviewModal = queryElement<HTMLDivElement>("#exportPreviewModal");
   const exportPreviewVideo = queryElement<HTMLVideoElement>("#exportPreviewVideo");
   const exportPreviewTitle = queryElement<HTMLElement>("#exportPreviewTitle");
@@ -113,6 +118,14 @@ function setupEditor(project: EditorProject): void {
   let subtitlesReady = false;
   let volumePercent = clamp(project.volumePercent ?? 100, 0, 200);
   let playbackRate = clamp(project.playbackRate ?? 1, 0.25, 2);
+  const normalizePitchSemitones = (value: number): number => {
+    const rounded = Math.round(clamp(Number.isFinite(value) ? value : 0, -12, 12) * 100) / 100;
+    return Object.is(rounded, -0) ? 0 : rounded;
+  };
+  const formatPitchSemitones = (value: number): string => (
+    normalizePitchSemitones(value).toFixed(2).replace(/0$/, "")
+  );
+  let pitchSemitones = normalizePitchSemitones(project.pitchSemitones ?? 0);
   let karaokeEnabled = project.karaokeEnabled ?? true;
   const karaokeHighlightColor = project.karaokeHighlightColor || DEFAULT_KARAOKE_HIGHLIGHT_COLOR;
   if (!isVolatileProject(project) && project.isBlank && project.isLocalMedia) {
@@ -125,8 +138,7 @@ function setupEditor(project: EditorProject): void {
   const volatileWarning = isVolatile ? getVolatileWarning(project) : "";
   let playbackRequested = false;
   let previewAnimationId: number | null = null;
-  let audioContext: AudioContext | null = null;
-  let mediaGain: GainNode | null = null;
+  const audioGraph = new EditorAudioGraph();
   const previewReferenceWidth = 960;
   const subtitleTransform: SubtitleTransform = {
     x: project.subtitleTransform?.x ?? 50,
@@ -181,6 +193,7 @@ function setupEditor(project: EditorProject): void {
     },
     karaokeEnabled,
     karaokeHighlightColor,
+    pitchSemitones: normalizeSnapshotNumber(pitchSemitones),
   });
 
   const hasPersistableChanges = (): boolean => (
@@ -204,6 +217,8 @@ function setupEditor(project: EditorProject): void {
   volumeInput.value = String(Math.round(volumePercent));
   speedSlider.value = playbackRate.toFixed(2);
   speedInput.value = playbackRate.toFixed(2);
+  pitchSlider.value = String(pitchSemitones);
+  pitchInput.value = formatPitchSemitones(pitchSemitones);
   karaokeToggleInput.checked = karaokeEnabled;
   overlay.style.setProperty("--karaoke-highlight-color", karaokeHighlightColor);
   editorVolatileWarning.hidden = !isVolatile;
@@ -291,32 +306,25 @@ function setupEditor(project: EditorProject): void {
   headerResizeObserver.observe(editorActions);
   window.requestAnimationFrame(fitEditorTitle);
 
-  const ensureMediaGain = (): GainNode | null => {
-    if (mediaGain) {
-      return mediaGain;
-    }
-    try {
-      audioContext = new AudioContext();
-      const source = audioContext.createMediaElementSource(media);
-      mediaGain = audioContext.createGain();
-      source.connect(mediaGain).connect(audioContext.destination);
-      media.volume = 1;
-      return mediaGain;
-    } catch (error) {
-      console.error(`${LOG_PREFIX} Could not initialize amplified volume control`, error);
-      return null;
-    }
+  const connectAudibleMedia = async (): Promise<boolean> => {
+    const elements = [
+      media,
+      ...sources.flatMap(source => source.element ? [source.element] : []),
+    ];
+    const connected = await Promise.all(
+      elements.map(element => audioGraph.connectMediaElement(element)),
+    );
+    audioGraph.setVolume(volumePercent);
+    audioGraph.setPlaybackRate(playbackRate);
+    audioGraph.setPitchSemitones(pitchSemitones);
+    return connected.every(Boolean) && audioGraph.pitchSupported;
   };
 
   const applyVolume = (value: number, syncNumberInput = true): void => {
     volumePercent = clamp(Math.round(value), 0, 200);
-    const gain = ensureMediaGain();
-    if (gain) {
-      gain.gain.value = volumePercent / 100;
-      void audioContext?.resume();
-    } else {
-      media.volume = Math.min(1, volumePercent / 100);
-    }
+    audioGraph.setVolume(volumePercent);
+    void connectAudibleMedia().then(() => audioGraph.resume());
+    media.volume = Math.min(1, volumePercent / 100);
     for (const source of sources) {
       if (source.element) {
         source.element.volume = Math.min(1, volumePercent / 100);
@@ -333,6 +341,7 @@ function setupEditor(project: EditorProject): void {
   const applyPlaybackRate = (value: number, syncNumberInput = true): void => {
     playbackRate = Math.round(clamp(value, 0.25, 2) * 100) / 100;
     media.playbackRate = playbackRate;
+    audioGraph.setPlaybackRate(playbackRate);
     for (const source of sources) {
       if (source.element) {
         source.element.playbackRate = playbackRate;
@@ -345,6 +354,51 @@ function setupEditor(project: EditorProject): void {
     project.playbackRate = playbackRate;
     saveEditorProject(project);
   };
+
+  const setPitchControlsAvailable = (available: boolean, message = ""): void => {
+    pitchButton.disabled = !available;
+    pitchSlider.disabled = !available;
+    pitchInput.disabled = !available;
+    pitchButton.title = message;
+  };
+
+  const applyPitch = (value: number, syncNumberInput = true): void => {
+    pitchSemitones = normalizePitchSemitones(value);
+    audioGraph.setPitchSemitones(pitchSemitones);
+    pitchSlider.value = String(pitchSemitones);
+    if (syncNumberInput) {
+      pitchInput.value = formatPitchSemitones(pitchSemitones);
+    }
+    project.pitchSemitones = pitchSemitones;
+    saveEditorProject(project);
+    updateSaveAvailability();
+
+    void connectAudibleMedia().then(pitchAvailable => {
+      if (pitchAvailable || Math.abs(pitchSemitones) < 0.001) {
+        return;
+      }
+      const message = "Live pitch preview is unavailable in this browser.";
+      editorSaveStatus.textContent = isVolatile
+        ? `${message} Guest export requires pitch to remain at 0 st.`
+        : `${message} The cloud render can still apply this pitch.`;
+      editorSaveStatus.classList.add("is-error");
+      if (isVolatile) {
+        pitchSemitones = 0;
+        project.pitchSemitones = 0;
+        pitchSlider.value = "0";
+        pitchInput.value = "0.0";
+        audioGraph.setPitchSemitones(0);
+        setPitchControlsAvailable(false, message);
+      }
+    });
+  };
+
+  if (isVolatile && !EditorAudioGraph.isPitchSupported()) {
+    setPitchControlsAvailable(
+      false,
+      "Live pitch and pitched guest export require AudioWorklet support in a secure browser context.",
+    );
+  }
 
   const updateExportAvailability = (): void => {
     exportVideoButton.disabled = (
@@ -597,7 +651,9 @@ function setupEditor(project: EditorProject): void {
       const sourceTime = currentTime - source.start;
       const shouldPlay = sourceTime >= 0 && sourceTime <= source.duration && !media.paused;
       source.element.playbackRate = playbackRate;
-      source.element.volume = Math.min(1, volumePercent / 100);
+      source.element.volume = audioGraph.hasMediaElement(source.element)
+        ? 1
+        : Math.min(1, volumePercent / 100);
       if (shouldPlay) {
         if (Math.abs(source.element.currentTime - sourceTime) > 0.35) {
           source.element.currentTime = sourceTime;
@@ -1313,6 +1369,25 @@ function setupEditor(project: EditorProject): void {
 
     await document.fonts?.ready;
     await waitForMediaEvent(sourceVideo, "loadedmetadata", signal);
+    const secondaryAudioSources = sources
+      .filter(source => !source.isPrimary)
+      .map(source => {
+        const element = document.createElement(source.type === "video" ? "video" : "audio");
+        element.src = source.url;
+        element.preload = "auto";
+        if (element instanceof HTMLVideoElement) {
+          element.playsInline = true;
+        }
+        element.muted = true;
+        element.volume = 0;
+        element.playbackRate = playbackRate;
+        return { source, element };
+      });
+    await Promise.all(
+      secondaryAudioSources.map(({ element }) => (
+        waitForMediaEvent(element, "loadedmetadata", signal)
+      )),
+    );
     const renderDuration = Number.isFinite(sourceVideo.duration)
       ? sourceVideo.duration
       : duration;
@@ -1325,30 +1400,41 @@ function setupEditor(project: EditorProject): void {
     }
 
     const canvasStream = canvas.captureStream(30);
-    let renderAudioContext: AudioContext | null = null;
-    let renderAudioSource: MediaElementAudioSourceNode | null = null;
-    let renderAudioGain: GainNode | null = null;
-    let renderAudioDestination: MediaStreamAudioDestinationNode | null = null;
+    const renderAudioGraph = new EditorAudioGraph({ captureOnly: true });
     try {
-      renderAudioContext = new AudioContext();
-      renderAudioSource = renderAudioContext.createMediaElementSource(sourceVideo);
-      renderAudioGain = renderAudioContext.createGain();
-      renderAudioGain.gain.value = volumePercent / 100;
-      renderAudioDestination = renderAudioContext.createMediaStreamDestination();
-      renderAudioSource.connect(renderAudioGain);
-      renderAudioGain.connect(renderAudioDestination);
+      const connected = await Promise.all([
+        renderAudioGraph.connectMediaElement(sourceVideo),
+        ...secondaryAudioSources.map(({ element }) => (
+          renderAudioGraph.connectMediaElement(element)
+        )),
+      ]);
+      renderAudioGraph.setVolume(volumePercent);
+      renderAudioGraph.setPlaybackRate(playbackRate);
+      renderAudioGraph.setPitchSemitones(pitchSemitones);
+      if (connected.some(value => !value) || !renderAudioGraph.captureStream) {
+        throw new Error("Guest export audio capture is unavailable.");
+      }
+      if (Math.abs(pitchSemitones) >= 0.001 && !renderAudioGraph.pitchSupported) {
+        throw new Error(
+          "This browser cannot apply pitch during guest export. Reset Pitch to 0 st.",
+        );
+      }
       sourceVideo.muted = false;
       sourceVideo.volume = 1;
+      for (const { element } of secondaryAudioSources) {
+        element.muted = false;
+        element.volume = 1;
+      }
     } catch (error) {
+      await renderAudioGraph.close();
+      if (Math.abs(pitchSemitones) >= 0.001) {
+        throw error;
+      }
       console.info(`${LOG_PREFIX} Guest export audio capture is unavailable`, error);
-      renderAudioContext = null;
-      renderAudioSource = null;
-      renderAudioGain = null;
-      renderAudioDestination = null;
     }
     const stream = new MediaStream([
       ...canvasStream.getVideoTracks(),
-      ...(renderAudioDestination?.stream.getAudioTracks() || []),
+      ...(renderAudioGraph.captureStream?.getAudioTracks() || []),
     ]);
     const recorder = new MediaRecorder(stream, { mimeType: exportFormat.mimeType });
     const chunks: BlobPart[] = [];
@@ -1372,6 +1458,23 @@ function setupEditor(project: EditorProject): void {
       context.fillRect(0, 0, canvas.width, canvas.height);
       context.drawImage(sourceVideo, drawX, drawY, drawWidth, drawHeight);
       drawSubtitleOverlayOnCanvas(context, canvas.width, canvas.height, sourceVideo.currentTime);
+      for (const { source, element } of secondaryAudioSources) {
+        const sourceTime = sourceVideo.currentTime - source.start;
+        const sourceDuration = Math.min(source.duration, element.duration);
+        const shouldPlay = sourceTime >= 0 && sourceTime < sourceDuration;
+        if (shouldPlay) {
+          if (Math.abs(element.currentTime - sourceTime) > 0.15) {
+            element.currentTime = sourceTime;
+          }
+          if (element.paused) {
+            void element.play().catch(error => {
+              console.info(`${LOG_PREFIX} Guest export source could not play`, error);
+            });
+          }
+        } else if (!element.paused) {
+          element.pause();
+        }
+      }
 
       const progress = renderDuration > 0
         ? clamp((sourceVideo.currentTime / renderDuration) * 100, 2, 99)
@@ -1401,9 +1504,7 @@ function setupEditor(project: EditorProject): void {
             window.cancelAnimationFrame(frameId);
             frameId = null;
           }
-          renderAudioSource?.disconnect();
-          renderAudioGain?.disconnect();
-          renderAudioContext?.close().catch(error => {
+          void renderAudioGraph.close().catch(error => {
             console.info(`${LOG_PREFIX} Guest export audio cleanup failed`, error);
           });
           for (const track of stream.getTracks()) {
@@ -1449,11 +1550,7 @@ function setupEditor(project: EditorProject): void {
         sourceVideo.addEventListener("ended", onEnded, { once: true });
         recorder.start(500);
         void (async () => {
-          if (renderAudioContext?.state === "suspended") {
-            await renderAudioContext.resume().catch(error => {
-              console.info(`${LOG_PREFIX} Guest export audio context could not resume`, error);
-            });
-          }
+          await renderAudioGraph.resume();
           await sourceVideo.play();
           drawFrame();
         })().catch(error => {
@@ -1474,6 +1571,12 @@ function setupEditor(project: EditorProject): void {
       return { url: volatileRenderedVideoUrl, format: exportFormat };
     } finally {
       sourceVideo.pause();
+      for (const { element } of secondaryAudioSources) {
+        element.pause();
+        element.removeAttribute("src");
+        element.load();
+      }
+      await renderAudioGraph.close();
       sourceVideo.removeAttribute("src");
       sourceVideo.load();
     }
@@ -1558,6 +1661,7 @@ function setupEditor(project: EditorProject): void {
     () => {
       if (window.location.hash !== "#editor") {
         cancelExportRenderForNavigation();
+        void audioGraph.close();
         window.removeEventListener("beforeunload", warnBeforeVolatileUnload);
         if (isVolatile) {
           clearVolatileEditorProject();
@@ -1569,7 +1673,10 @@ function setupEditor(project: EditorProject): void {
   );
   window.addEventListener(
     "pagehide",
-    cancelExportRenderForNavigation,
+    () => {
+      cancelExportRenderForNavigation();
+      void audioGraph.close();
+    },
     { signal: editorNavigationAbortController.signal },
   );
 
@@ -1824,6 +1931,7 @@ function setupEditor(project: EditorProject): void {
           subtitle_transform: getSerializableSubtitleTransform(),
           karaoke_enabled: karaokeEnabled,
           karaoke_highlight_color: karaokeHighlightColor,
+          pitch_semitones: pitchSemitones,
           client_render_id: clientRenderId,
         }),
       });
@@ -1839,6 +1947,7 @@ function setupEditor(project: EditorProject): void {
       project.mediaUrl = saved.render_source_url;
       project.subtitleObjectName = saved.subtitle_object_name;
       project.subtitleUrl = saved.subtitle_url;
+      project.pitchSemitones = saved.pitch_semitones;
       markProjectClean();
       if (!background) {
         projectTitleInput.value = saved.title;
@@ -1928,8 +2037,10 @@ function setupEditor(project: EditorProject): void {
   const closeMediaPopovers = (): void => {
     volumePopover.hidden = true;
     speedPopover.hidden = true;
+    pitchPopover.hidden = true;
     volumeButton.setAttribute("aria-expanded", "false");
     speedButton.setAttribute("aria-expanded", "false");
+    pitchButton.setAttribute("aria-expanded", "false");
   };
 
   volumeButton.addEventListener("click", event => {
@@ -1945,6 +2056,13 @@ function setupEditor(project: EditorProject): void {
     closeMediaPopovers();
     speedPopover.hidden = !shouldOpen;
     speedButton.setAttribute("aria-expanded", String(shouldOpen));
+  });
+  pitchButton.addEventListener("click", event => {
+    event.stopPropagation();
+    const shouldOpen = pitchPopover.hidden;
+    closeMediaPopovers();
+    pitchPopover.hidden = !shouldOpen;
+    pitchButton.setAttribute("aria-expanded", String(shouldOpen));
   });
   mediaAdjustments.addEventListener("click", event => {
     event.stopPropagation();
@@ -1970,6 +2088,17 @@ function setupEditor(project: EditorProject): void {
   });
   speedInput.addEventListener("change", () => {
     applyPlaybackRate(Number(speedInput.value) || 1);
+  });
+  pitchSlider.addEventListener("input", () => {
+    applyPitch(Number(pitchSlider.value));
+  });
+  pitchInput.addEventListener("input", () => {
+    if (pitchInput.value !== "") {
+      applyPitch(Number(pitchInput.value), false);
+    }
+  });
+  pitchInput.addEventListener("change", () => {
+    applyPitch(Number(pitchInput.value) || 0);
   });
   document.addEventListener("click", closeMediaPopovers);
   document.addEventListener("keydown", event => {
@@ -2444,6 +2573,11 @@ function setupEditor(project: EditorProject): void {
         duration: Math.min(sourceDuration, Math.max(0.25, duration - media.currentTime)),
         isPrimary: false,
         element,
+      });
+      void audioGraph.connectMediaElement(element).then(() => {
+        audioGraph.setVolume(volumePercent);
+        audioGraph.setPlaybackRate(playbackRate);
+        audioGraph.setPitchSemitones(pitchSemitones);
       });
       renderTimeline();
     }, { once: true });

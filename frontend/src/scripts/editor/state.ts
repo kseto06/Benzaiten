@@ -12,6 +12,7 @@ export function editorProjectFromLibraryProject(project: LibraryProject): Editor
     mediaObjectName: project.mediaObject.name,
     subtitleUrl: project.subtitleUrl,
     subtitleObjectName: project.subtitleObject?.name,
+    pitchSemitones: project.pitchSemitones ?? 0,
     mediaType: "video",
   };
 }
