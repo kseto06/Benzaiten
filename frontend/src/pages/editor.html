@@ -142,12 +142,6 @@
               </svg>
               Speed
             </button>
-            <button class="media-adjustment-button" id="pitchButton" type="button" aria-expanded="false">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M6 18V7m0 0 3 3M6 7 3 10M18 6v11m0 0 3-3m-3 3-3-3"></path>
-              </svg>
-              Pitch
-            </button>
 
             <div class="media-adjustment-popover" id="volumePopover" hidden>
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -168,33 +162,6 @@
               <label>
                 <input id="speedInput" type="number" min="0.25" max="2" step="0.01" value="1.00" />
                 <span>x</span>
-              </label>
-            </div>
-
-            <div class="media-adjustment-popover" id="pitchPopover" hidden>
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M6 18V7m0 0 3 3M6 7 3 10M18 6v11m0 0 3-3m-3 3-3-3"></path>
-              </svg>
-              <input
-                id="pitchSlider"
-                type="range"
-                min="-12"
-                max="12"
-                step="0.1"
-                value="0"
-                aria-label="Pitch in semitones"
-              />
-              <label>
-                <input
-                  id="pitchInput"
-                  type="number"
-                  min="-12"
-                  max="12"
-                  step="0.01"
-                  value="0.0"
-                  aria-label="Pitch in semitones"
-                />
-                <span>st</span>
               </label>
             </div>
           </div>
