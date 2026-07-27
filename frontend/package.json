@@ -10,7 +10,6 @@
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
-    "@soundtouchjs/audio-worklet": "2.1.0",
     "firebase": "^12.15.0",
     "gh-pages": "^6.3.0"
   },
