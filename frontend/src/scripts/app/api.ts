@@ -55,6 +55,5 @@ export async function listLibraryProjects(): Promise<LibraryProject[]> {
     subtitleObject: project.subtitle_object_name
       ? { name: project.subtitle_object_name }
       : undefined,
-    pitchSemitones: project.pitch_semitones ?? 0,
   }));
 }
