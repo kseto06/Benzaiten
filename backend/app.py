@@ -122,6 +122,7 @@ class SaveEditorProjectRequest(BaseModel):
     subtitle_transform: EditorSubtitleTransform
     karaoke_enabled: bool = True
     karaoke_highlight_color: str = "#f4a6c1"
+    pitch_semitones: float = Field(default=0, ge=-12, le=12)
     client_render_id: Optional[str] = None
 
 
@@ -383,6 +384,7 @@ def _project_response(
             if render_source_blob_name
             else None
         ),
+        "pitch_semitones": project.get("pitch_semitones", 0),
     }
 
 
@@ -826,6 +828,7 @@ def _render_editor_project_in_process(
             process_id=render_id,
             reference_width=EDITOR_REFERENCE_WIDTH,
             reference_height=EDITOR_REFERENCE_HEIGHT,
+            pitch_semitones=request.pitch_semitones,
         )
     except BrowserSubtitleRendererUnavailable as error:
         warnings.warn(
@@ -838,6 +841,7 @@ def _render_editor_project_in_process(
             output_path=str(rendered_path),
             fonts_dir=str(render_font_dir),
             process_id=render_id,
+            pitch_semitones=request.pitch_semitones,
         )
     except Exception as error:
         if "cancelled" in str(error).lower():
@@ -852,6 +856,7 @@ def _render_editor_project_in_process(
             output_path=str(rendered_path),
             fonts_dir=str(render_font_dir),
             process_id=render_id,
+            pitch_semitones=request.pitch_semitones,
         )
     if not rendered_path.exists() or rendered_path.stat().st_size == 0:
         raise RuntimeError("The rendered video is empty")
@@ -1710,6 +1715,7 @@ def save_editor_project(
                 "media_blob_name": destination_blob_name,
                 "subtitle_blob_name": subtitle_blob_name,
                 "render_source_blob_name": render_source_blob_name,
+                "pitch_semitones": request.pitch_semitones,
                 "status": "completed",
             },
         )
@@ -1733,6 +1739,7 @@ def save_editor_project(
             "subtitle_object_name": subtitle_blob_name,
             "subtitle_url": _signed_gcs_url(bucket, subtitle_blob_name),
             "generation": published_video.generation,
+            "pitch_semitones": request.pitch_semitones,
             "cleanup_warning": cleanup_warning,
         }
     except HTTPException:

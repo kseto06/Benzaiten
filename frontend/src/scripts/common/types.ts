@@ -37,6 +37,7 @@ export type SaveProjectResponse = {
   subtitle_object_name: string;
   subtitle_url: string;
   generation: number;
+  pitch_semitones: number;
   cleanup_warning?: string;
 };
 
@@ -65,6 +66,7 @@ export type ProjectListItemResponse = {
   subtitle_url?: string | null;
   render_source_object_name?: string | null;
   render_source_url?: string | null;
+  pitch_semitones?: number;
 };
 
 export type ProjectListResponse = {
@@ -99,6 +101,7 @@ export type EditorProject = {
   subtitleTransform?: SubtitleTransform;
   volumePercent?: number;
   playbackRate?: number;
+  pitchSemitones?: number;
   isBlank?: boolean;
   isLocalMedia?: boolean;
   persistenceMode?: ProjectPersistenceMode;
@@ -116,6 +119,7 @@ export type LibraryProject = {
   renderSourceUrl?: string;
   subtitleObject?: GcsObject;
   subtitleUrl?: string;
+  pitchSemitones?: number;
 };
 
 export type SubtitleTransform = {
