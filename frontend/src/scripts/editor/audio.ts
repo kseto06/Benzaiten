@@ -5,6 +5,11 @@ export type EditorAudioGraphOptions = {
   captureOnly?: boolean;
 };
 
+export type PitchCapability = {
+  supported: boolean;
+  reason: string;
+};
+
 export class EditorAudioGraph {
   private readonly captureOnly: boolean;
   private context: AudioContext | null = null;
@@ -24,12 +29,30 @@ export class EditorAudioGraph {
     this.captureOnly = options.captureOnly ?? false;
   }
 
+  static getPitchCapability(): PitchCapability {
+    if (typeof AudioContext === "undefined") {
+      return {
+        supported: false,
+        reason: "Web Audio is unavailable in this browser.",
+      };
+    }
+    if (!window.isSecureContext) {
+      return {
+        supported: false,
+        reason: "Live pitch requires HTTPS or localhost.",
+      };
+    }
+    if (!("audioWorklet" in AudioContext.prototype)) {
+      return {
+        supported: false,
+        reason: "AudioWorklet is unavailable in this browser.",
+      };
+    }
+    return { supported: true, reason: "" };
+  }
+
   static isPitchSupported(): boolean {
-    return (
-      typeof AudioContext !== "undefined"
-      && "audioWorklet" in AudioContext.prototype
-      && window.isSecureContext
-    );
+    return EditorAudioGraph.getPitchCapability().supported;
   }
 
   get pitchSupported(): boolean {
@@ -38,6 +61,10 @@ export class EditorAudioGraph {
 
   get captureStream(): MediaStream | null {
     return this.captureDestination?.stream ?? null;
+  }
+
+  get processorMetrics() {
+    return this.pitchNode?.metrics ?? null;
   }
 
   private async initialize(): Promise<boolean> {
@@ -64,6 +91,9 @@ export class EditorAudioGraph {
         if (EditorAudioGraph.isPitchSupported()) {
           await SoundTouchNode.register(this.context, soundTouchProcessorUrl);
           this.pitchNode = new SoundTouchNode({ context: this.context });
+          this.pitchNode.addEventListener("processorerror", event => {
+            console.warn("[Benzaiten] Pitch processor stopped unexpectedly", event);
+          });
           this.pitchNode.connect(this.wetGain);
         }
 

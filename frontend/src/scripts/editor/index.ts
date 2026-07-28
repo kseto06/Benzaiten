@@ -1,6 +1,7 @@
 import editorPageHtml from "../../pages/editor.html?raw";
 import { API_BASE_URL, DEFAULT_KARAOKE_HIGHLIGHT_COLOR, LOG_PREFIX, getPreferredBrowserExportFormat } from "../common/config";
 import { authFetch, authJsonFetch, currentUser, downloadAuthenticatedFile, firebaseAuth } from "../app/auth";
+import { getEditorRenderCapabilities } from "../app/api";
 import { getApiError } from "../common/errors";
 import { app } from "../app/appRoot";
 import { escapeHtml, queryElement } from "../common/dom";
@@ -135,6 +136,7 @@ function setupEditor(project: EditorProject): void {
     }
   }
   const isVolatile = isVolatileProject(project);
+  const usesBrowserLocalExport = isVolatile || Boolean(project.isLocalMedia);
   const volatileWarning = isVolatile ? getVolatileWarning(project) : "";
   let playbackRequested = false;
   let previewAnimationId: number | null = null;
@@ -224,7 +226,7 @@ function setupEditor(project: EditorProject): void {
   editorVolatileWarning.hidden = !isVolatile;
   editorVolatileWarning.textContent = volatileWarning;
   saveChangesButton.title = isVolatile ? volatileWarning : "";
-  if (isVolatile) {
+  if (usesBrowserLocalExport) {
     const browserExportFormat = getPreferredBrowserExportFormat();
     downloadVideoLabel.textContent = browserExportFormat?.label || "WEBM";
     downloadVideoNote.textContent = browserExportFormat?.isFallback
@@ -378,25 +380,51 @@ function setupEditor(project: EditorProject): void {
         return;
       }
       const message = "Live pitch preview is unavailable in this browser.";
-      editorSaveStatus.textContent = isVolatile
-        ? `${message} Guest export requires pitch to remain at 0 st.`
-        : `${message} The cloud render can still apply this pitch.`;
+      editorSaveStatus.textContent = usesBrowserLocalExport
+        ? `${message} Browser-local export requires pitch to remain at 0 st.`
+        : `${message} Checking backend pitch support...`;
       editorSaveStatus.classList.add("is-error");
-      if (isVolatile) {
+      if (usesBrowserLocalExport) {
         pitchSemitones = 0;
         project.pitchSemitones = 0;
         pitchSlider.value = "0";
         pitchInput.value = "0.0";
         audioGraph.setPitchSemitones(0);
         setPitchControlsAvailable(false, message);
+      } else {
+        void getEditorRenderCapabilities().then(capabilities => {
+          if (Math.abs(pitchSemitones) < 0.001) {
+            return;
+          }
+          if (!capabilities) {
+            editorSaveStatus.textContent = (
+              `${message} The backend render may still apply this pitch.`
+            );
+            return;
+          }
+          if (!capabilities.pitch_export_supported) {
+            editorSaveStatus.textContent = (
+              `${message} Backend pitch export is unavailable: `
+              + (capabilities.detail || "FFmpeg rubberband support is missing.")
+            );
+            return;
+          }
+          const renderTarget = capabilities.render_mode === "local"
+            ? "local FastAPI render"
+            : "GKE video-pool render";
+          editorSaveStatus.textContent = (
+            `${message} The ${renderTarget} will still apply this pitch.`
+          );
+        });
       }
     });
   };
 
-  if (isVolatile && !EditorAudioGraph.isPitchSupported()) {
+  if (usesBrowserLocalExport && !EditorAudioGraph.isPitchSupported()) {
+    const capability = EditorAudioGraph.getPitchCapability();
     setPitchControlsAvailable(
       false,
-      "Live pitch and pitched guest export require AudioWorklet support in a secure browser context.",
+      `${capability.reason} Pitched browser-local export is unavailable.`,
     );
   }
 
@@ -1267,15 +1295,6 @@ function setupEditor(project: EditorProject): void {
     `${API_BASE_URL}/projects/download-audio?source_blob_name=${encodeURIComponent(sourceBlobName)}`
   );
 
-  const downloadVideoUrl = (url: string): void => {
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${project.title || "benzaiten-video"}.mp4`;
-    document.body.append(link);
-    link.click();
-    link.remove();
-  };
-
   const downloadBlobUrl = (url: string, filename: string): void => {
     const link = document.createElement("a");
     link.href = url;
@@ -1369,6 +1388,15 @@ function setupEditor(project: EditorProject): void {
 
     await document.fonts?.ready;
     await waitForMediaEvent(sourceVideo, "loadedmetadata", signal);
+    const renderDuration = Number.isFinite(sourceVideo.duration)
+      ? sourceVideo.duration
+      : duration;
+    const primaryAudio = document.createElement("audio");
+    primaryAudio.src = project.mediaUrl;
+    primaryAudio.preload = "auto";
+    primaryAudio.muted = true;
+    primaryAudio.volume = 0;
+    primaryAudio.playbackRate = playbackRate;
     const secondaryAudioSources = sources
       .filter(source => !source.isPrimary)
       .map(source => {
@@ -1384,13 +1412,27 @@ function setupEditor(project: EditorProject): void {
         return { source, element };
       });
     await Promise.all(
-      secondaryAudioSources.map(({ element }) => (
-        waitForMediaEvent(element, "loadedmetadata", signal)
-      )),
+      [
+        waitForMediaEvent(primaryAudio, "loadedmetadata", signal),
+        ...secondaryAudioSources.map(({ element }) => (
+          waitForMediaEvent(element, "loadedmetadata", signal)
+        )),
+      ],
     );
-    const renderDuration = Number.isFinite(sourceVideo.duration)
-      ? sourceVideo.duration
-      : duration;
+    const exportAudioSources = [
+      {
+        start: 0,
+        duration: renderDuration,
+        name: project.title,
+        element: primaryAudio,
+      },
+      ...secondaryAudioSources.map(({ source, element }) => ({
+        start: source.start,
+        duration: source.duration,
+        name: source.name,
+        element,
+      })),
+    ];
     const canvas = document.createElement("canvas");
     canvas.width = 1280;
     canvas.height = 720;
@@ -1402,12 +1444,11 @@ function setupEditor(project: EditorProject): void {
     const canvasStream = canvas.captureStream(30);
     const renderAudioGraph = new EditorAudioGraph({ captureOnly: true });
     try {
-      const connected = await Promise.all([
-        renderAudioGraph.connectMediaElement(sourceVideo),
-        ...secondaryAudioSources.map(({ element }) => (
+      const connected = await Promise.all(
+        exportAudioSources.map(({ element }) => (
           renderAudioGraph.connectMediaElement(element)
         )),
-      ]);
+      );
       renderAudioGraph.setVolume(volumePercent);
       renderAudioGraph.setPlaybackRate(playbackRate);
       renderAudioGraph.setPitchSemitones(pitchSemitones);
@@ -1419,9 +1460,7 @@ function setupEditor(project: EditorProject): void {
           "This browser cannot apply pitch during guest export. Reset Pitch to 0 st.",
         );
       }
-      sourceVideo.muted = false;
-      sourceVideo.volume = 1;
-      for (const { element } of secondaryAudioSources) {
+      for (const { element } of exportAudioSources) {
         element.muted = false;
         element.volume = 1;
       }
@@ -1440,11 +1479,45 @@ function setupEditor(project: EditorProject): void {
     const chunks: BlobPart[] = [];
     let frameId: number | null = null;
     let settled = false;
+    let lastFrameDrawTime = -Infinity;
+    const frameIntervalMs = 1000 / 30;
 
-    const drawFrame = (): void => {
+    const synchronizeExportAudio = (): void => {
+      for (const source of exportAudioSources) {
+        const sourceTime = sourceVideo.currentTime - source.start;
+        const sourceDuration = Math.min(source.duration, source.element.duration);
+        const shouldPlay = sourceTime >= 0 && sourceTime < sourceDuration;
+        if (shouldPlay) {
+          if (Math.abs(source.element.currentTime - sourceTime) > 0.15) {
+            source.element.currentTime = sourceTime;
+          }
+          if (source.element.paused) {
+            void source.element.play().catch(error => {
+              console.info(
+                `${LOG_PREFIX} Guest export source "${source.name}" could not play`,
+                error,
+              );
+            });
+          }
+        } else if (!source.element.paused) {
+          source.element.pause();
+        }
+      }
+    };
+
+    const scheduleFrame = (): void => {
+      frameId = window.requestAnimationFrame(drawFrame);
+    };
+
+    const drawFrame = (timestamp = performance.now()): void => {
       if (signal.aborted || settled) {
         return;
       }
+      if (timestamp - lastFrameDrawTime < frameIntervalMs) {
+        scheduleFrame();
+        return;
+      }
+      lastFrameDrawTime = timestamp;
       const videoWidth = sourceVideo.videoWidth || canvas.width;
       const videoHeight = sourceVideo.videoHeight || canvas.height;
       const scale = Math.min(canvas.width / videoWidth, canvas.height / videoHeight);
@@ -1458,23 +1531,7 @@ function setupEditor(project: EditorProject): void {
       context.fillRect(0, 0, canvas.width, canvas.height);
       context.drawImage(sourceVideo, drawX, drawY, drawWidth, drawHeight);
       drawSubtitleOverlayOnCanvas(context, canvas.width, canvas.height, sourceVideo.currentTime);
-      for (const { source, element } of secondaryAudioSources) {
-        const sourceTime = sourceVideo.currentTime - source.start;
-        const sourceDuration = Math.min(source.duration, element.duration);
-        const shouldPlay = sourceTime >= 0 && sourceTime < sourceDuration;
-        if (shouldPlay) {
-          if (Math.abs(element.currentTime - sourceTime) > 0.15) {
-            element.currentTime = sourceTime;
-          }
-          if (element.paused) {
-            void element.play().catch(error => {
-              console.info(`${LOG_PREFIX} Guest export source could not play`, error);
-            });
-          }
-        } else if (!element.paused) {
-          element.pause();
-        }
-      }
+      synchronizeExportAudio();
 
       const progress = renderDuration > 0
         ? clamp((sourceVideo.currentTime / renderDuration) * 100, 2, 99)
@@ -1492,14 +1549,59 @@ function setupEditor(project: EditorProject): void {
         }
         return;
       }
-      frameId = window.requestAnimationFrame(drawFrame);
+      scheduleFrame();
     };
 
     try {
       const blob = await new Promise<Blob>((resolve, reject) => {
+        const pauseExportAudio = (): void => {
+          for (const { element } of exportAudioSources) {
+            element.pause();
+          }
+        };
+        const pauseRecorderForVideoBuffering = (): void => {
+          pauseExportAudio();
+          if (recorder.state === "recording") {
+            try {
+              recorder.pause();
+            } catch (error) {
+              console.info(`${LOG_PREFIX} Guest export recorder could not pause`, error);
+            }
+          }
+          console.warn(`${LOG_PREFIX} Guest export source video stalled`, {
+            currentTime: sourceVideo.currentTime,
+            readyState: sourceVideo.readyState,
+            networkState: sourceVideo.networkState,
+            pitchMetrics: renderAudioGraph.processorMetrics,
+          });
+        };
+        const onVideoWaiting = (): void => {
+          if (sourceVideo.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
+            pauseRecorderForVideoBuffering();
+          }
+        };
+        const onVideoStalled = (): void => {
+          if (sourceVideo.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
+            pauseRecorderForVideoBuffering();
+          }
+        };
+        const resumeAfterVideoBuffering = (): void => {
+          if (recorder.state === "paused") {
+            try {
+              recorder.resume();
+            } catch (error) {
+              console.info(`${LOG_PREFIX} Guest export recorder could not resume`, error);
+            }
+          }
+          synchronizeExportAudio();
+        };
         const cleanup = (): void => {
           signal.removeEventListener("abort", onAbort);
           sourceVideo.removeEventListener("ended", onEnded);
+          sourceVideo.removeEventListener("waiting", onVideoWaiting);
+          sourceVideo.removeEventListener("stalled", onVideoStalled);
+          sourceVideo.removeEventListener("playing", resumeAfterVideoBuffering);
+          sourceVideo.removeEventListener("canplay", resumeAfterVideoBuffering);
           if (frameId !== null) {
             window.cancelAnimationFrame(frameId);
             frameId = null;
@@ -1548,11 +1650,16 @@ function setupEditor(project: EditorProject): void {
         }, { once: true });
         signal.addEventListener("abort", onAbort, { once: true });
         sourceVideo.addEventListener("ended", onEnded, { once: true });
+        sourceVideo.addEventListener("waiting", onVideoWaiting);
+        sourceVideo.addEventListener("stalled", onVideoStalled);
+        sourceVideo.addEventListener("playing", resumeAfterVideoBuffering);
+        sourceVideo.addEventListener("canplay", resumeAfterVideoBuffering);
         recorder.start(500);
         void (async () => {
           await renderAudioGraph.resume();
           await sourceVideo.play();
-          drawFrame();
+          synchronizeExportAudio();
+          drawFrame(performance.now());
         })().catch(error => {
           if (!settled) {
             settled = true;
@@ -1571,7 +1678,7 @@ function setupEditor(project: EditorProject): void {
       return { url: volatileRenderedVideoUrl, format: exportFormat };
     } finally {
       sourceVideo.pause();
-      for (const { element } of secondaryAudioSources) {
+      for (const { element } of exportAudioSources) {
         element.pause();
         element.removeAttribute("src");
         element.load();
@@ -1579,6 +1686,61 @@ function setupEditor(project: EditorProject): void {
       await renderAudioGraph.close();
       sourceVideo.removeAttribute("src");
       sourceVideo.load();
+    }
+  };
+
+  const renderLocalProjectInBrowser = async (
+    signal: AbortSignal,
+  ): Promise<{ url: string; format: BrowserExportFormat }> => {
+    if (!project.mediaUrl || project.mediaType !== "video") {
+      throw new Error("Add a local video before exporting.");
+    }
+    try {
+      const { renderBrowserProjectDeterministically } = await import("./browserExport");
+      const result = await renderBrowserProjectDeterministically({
+        mediaUrl: project.mediaUrl,
+        duration,
+        volumePercent,
+        playbackRate,
+        pitchSemitones,
+        additionalAudioSources: sources
+          .filter(source => !source.isPrimary)
+          .map(source => ({
+            name: source.name,
+            url: source.url,
+            start: source.start,
+            duration: source.duration,
+          })),
+        signal,
+        drawOverlay: drawSubtitleOverlayOnCanvas,
+        onProgress: setExportProgress,
+      });
+      if (volatileRenderedVideoUrl) {
+        URL.revokeObjectURL(volatileRenderedVideoUrl);
+      }
+      volatileRenderedVideoBlob = result.blob;
+      volatileRenderedVideoExtension = result.format.extension;
+      volatileRenderedVideoUrl = URL.createObjectURL(result.blob);
+      setExportProgress(100, "Preview ready.");
+      return {
+        url: volatileRenderedVideoUrl,
+        format: result.format,
+      };
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw error;
+      }
+      if (
+        Math.abs(pitchSemitones) >= 0.001
+        || Math.abs(playbackRate - 1) >= 0.001
+      ) {
+        throw error;
+      }
+      console.warn(
+        `${LOG_PREFIX} Deterministic browser export unavailable; using MediaRecorder fallback`,
+        error,
+      );
+      return renderVolatileProjectInBrowser(signal);
     }
   };
 
@@ -1716,7 +1878,7 @@ function setupEditor(project: EditorProject): void {
     editorSaveStatus.textContent = "Preparing export...";
     openExportProgress();
     try {
-      if (isVolatile) {
+      if (usesBrowserLocalExport) {
         if (project.mediaType !== "video" || project.isBlank || !project.mediaUrl) {
           editorSaveStatus.textContent = "Add a local video before exporting.";
           editorSaveStatus.classList.add("is-error");
@@ -1724,7 +1886,7 @@ function setupEditor(project: EditorProject): void {
           return;
         }
         exportAbortController = new AbortController();
-        const { url: previewUrl, format } = await renderVolatileProjectInBrowser(
+        const { url: previewUrl, format } = await renderLocalProjectInBrowser(
           exportAbortController.signal,
         );
         exportAbortController = null;
@@ -1737,12 +1899,6 @@ function setupEditor(project: EditorProject): void {
           ? "MP4 is not supported in this browser, exported WebM instead."
           : "Browser MP4 export ready.";
         editorSaveStatus.classList.remove("is-error");
-        return;
-      }
-
-      if (project.isLocalMedia && project.mediaType === "video" && project.mediaUrl) {
-        openExportPreview(project.mediaUrl);
-        editorSaveStatus.textContent = "";
         return;
       }
 
@@ -1804,7 +1960,7 @@ function setupEditor(project: EditorProject): void {
   });
 
   downloadMp4Button.addEventListener("click", () => {
-    if (isVolatile) {
+    if (usesBrowserLocalExport) {
       if (!volatileRenderedVideoUrl || !volatileRenderedVideoBlob) {
         editorSaveStatus.textContent = "Use Export Video to render a download first.";
         editorSaveStatus.classList.add("is-error");
@@ -1814,10 +1970,6 @@ function setupEditor(project: EditorProject): void {
         volatileRenderedVideoUrl,
         `${project.title || "benzaiten-video"}.${volatileRenderedVideoExtension}`,
       );
-      return;
-    }
-    if (project.isLocalMedia && project.mediaType === "video" && project.mediaUrl) {
-      downloadVideoUrl(project.mediaUrl);
       return;
     }
     if (!project.mediaObjectName) {

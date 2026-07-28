@@ -13,6 +13,13 @@ export type BackendReadinessResponse = {
   status: "ready" | "unavailable";
 };
 
+export type EditorRenderCapabilitiesResponse = {
+  render_mode: "local" | "k8s";
+  pitch_export_supported: boolean;
+  browser_subtitle_renderer_supported: boolean;
+  detail?: string;
+};
+
 export type JobStartResponse = {
   status: "queued";
   job_id: string;
