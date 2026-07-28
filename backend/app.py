@@ -11,9 +11,11 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import uuid
 import warnings
 from datetime import datetime, timezone, timedelta
+from functools import lru_cache
 from typing import Any, List, Optional, Tuple, Dict, Union
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -989,6 +991,68 @@ def check_gke_readiness():
                 api_client.close()
             except Exception:
                 pass
+
+
+@lru_cache(maxsize=1)
+def _editor_render_capabilities() -> Dict[str, object]:
+    ffmpeg_path = shutil.which("ffmpeg")
+    rubberband_available = False
+    if ffmpeg_path:
+        try:
+            filters = subprocess.run(
+                [ffmpeg_path, "-hide_banner", "-filters"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            rubberband_available = "rubberband" in filters.stdout
+        except (OSError, subprocess.SubprocessError):
+            rubberband_available = False
+
+    browser_renderer_available = False
+    browser_detail = ""
+    local_playwright_browsers = PROJECT_ROOT / ".cache" / "ms-playwright"
+    if local_playwright_browsers.exists():
+        os.environ.setdefault(
+            "PLAYWRIGHT_BROWSERS_PATH",
+            str(local_playwright_browsers),
+        )
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            executable_path = Path(playwright.chromium.executable_path)
+            browser_renderer_available = executable_path.exists()
+            if not browser_renderer_available:
+                browser_detail = "Playwright Chromium is not installed."
+    except Exception as error:
+        browser_detail = f"Playwright browser check failed: {error}"
+
+    detail_parts = []
+    if not ffmpeg_path:
+        detail_parts.append("FFmpeg is not installed.")
+    elif not rubberband_available:
+        detail_parts.append("FFmpeg does not expose the rubberband filter.")
+    if browser_detail:
+        detail_parts.append(browser_detail)
+    return {
+        "render_mode": "k8s" if EDITOR_RENDER_USE_K8S else "local",
+        "pitch_export_supported": rubberband_available,
+        "browser_subtitle_renderer_supported": browser_renderer_available,
+        "detail": " ".join(detail_parts) or None,
+    }
+
+
+@app.get("/health/editor-render-capabilities")
+def check_editor_render_capabilities() -> Dict[str, object]:
+    """
+    Report non-sensitive editor-render capabilities for browser and local API clients.
+
+    Local Uvicorn sessions render in-process when EDITOR_RENDER_USE_K8S is false;
+    deployed sessions report the Kubernetes render-job mode.
+    """
+    return _editor_render_capabilities()
 
 
 def create_job_id() -> str:

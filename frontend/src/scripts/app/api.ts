@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../common/config";
 import { getApiError } from "../common/errors";
 import type {
   BackendReadinessResponse,
+  EditorRenderCapabilitiesResponse,
   GcsObject,
   GcsObjectListResponse,
   LibraryProject,
@@ -20,6 +21,24 @@ export async function checkBackendReadiness(signal?: AbortSignal): Promise<boole
   }
   const data = await response.json() as BackendReadinessResponse;
   return data.status === "ready";
+}
+
+export async function getEditorRenderCapabilities(
+  signal?: AbortSignal,
+): Promise<EditorRenderCapabilitiesResponse | null> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/health/editor-render-capabilities`, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return await response.json() as EditorRenderCapabilitiesResponse;
+  } catch {
+    return null;
+  }
 }
 
 export async function listJobObjects(jobId: string): Promise<GcsObject[]> {
