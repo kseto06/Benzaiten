@@ -88,6 +88,7 @@ def render_video_with_browser_subtitles(
     process_id: Optional[str] = None,
     reference_width: int = 960,
     reference_height: int = 540,
+    pitch_semitones: float = 0,
 ) -> Path:
     if LOCAL_PLAYWRIGHT_BROWSERS.exists():
         os.environ.setdefault(
@@ -184,6 +185,7 @@ def render_video_with_browser_subtitles(
             str(output_path_object),
             frame_rate=frame_rate,
             process_id=process_id,
+            pitch_semitones=pitch_semitones,
         )
     finally:
         if process_id is not None and is_ffmpeg_process_cancelled(process_id):
