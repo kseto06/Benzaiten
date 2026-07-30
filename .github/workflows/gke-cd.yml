@@ -2,6 +2,29 @@ name: Deploy Backend to GKE
 run-name: Deploy Backend to GKE - ${{ github.actor }} on ${{ inputs.code_ref }}
 
 on:
+  workflow_call:
+    inputs:
+      code_ref:
+        description: "Branch, tag, or commit SHA containing the app code to build and deploy"
+        required: true
+        default: "main"
+        type: string
+      tag:
+        description: "Docker image tag to build and deploy (e.g. a git sha, defaults to 'latest')"
+        required: false
+        type: string
+        default: "latest"
+      push_latest:
+        description: "Whether to also push the 'latest' tag in addition to the specified tag (for tag != 'latest')"
+        required: false
+        default: "true"
+        type: string
+      no_cache:
+        description: "Build Docker image without cache"
+        required: false
+        default: "false"
+        type: string
+        
   workflow_dispatch:
     inputs:
       code_ref:

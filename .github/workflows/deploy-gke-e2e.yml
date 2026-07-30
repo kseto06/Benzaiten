@@ -1,0 +1,64 @@
+name: Deploy Benzaiten GKE Cluster E2E
+run-name: Deploy Benzaiten GKE Cluster E2E - ${{ github.actor }} on ${{ inputs.code_ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      code_ref:
+        description: "Branch, tag, or commit SHA containing the app code to deploy GKE on"
+        required: true
+        default: "main"
+        type: string
+      inference_pool:
+        description: "Which node pool should be used as the main inference machine"
+        required: true
+        default: "gpu-pool"
+        type: choice
+        options:
+          - "cpu-inference-pool"
+          - "gpu-pool"
+      tag:
+        description: "Docker image tag to build and deploy (e.g. a git sha, defaults to 'latest')"
+        required: false
+        type: string
+        default: "latest"
+      push_latest:
+        description: "Whether to also push the 'latest' tag in addition to the specified tag (for tag != 'latest')"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      no_cache:
+        description: "Build Docker image without cache"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+  id-token: write
+      
+jobs:
+  bootstrap-gke-cluster:
+    name: Bootstrap GKE Cluster
+    uses: ./.github/workflows/bootstrap-gke.yml
+    secrets: inherit
+    with:
+      code_ref: ${{ inputs.code_ref }}
+      inference_pool: ${{ inputs.inference_pool }}
+
+  deploy-gke:
+    name: Deploy Backend to GKE
+    needs: bootstrap-gke-cluster
+    uses: ./.github/workflows/gke-cd.yml
+    secrets: inherit
+    with:
+      code_ref: ${{ inputs.code_ref }}
+      tag: ${{ inputs.tag }}
+      push_latest: ${{ inputs.push_latest }}
+      no_cache: ${{ inputs.no_cache }}
