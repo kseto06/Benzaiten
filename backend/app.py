@@ -1834,6 +1834,84 @@ def save_editor_project(
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+@app.post("/projects/create")
+async def create_editor_project(
+    file: UploadFile = File(...),
+    title: str = Form(..., min_length=1, max_length=180),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, object]:
+    """
+    Create an owned project from a video selected in the blank browser editor.
+
+    The uploaded object is an intermediate source. The frontend immediately
+    passes it to /projects/save, which publishes the rendered editor result.
+    """
+    filename = file.filename or ""
+    content_type = file.content_type or "application/octet-stream"
+    supported_extension = Path(filename).suffix.lower() in {
+        ".mp4",
+        ".m4v",
+        ".mov",
+        ".webm",
+    }
+    if not content_type.startswith("video/") and not supported_extension:
+        raise HTTPException(status_code=400, detail="A video file is required.")
+
+    job_id = create_job_id()
+    clean_title = _clean_project_title(title)
+    source_blob_name = f"outputs/{job_id}/editor/upload.mp4"
+    bucket = storage.Client().bucket(GCS_BUCKET)
+    source_blob = bucket.blob(source_blob_name)
+
+    try:
+        source_blob.upload_from_file(
+            file.file,
+            rewind=True,
+            content_type=content_type,
+            if_generation_match=0,
+        )
+        source_blob.reload()
+        if not source_blob.size:
+            raise RuntimeError("The uploaded video is empty.")
+
+        _upsert_project_record(
+            job_id,
+            {
+                "owner_uid": user.uid,
+                "owner_email": user.email,
+                "title": clean_title,
+                "gcs_prefix": f"outputs/{job_id}/",
+                "media_blob_name": source_blob_name,
+                "status": "draft",
+                "created_at": (
+                    firestore.SERVER_TIMESTAMP
+                    if _use_firestore_project_index()
+                    else _project_timestamp()
+                ),
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        try:
+            source_blob.delete()
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=500,
+            detail=f"local project upload failed: {error}",
+        ) from error
+    finally:
+        await file.close()
+
+    return {
+        "status": "created",
+        "job_id": job_id,
+        "title": clean_title,
+        "media_object_name": source_blob_name,
+    }
+
+
 @app.post("/projects/render-cancel/{render_id}")
 def cancel_project_render(
     render_id: str,

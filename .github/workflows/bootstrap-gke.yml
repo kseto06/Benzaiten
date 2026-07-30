@@ -2,12 +2,25 @@ name: Bootstrap GKE Cluster
 run-name: Bootstrap GKE Cluster - ${{ github.actor }} on ${{ inputs.code_ref }}
 
 on:
+  workflow_call:
+    inputs:
+      inference_pool:
+        description: "Which node pool should be used as the main inference machine"
+        required: true
+        type: string
+        default: "gpu-pool"
+      code_ref:
+        description: "Branch, tag, or commit SHA containing the app code to deploy GKE on"
+        required: true
+        default: "main"
+        type: string
+
   workflow_dispatch:
     inputs:
       inference_pool:
         description: "Which node pool should be used as the main inference machine"
         required: true
-        default: "cpu-inference-pool"
+        default: "gpu-pool"
         type: choice
         options:
           - "cpu-inference-pool"
