@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../common/config";
 import { getApiError } from "../common/errors";
 import type {
   BackendReadinessResponse,
+  CreateProjectResponse,
   EditorRenderCapabilitiesResponse,
   GcsObject,
   GcsObjectListResponse,
@@ -39,6 +40,25 @@ export async function getEditorRenderCapabilities(
   } catch {
     return null;
   }
+}
+
+export async function createProjectFromLocalVideo(
+  file: File,
+  title: string,
+  signal?: AbortSignal,
+): Promise<CreateProjectResponse> {
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+  formData.append("title", title);
+  const response = await authFetch(`${API_BASE_URL}/projects/create`, {
+    method: "POST",
+    body: formData,
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(await getApiError(response));
+  }
+  return await response.json() as CreateProjectResponse;
 }
 
 export async function listJobObjects(jobId: string): Promise<GcsObject[]> {

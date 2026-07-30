@@ -2,6 +2,29 @@ name: Deploy Backend to GKE
 run-name: Deploy Backend to GKE - ${{ github.actor }} on ${{ inputs.code_ref }}
 
 on:
+  workflow_call:
+    inputs:
+      code_ref:
+        description: "Branch, tag, or commit SHA containing the app code to build and deploy"
+        required: true
+        default: "main"
+        type: string
+      tag:
+        description: "Docker image tag to build and deploy (e.g. a git sha, defaults to 'latest')"
+        required: false
+        type: string
+        default: "latest"
+      push_latest:
+        description: "Whether to also push the 'latest' tag in addition to the specified tag (for tag != 'latest')"
+        required: false
+        default: "true"
+        type: string
+      no_cache:
+        description: "Build Docker image without cache"
+        required: false
+        default: "false"
+        type: string
+
   workflow_dispatch:
     inputs:
       code_ref:
@@ -33,6 +56,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     permissions:
       contents: read
@@ -47,6 +71,7 @@ jobs:
       IMAGE_NAME: benzaiten-inference
       DEPLOYMENT_NAME: benzaiten-inference-deployment
       CONTAINER_NAME: benzaiten-inference-container
+      SERVICE_NAME: benzaiten-inference-service
       NAMESPACE: default
       GCP_SERVICE_ACCOUNT: github-actions-sa@project-0c6e9a84-c914-4d2f-ace.iam.gserviceaccount.com
     
@@ -82,21 +107,41 @@ jobs:
 
     - name: Free runner disk space
       run: |
+        set -euo pipefail
+
         echo "Before cleanup:"
         df -h
+        docker system df || true
 
         sudo rm -rf /usr/local/lib/android
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /opt/ghc
         sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/local/.ghcup
+        sudo rm -rf /usr/local/share/boost
+        sudo rm -rf /usr/share/swift
 
-        docker system prune --all --force || true
+        docker system prune --all --force --volumes || true
+        docker builder prune --all --force || true
+        docker buildx prune --all --force || true
+
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
 
         echo "After cleanup:"
         df -h
+        docker system df || true
+
+        AVAILABLE_KB="$(df --output=avail / | tail -1)"
+        MINIMUM_KB="$((20 * 1024 * 1024))"
+        if (( AVAILABLE_KB < MINIMUM_KB )); then
+          echo "::error::Less than 20 GiB is available for the CUDA image build after cleanup"
+          exit 1
+        fi
 
     - name: Build and push image to Artifact Registry
       env:
+        BUILDKIT_PROGRESS: plain
         TAG: ${{ inputs.tag }}
         PROJECT_ID: ${{ env.PROJECT_ID }}
         REGION: ${{ env.REGION }}
@@ -106,6 +151,12 @@ jobs:
         NO_CACHE: ${{ inputs.no_cache }}
       run: |
         bash backend/scripts/benzaiten_inference/push-image.sh
+
+    - name: Show runner disk usage after image build
+      if: always()
+      run: |
+        df -h
+        docker system df || true
       
     - name: Get GKE credentials
       run: |
@@ -139,3 +190,77 @@ jobs:
         NAMESPACE: ${{ env.NAMESPACE }}
       run: |
         bash backend/scripts/benzaiten_inference/deploy/restart_deployment.sh
+
+    - name: Verify backend service and show external URL
+      run: |
+        set -euo pipefail
+
+        kubectl get service "${SERVICE_NAME}" \
+          --namespace "${NAMESPACE}" \
+          -o wide
+
+        BACKEND_ENDPOINT="$(
+          kubectl get endpoints "${SERVICE_NAME}" \
+            --namespace "${NAMESPACE}" \
+            -o jsonpath='{.subsets[0].addresses[0].ip}' \
+            2>/dev/null || true
+        )"
+        if [[ -z "${BACKEND_ENDPOINT}" ]]; then
+          echo "::error::Service ${SERVICE_NAME} has no ready backend endpoints."
+          kubectl describe service "${SERVICE_NAME}" --namespace "${NAMESPACE}"
+          exit 1
+        fi
+
+        EXTERNAL_ADDRESS=""
+        for _ in $(seq 1 60); do
+          EXTERNAL_ADDRESS="$(
+            kubectl get service "${SERVICE_NAME}" \
+              --namespace "${NAMESPACE}" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+              2>/dev/null || true
+          )"
+          if [[ -z "${EXTERNAL_ADDRESS}" ]]; then
+            EXTERNAL_ADDRESS="$(
+              kubectl get service "${SERVICE_NAME}" \
+                --namespace "${NAMESPACE}" \
+                -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' \
+                2>/dev/null || true
+            )"
+          fi
+          if [[ -n "${EXTERNAL_ADDRESS}" ]]; then
+            break
+          fi
+          echo "Waiting for LoadBalancer external address..."
+          sleep 5
+        done
+
+        if [[ -z "${EXTERNAL_ADDRESS}" ]]; then
+          echo "::error::Service ${SERVICE_NAME} did not receive an external address within 5 minutes."
+          kubectl describe service "${SERVICE_NAME}" --namespace "${NAMESPACE}"
+          kubectl get events \
+            --namespace "${NAMESPACE}" \
+            --sort-by='.lastTimestamp' | tail -30
+          exit 1
+        fi
+
+        BACKEND_URL="http://${EXTERNAL_ADDRESS}"
+        echo "::notice title=Benzaiten backend URL::${BACKEND_URL}"
+        {
+          echo "## Benzaiten GKE deployment"
+          echo
+          echo "Backend URL: ${BACKEND_URL}"
+          echo
+          echo '```text'
+          kubectl get deployment,pods,service \
+            --namespace "${NAMESPACE}" \
+            -o wide
+          echo '```'
+        } >> "${GITHUB_STEP_SUMMARY}"
+
+        curl --fail --silent --show-error \
+          --retry 12 \
+          --retry-delay 5 \
+          --retry-all-errors \
+          --connect-timeout 5 \
+          --max-time 10 \
+          "${BACKEND_URL}/"

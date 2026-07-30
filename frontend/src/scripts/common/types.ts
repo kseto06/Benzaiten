@@ -48,6 +48,13 @@ export type SaveProjectResponse = {
   cleanup_warning?: string;
 };
 
+export type CreateProjectResponse = {
+  status: "created";
+  job_id: string;
+  title: string;
+  media_object_name: string;
+};
+
 export type RenameProjectResponse = {
   status: "renamed";
   title: string;
