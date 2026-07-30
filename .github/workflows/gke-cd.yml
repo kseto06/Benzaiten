@@ -33,6 +33,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     permissions:
       contents: read
@@ -82,21 +83,41 @@ jobs:
 
     - name: Free runner disk space
       run: |
+        set -euo pipefail
+
         echo "Before cleanup:"
         df -h
+        docker system df || true
 
         sudo rm -rf /usr/local/lib/android
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /opt/ghc
         sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/local/.ghcup
+        sudo rm -rf /usr/local/share/boost
+        sudo rm -rf /usr/share/swift
 
-        docker system prune --all --force || true
+        docker system prune --all --force --volumes || true
+        docker builder prune --all --force || true
+        docker buildx prune --all --force || true
+
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
 
         echo "After cleanup:"
         df -h
+        docker system df || true
+
+        AVAILABLE_KB="$(df --output=avail / | tail -1)"
+        MINIMUM_KB="$((20 * 1024 * 1024))"
+        if (( AVAILABLE_KB < MINIMUM_KB )); then
+          echo "::error::Less than 20 GiB is available for the CUDA image build after cleanup"
+          exit 1
+        fi
 
     - name: Build and push image to Artifact Registry
       env:
+        BUILDKIT_PROGRESS: plain
         TAG: ${{ inputs.tag }}
         PROJECT_ID: ${{ env.PROJECT_ID }}
         REGION: ${{ env.REGION }}
@@ -106,6 +127,12 @@ jobs:
         NO_CACHE: ${{ inputs.no_cache }}
       run: |
         bash backend/scripts/benzaiten_inference/push-image.sh
+
+    - name: Show runner disk usage after image build
+      if: always()
+      run: |
+        df -h
+        docker system df || true
       
     - name: Get GKE credentials
       run: |
