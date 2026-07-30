@@ -408,6 +408,13 @@ function setupLandingInteractions(callbacks: LandingCallbacks): void {
     const requestVersion = invalidateLibraryRequests();
     void refreshLibrary(requestVersion);
   };
+  window.addEventListener("benzaiten-project-saved", () => {
+    if (!currentUser || landingSignal.aborted) {
+      return;
+    }
+    const requestVersion = invalidateLibraryRequests();
+    void refreshLibrary(requestVersion);
+  }, documentListenerOptions);
 
   const closeLibraryMenus = (): void => {
     for (const openMenu of libraryGrid.querySelectorAll<HTMLDivElement>(

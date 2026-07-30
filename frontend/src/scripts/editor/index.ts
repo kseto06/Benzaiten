@@ -1,7 +1,7 @@
 import editorPageHtml from "../../pages/editor.html?raw";
 import { API_BASE_URL, DEFAULT_KARAOKE_HIGHLIGHT_COLOR, LOG_PREFIX, getPreferredBrowserExportFormat } from "../common/config";
 import { authFetch, authJsonFetch, currentUser, downloadAuthenticatedFile, firebaseAuth } from "../app/auth";
-import { getEditorRenderCapabilities } from "../app/api";
+import { createProjectFromLocalVideo, getEditorRenderCapabilities } from "../app/api";
 import { getApiError } from "../common/errors";
 import { app } from "../app/appRoot";
 import { escapeHtml, queryElement } from "../common/dom";
@@ -101,6 +101,7 @@ function setupEditor(project: EditorProject): void {
   let volatileRenderedVideoUrl: string | null = null;
   let volatileRenderedVideoBlob: Blob | null = null;
   let volatileRenderedVideoExtension: "mp4" | "webm" = "webm";
+  let primaryLocalMediaFile: File | null = null;
   let exportWasCancelled = false;
   let saveInFlight = false;
   let cues: SubtitleCue[] = [];
@@ -136,7 +137,7 @@ function setupEditor(project: EditorProject): void {
     }
   }
   const isVolatile = isVolatileProject(project);
-  const usesBrowserLocalExport = isVolatile || Boolean(project.isLocalMedia);
+  let usesBrowserLocalExport = isVolatile || Boolean(project.isLocalMedia);
   const volatileWarning = isVolatile ? getVolatileWarning(project) : "";
   let playbackRequested = false;
   let previewAnimationId: number | null = null;
@@ -441,7 +442,7 @@ function setupEditor(project: EditorProject): void {
       isVolatile
       || saveInFlight
       || project.mediaType !== "video"
-      || project.isLocalMedia
+      || (project.isLocalMedia && !primaryLocalMediaFile)
       || !mediaReady
       || !subtitlesReady
       || !hasPersistableChanges()
@@ -463,7 +464,7 @@ function setupEditor(project: EditorProject): void {
 
   const hasSavePrerequisites = (): boolean => (
       project.mediaType !== "video"
-      || project.isLocalMedia
+      || (project.isLocalMedia && !primaryLocalMediaFile)
       || !mediaReady
       || !subtitlesReady
   );
@@ -2025,7 +2026,7 @@ function setupEditor(project: EditorProject): void {
     signal?: AbortSignal,
     clientRenderId?: string,
   ): Promise<boolean> => {
-    const sourceBlobName = project.mediaObjectName;
+    let sourceBlobName = project.mediaObjectName;
     const hasAddedMedia = sources.some(source => !source.isPrimary);
     const hasTimelineMediaChanges = sources.some(source => (
       source.isPrimary
@@ -2045,10 +2046,17 @@ function setupEditor(project: EditorProject): void {
       }
       return false;
     }
-    if (project.mediaType !== "video" || project.isLocalMedia || !sourceBlobName) {
+    if (project.mediaType !== "video") {
+      if (!background) {
+        editorSaveStatus.textContent = "Only video projects can currently be saved.";
+        editorSaveStatus.classList.add("is-error");
+      }
+      return false;
+    }
+    if (project.isLocalMedia && !primaryLocalMediaFile) {
       if (!background) {
         editorSaveStatus.textContent = (
-          "Local projects stay in this browser until media upload is supported."
+          "The local video is no longer available. Add it again before saving."
         );
         editorSaveStatus.classList.add("is-error");
       }
@@ -2072,6 +2080,31 @@ function setupEditor(project: EditorProject): void {
       editorSaveStatus.textContent = "";
     }
     try {
+      if (project.isLocalMedia && primaryLocalMediaFile) {
+        if (!background) {
+          editorSaveStatus.textContent = "Uploading project video...";
+        }
+        const created = await createProjectFromLocalVideo(
+          primaryLocalMediaFile,
+          project.title,
+          signal,
+        );
+        project.jobId = created.job_id;
+        project.mediaObjectName = created.media_object_name;
+        project.originalTitle = created.title;
+        project.persistenceMode = "cloud";
+        project.isLocalMedia = false;
+        sourceBlobName = created.media_object_name;
+        usesBrowserLocalExport = false;
+        saveEditorProject(project);
+        window.dispatchEvent(new CustomEvent("benzaiten-project-saved", {
+          detail: { jobId: project.jobId },
+        }));
+      }
+      if (!sourceBlobName) {
+        throw new Error("Unable to locate the project video source.");
+      }
+
       const response = await authJsonFetch(`${API_BASE_URL}/projects/save`, {
         method: "POST",
         signal,
@@ -2100,12 +2133,22 @@ function setupEditor(project: EditorProject): void {
       project.subtitleObjectName = saved.subtitle_object_name;
       project.subtitleUrl = saved.subtitle_url;
       project.pitchSemitones = saved.pitch_semitones;
+      project.isLocalMedia = false;
+      primaryLocalMediaFile = null;
+      usesBrowserLocalExport = false;
+      downloadVideoLabel.textContent = "MP4";
+      downloadVideoNote.textContent = "Rendered video";
+      downloadAudioNote.textContent = "Rendered audio";
+      downloadMp3Button.disabled = false;
       markProjectClean();
       if (!background) {
         projectTitleInput.value = saved.title;
         document.title = `${saved.title} | Benzaiten Editor`;
       }
       saveEditorProject(project);
+      window.dispatchEvent(new CustomEvent("benzaiten-project-saved", {
+        detail: { jobId: project.jobId },
+      }));
       if (!background) {
         editorSaveStatus.textContent = saved.cleanup_warning || "Changes saved!";
         editorSaveStatus.classList.toggle("is-error", Boolean(saved.cleanup_warning));
@@ -2747,6 +2790,7 @@ function setupEditor(project: EditorProject): void {
     if (!mediaReady && project.isBlank) {
       const primaryFile = mediaFiles[0];
       const primaryUrl = URL.createObjectURL(primaryFile);
+      primaryLocalMediaFile = primaryFile;
       project.title = filenameWithoutExtension(primaryFile.name) || "Untitled project";
       project.mediaUrl = primaryUrl;
       project.mediaType = primaryFile.type.startsWith("video/") ? "video" : "audio";
