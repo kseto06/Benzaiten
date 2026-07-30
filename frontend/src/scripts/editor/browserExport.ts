@@ -598,7 +598,7 @@ async function renderWithNativeVideoDecoder(
                 frameIndex += 1;
                 onProgress(
                   10 + (frameIndex / frameCount) * 76,
-                  "Rendering with the browser's native video decoder...",
+                  "",
                 );
               }
               if (!settled && !ending) {
