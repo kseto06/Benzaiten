@@ -16,11 +16,13 @@ RUN ffmpeg -hide_banner -filters 2>&1 | grep -Eq '(^|[[:space:]])rubberband([[:s
 
 COPY requirements.txt ./requirements.txt
 
-RUN pip install --no-cache-dir --force-reinstall --no-deps \
-    torchvision==0.21.0 \
-    --extra-index-url https://download.pytorch.org/whl/cu124
+RUN python -m pip install --no-cache-dir -r requirements.txt \
+        --extra-index-url https://download.pytorch.org/whl/cu124 \
+    && python -m pip install --no-cache-dir --force-reinstall --no-deps \
+        torchvision==0.21.0 \
+        --extra-index-url https://download.pytorch.org/whl/cu124
 
-RUN python -c "import torch, torchaudio, torchvision; print(f'torch={torch.__version__}, torchaudio={torchaudio.__version__}, torchvision={torchvision.__version__}')"
+RUN python -c "from importlib.metadata import version; import playwright, torch, torchaudio, torchvision; print(f'playwright={version(\"playwright\")}, torch={torch.__version__}, torchaudio={torchaudio.__version__}, torchvision={torchvision.__version__}')"
 
 RUN PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright \
     python -m playwright install --with-deps chromium
