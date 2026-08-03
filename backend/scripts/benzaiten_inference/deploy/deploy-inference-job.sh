@@ -34,9 +34,15 @@ CONFIGURED_KUEUE_NAME="$(
     -o jsonpath='{.data.KUEUE_NAME}' \
     2>/dev/null || true
 )"
-if [[ "${CONFIGURED_KUEUE_ENABLED}" != "true" ]] || \
-  [[ "${CONFIGURED_KUEUE_NAME}" != "benzaiten-local-queue" ]]; then
-  echo "ConfigMap ${INFERENCE_CONFIG_MAP} is missing the Benzaiten Kueue settings." >&2
+
+if [[ "${CONFIGURED_KUEUE_ENABLED}" != "true" ]]; then
+  echo "ConfigMap ${INFERENCE_CONFIG_MAP} must set KUEUE_ENABLED=true." >&2
+  echo "Run the updated GKE bootstrap before deploying the Benzaiten backend." >&2
+  exit 1
+fi
+
+if [[ -z "${CONFIGURED_KUEUE_NAME}" ]]; then
+  echo "ConfigMap ${INFERENCE_CONFIG_MAP} must set KUEUE_NAME to a LocalQueue name." >&2
   echo "Run the updated GKE bootstrap before deploying the Benzaiten backend." >&2
   exit 1
 fi

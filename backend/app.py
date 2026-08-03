@@ -101,6 +101,9 @@ EDITOR_RENDER_USE_K8S = os.environ.get(
 EDITOR_RENDER_JOB_TIMEOUT_SECONDS = int(
     os.environ.get("EDITOR_RENDER_JOB_TIMEOUT_SECONDS", "3600")
 )
+EDITOR_RENDER_QUEUE_TIMEOUT_SECONDS = int(
+    os.environ.get("EDITOR_RENDER_QUEUE_TIMEOUT_SECONDS", "900")
+)
 
 
 class EditorSubtitleCue(BaseModel):
@@ -905,6 +908,7 @@ def _run_editor_render_job(
                 [job_name],
                 poll_interval_seconds=5,
                 execution_timeout_seconds=EDITOR_RENDER_JOB_TIMEOUT_SECONDS,
+                queue_timeout_seconds=EDITOR_RENDER_QUEUE_TIMEOUT_SECONDS,
             )
         except Exception as error:
             if is_ffmpeg_process_cancelled(render_id):
