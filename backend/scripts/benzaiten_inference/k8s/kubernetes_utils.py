@@ -30,6 +30,9 @@ INFERENCE_GPU_COUNT = int(
 KUEUE_ENABLED = os.environ.get("KUEUE_ENABLED", "false").lower() == "true"
 KUEUE_NAME = os.environ.get("KUEUE_NAME", "benzaiten-local-queue")
 KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
+KUEUE_QUEUE_TIMEOUT_SECONDS = int(
+    os.environ.get("KUEUE_QUEUE_TIMEOUT_SECONDS", str(6 * 60 * 60))
+)
 
 
 def _ensure_safe_k8s_name(name: str) -> str:
@@ -332,6 +335,7 @@ def create_k8s_orchestration_job(
         _env("TARGET_LANGUAGE", target_language),
         _env("KUEUE_ENABLED", "true" if KUEUE_ENABLED else "false"),
         _env("KUEUE_NAME", KUEUE_NAME),
+        _env("KUEUE_QUEUE_TIMEOUT_SECONDS", str(KUEUE_QUEUE_TIMEOUT_SECONDS)),
     ]
 
     container = client.V1Container(
@@ -875,6 +879,7 @@ def wait_for_jobs(
     namespace: str = K8S_NAMESPACE,
     poll_interval_seconds: int = 30,
     execution_timeout_seconds: int = 60 * 60,
+    queue_timeout_seconds: int = KUEUE_QUEUE_TIMEOUT_SECONDS,
 ) -> None:
     """
     Wait for K8s jobs while timing only admitted, unsuspended execution.
@@ -884,6 +889,7 @@ def wait_for_jobs(
         namespace: The Kubernetes namespace where the jobs are running.
         poll_interval_seconds: How often to check the status of the jobs.
         execution_timeout_seconds: Maximum admitted execution time for each job.
+        queue_timeout_seconds: Maximum suspended Kueue wait time for each job.
     """
     api_client = get_k8s_api_client()
     batch_v1 = client.BatchV1Api(api_client=api_client)
@@ -891,7 +897,9 @@ def wait_for_jobs(
     remaining_jobs = set(job_names)
     initial_check_time = time.monotonic()
     job_execution_elapsed_seconds = {job_name: 0.0 for job_name in job_names}
+    job_queue_elapsed_seconds = {job_name: 0.0 for job_name in job_names}
     job_was_executing = {job_name: False for job_name in job_names}
+    job_was_queued = {job_name: False for job_name in job_names}
     job_last_checked_at = {job_name: initial_check_time for job_name in job_names}
 
     while remaining_jobs:
@@ -899,10 +907,13 @@ def wait_for_jobs(
         finished_jobs = set()
 
         for job_name in remaining_jobs:
+            elapsed_since_last_check = (
+                current_check_time - job_last_checked_at[job_name]
+            )
             if job_was_executing[job_name]:
-                job_execution_elapsed_seconds[job_name] += (
-                    current_check_time - job_last_checked_at[job_name]
-                )
+                job_execution_elapsed_seconds[job_name] += elapsed_since_last_check
+            if job_was_queued[job_name]:
+                job_queue_elapsed_seconds[job_name] += elapsed_since_last_check
             job_last_checked_at[job_name] = current_check_time
 
             try:
@@ -930,9 +941,17 @@ def wait_for_jobs(
                 continue
 
             job_spec = getattr(job, "spec", None)
-            job_was_executing[job_name] = (
-                job_spec is None or getattr(job_spec, "suspend", None) is not True
+            job_is_queued = (
+                job_spec is not None and getattr(job_spec, "suspend", None) is True
             )
+            job_was_queued[job_name] = job_is_queued
+            job_was_executing[job_name] = not job_is_queued
+
+            if job_queue_elapsed_seconds[job_name] > queue_timeout_seconds:
+                raise TimeoutError(
+                    f"K8s job {job_name} exceeded "
+                    f"{queue_timeout_seconds:g} seconds of suspended Kueue wait time"
+                )
 
             if job_execution_elapsed_seconds[job_name] > execution_timeout_seconds:
                 raise TimeoutError(

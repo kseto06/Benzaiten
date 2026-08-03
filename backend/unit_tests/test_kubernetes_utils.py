@@ -208,6 +208,7 @@ class WaitForJobsTests(unittest.TestCase):
         monotonic_times,
         *,
         execution_timeout_seconds=3600,
+        queue_timeout_seconds=21600,
     ):
         batch_api = _FakeBatchV1Api(job_responses)
         with (
@@ -232,6 +233,7 @@ class WaitForJobsTests(unittest.TestCase):
                 list(job_responses),
                 poll_interval_seconds=1,
                 execution_timeout_seconds=execution_timeout_seconds,
+                queue_timeout_seconds=queue_timeout_seconds,
             )
 
     def test_suspended_queue_time_does_not_consume_execution_timeout(self):
@@ -259,6 +261,22 @@ class WaitForJobsTests(unittest.TestCase):
                     ]
                 },
                 [0, 0, 3601],
+            )
+
+    def test_suspended_job_times_out_on_accumulated_queue_wait(self):
+        with self.assertRaisesRegex(
+            TimeoutError,
+            "K8s job queued-job exceeded 3600 seconds of suspended Kueue wait time",
+        ):
+            self._wait_for_jobs(
+                {
+                    "queued-job": [
+                        _job(suspend=True),
+                        _job(suspend=True),
+                    ]
+                },
+                [0, 0, 3601],
+                queue_timeout_seconds=3600,
             )
 
     def test_preemption_pauses_and_readmission_resumes_execution_clock(self):

@@ -27,7 +27,11 @@ for manifest in "${KUEUE_MANIFESTS[@]}"; do
 done
 
 for manifest in "${KUEUE_MANIFESTS[@]}"; do
-  kubectl apply -f "${KUEUE_DIR}/${manifest}"
+  if [[ "${manifest}" == "local-queues.yaml" ]]; then
+    kubectl apply -f "${KUEUE_DIR}/${manifest}" --namespace "${NAMESPACE}"
+  else
+    kubectl apply -f "${KUEUE_DIR}/${manifest}"
+   fi
 done
 
 kubectl wait clusterqueue/benzaiten-cluster-queue \
