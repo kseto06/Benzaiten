@@ -16,6 +16,76 @@ def _job(*, suspend=None, condition_type=None):
     )
 
 
+def _pipeline_job(
+    *,
+    suspend=None,
+    active=0,
+    succeeded=0,
+    failed=0,
+    condition_type=None,
+    kueue_managed=False,
+):
+    job = _job(suspend=suspend, condition_type=condition_type)
+    job.metadata = SimpleNamespace(
+        labels={kubernetes_utils.KUEUE_QUEUE_LABEL: "test-queue"}
+        if kueue_managed
+        else {}
+    )
+    job.status.active = active
+    job.status.succeeded = succeeded
+    job.status.failed = failed
+    return job
+
+
+class ClassifyPipelineJobsTests(unittest.TestCase):
+    def test_suspended_kueue_job_is_queued_despite_active_orchestrator(self):
+        jobs = [
+            _pipeline_job(active=1),
+            _pipeline_job(suspend=True, kueue_managed=True),
+        ]
+
+        self.assertEqual(kubernetes_utils.get_pipeline_jobs_status(jobs), "queued")
+
+    def test_admitted_kueue_job_is_running_before_pod_becomes_active(self):
+        jobs = [_pipeline_job(suspend=False, kueue_managed=True)]
+
+        self.assertEqual(kubernetes_utils.get_pipeline_jobs_status(jobs), "running")
+
+    def test_mixed_parallel_kueue_jobs_are_running(self):
+        jobs = [
+            _pipeline_job(suspend=False, active=1, kueue_managed=True),
+            _pipeline_job(suspend=True, kueue_managed=True),
+        ]
+
+        self.assertEqual(kubernetes_utils.get_pipeline_jobs_status(jobs), "running")
+
+    def test_preempted_kueue_job_returns_to_queued(self):
+        jobs = [_pipeline_job(suspend=True, kueue_managed=True)]
+
+        self.assertEqual(kubernetes_utils.get_pipeline_jobs_status(jobs), "queued")
+
+    def test_non_kueue_active_job_remains_running(self):
+        jobs = [_pipeline_job(active=1)]
+
+        self.assertEqual(kubernetes_utils.get_pipeline_jobs_status(jobs), "running")
+
+    def test_failed_job_takes_precedence(self):
+        jobs = [
+            _pipeline_job(failed=1),
+            _pipeline_job(suspend=False, active=1, kueue_managed=True),
+        ]
+
+        self.assertEqual(kubernetes_utils.get_pipeline_jobs_status(jobs), "failed")
+
+    def test_completed_jobs_are_completed(self):
+        jobs = [
+            _pipeline_job(succeeded=1),
+            _pipeline_job(condition_type="Complete", kueue_managed=True),
+        ]
+
+        self.assertEqual(kubernetes_utils.get_pipeline_jobs_status(jobs), "completed")
+
+
 class _FakeBatchV1Api:
     def __init__(self, job_responses):
         self.job_responses = {
