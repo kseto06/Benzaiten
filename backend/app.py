@@ -903,7 +903,7 @@ def _run_editor_render_job(
             wait_for_jobs(
                 [job_name],
                 poll_interval_seconds=5,
-                timeout_seconds=EDITOR_RENDER_JOB_TIMEOUT_SECONDS,
+                execution_timeout_seconds=EDITOR_RENDER_JOB_TIMEOUT_SECONDS,
             )
         except Exception as error:
             if is_ffmpeg_process_cancelled(render_id):
