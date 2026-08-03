@@ -156,9 +156,23 @@ kubectl create configmap "${INFERENCE_CONFIG_MAP}" \
   --from-literal="VIDEO_NODE_POOL=${VIDEO_POOL}" \
   --from-literal="INFERENCE_NODE_POOL=${INFERENCE_POOL}" \
   --from-literal="INFERENCE_GPU_COUNT=${INFERENCE_GPU_COUNT}" \
+  --from-literal="KUEUE_ENABLED=true" \
+  --from-literal="KUEUE_NAME=benzaiten-local-queue" \
   --dry-run=client \
   -o yaml | kubectl apply -f -
 
+# bootstrap kueue
+KUEUE_VERSION="${KUEUE_VERSION:-v0.19.0}"
+echo "Installing kueue ${KUEUE_VERSION}..."
+kubectl apply --server-side -f \
+  "https://github.com/kubernetes-sigs/kueue/releases/download/${KUEUE_VERSION}/manifests.yaml"
+
+echo "Applying Kueue resources..."
+KUEUE_DIR="${SCRIPT_DIR}/k8s/kueue" \
+  NAMESPACE=default \
+  bash "${SCRIPT_DIR}/deploy/apply-kueue-resources.sh"
+
+# verify deployment
 if kubectl get deployment benzaiten-inference-deployment >/dev/null 2>&1; then
   echo "Restarting backend to load the inference pool configuration..."
   kubectl rollout restart deployment/benzaiten-inference-deployment
