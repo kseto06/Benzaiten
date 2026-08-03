@@ -1,5 +1,5 @@
-name: Deploy Benzaiten GKE Cluster E2E
-run-name: Deploy Benzaiten GKE Cluster E2E - ${{ github.actor }} on ${{ inputs.code_ref }}
+name: Deploy Benzaiten E2E
+run-name: Deploy Benzaiten E2E - ${{ github.actor }} on ${{ inputs.code_ref }}
 
 on:
   workflow_dispatch:
