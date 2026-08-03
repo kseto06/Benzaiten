@@ -100,6 +100,107 @@ class _FakeBatchV1Api:
         return responses[0]
 
 
+class _CapturingBatchV1Api:
+    def __init__(self):
+        self.created_jobs = []
+
+    def create_namespaced_job(self, *, namespace, body):
+        self.created_jobs.append((namespace, body))
+
+
+class CreateJobsTests(unittest.TestCase):
+    def _capture_created_job(self, create_job):
+        batch_api = _CapturingBatchV1Api()
+        with (
+            mock.patch.object(
+                kubernetes_utils,
+                "get_k8s_api_client",
+                return_value=object(),
+            ),
+            mock.patch.object(
+                kubernetes_utils.client,
+                "BatchV1Api",
+                return_value=batch_api,
+            ),
+            mock.patch.object(kubernetes_utils, "KUEUE_ENABLED", True),
+            mock.patch.object(
+                kubernetes_utils,
+                "KUEUE_NAME",
+                "benzaiten-local-queue",
+            ),
+        ):
+            create_job()
+
+        self.assertEqual(len(batch_api.created_jobs), 1)
+        return batch_api.created_jobs[0]
+
+    def test_pipeline_stage_is_queued_on_its_selected_pool(self):
+        namespace, job = self._capture_created_job(
+            lambda: kubernetes_utils._create_k8s_pipeline_stage_job(
+                job_id="job-1",
+                stage="source-separation",
+                sh_cmd_module="backend.scripts.test",
+                env_vars=[],
+                node_pool="gpu-pool",
+            )
+        )
+
+        self.assertEqual(namespace, kubernetes_utils.K8S_NAMESPACE)
+        self.assertTrue(job.spec.suspend)
+        self.assertEqual(
+            job.metadata.labels[kubernetes_utils.KUEUE_QUEUE_LABEL],
+            "benzaiten-local-queue",
+        )
+        self.assertEqual(
+            job.spec.template.spec.node_selector["cloud.google.com/gke-nodepool"],
+            "gpu-pool",
+        )
+
+    def test_editor_render_is_queued_on_video_pool(self):
+        _, job = self._capture_created_job(
+            lambda: kubernetes_utils.create_k8s_editor_render_job(
+                job_id="job-1",
+                render_id="render-1",
+                render_request_blob_name="request.json",
+                render_status_blob_name="status.json",
+                render_source_blob_name="source.mp4",
+                render_source_generation="1",
+                staging_video_blob_name="staging.mp4",
+                staging_vtt_blob_name="staging.vtt",
+            )
+        )
+
+        self.assertTrue(job.spec.suspend)
+        self.assertEqual(
+            job.metadata.labels[kubernetes_utils.KUEUE_QUEUE_LABEL],
+            "benzaiten-local-queue",
+        )
+        self.assertEqual(
+            job.spec.template.spec.node_selector["cloud.google.com/gke-nodepool"],
+            kubernetes_utils.VIDEO_NODE_POOL,
+        )
+
+    def test_orchestrator_remains_unqueued_on_default_pool(self):
+        _, job = self._capture_created_job(
+            lambda: kubernetes_utils.create_k8s_orchestration_job(
+                job_id="job-1",
+                input_blob_name="input.mp4",
+                filename="input.mp4",
+                should_decrowd=False,
+            )
+        )
+
+        self.assertIsNone(job.spec.suspend)
+        self.assertNotIn(
+            kubernetes_utils.KUEUE_QUEUE_LABEL,
+            job.metadata.labels,
+        )
+        self.assertEqual(
+            job.spec.template.spec.node_selector["cloud.google.com/gke-nodepool"],
+            "default-pool",
+        )
+
+
 class WaitForJobsTests(unittest.TestCase):
     def _wait_for_jobs(
         self,

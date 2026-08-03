@@ -243,7 +243,10 @@ def create_k8s_inference_job(
     )
 
     job_spec = client.V1JobSpec(
-        template=template, backoff_limit=1, ttl_seconds_after_finished=600
+        template=template,
+        backoff_limit=1,
+        ttl_seconds_after_finished=600,
+        suspend=True if KUEUE_ENABLED else None,
     )
 
     output_video_filename = f"{Path(filename).stem}.mp4"
@@ -252,10 +255,12 @@ def create_k8s_inference_job(
         kind="Job",
         metadata=client.V1ObjectMeta(
             name=job_name,
-            labels={
-                "app": "benzaiten-inference-job",
-                "job_id": job_id,
-            },
+            labels=_get_kueue_job_labels(
+                {
+                    "app": "benzaiten-inference-job",
+                    "job_id": job_id,
+                }
+            ),
             annotations={
                 "benzaiten/output_video_filename": output_video_filename,
                 "benzaiten/output_subtitle_filename": "vocals.vtt",
