@@ -118,9 +118,8 @@ def get_pipeline_jobs_status(jobs: List[client.V1Job]) -> str:
         status = getattr(job, "status", None)
         return (getattr(status, field, 0) or 0) >= 1
 
-    if any(
-        has_status_count(job, "failed") or has_condition(job, "Failed") for job in jobs
-    ):
+    # failed Pod is not necessarily a failed Job, k8s might still be retrying it within backoff limit
+    if any(has_condition(job, "Failed") for job in jobs):
         return "failed"
 
     unfinished_jobs = [
@@ -376,7 +375,7 @@ def create_k8s_orchestration_job(
 
     job_spec = client.V1JobSpec(
         template=template,
-        backoff_limit=0,
+        backoff_limit=3,
         ttl_seconds_after_finished=600,
     )
 
@@ -498,7 +497,26 @@ def _create_k8s_pipeline_stage_job(
         spec=job_spec,
     )
 
-    batch_v1.create_namespaced_job(namespace=K8S_NAMESPACE, body=job)
+    try:
+        batch_v1.create_namespaced_job(namespace=K8S_NAMESPACE, body=job)
+    except ApiException as error:
+        if error.status != 409:
+            raise
+
+        existing_job = batch_v1.read_namespaced_job(
+            name=job_name,
+            namespace=K8S_NAMESPACE,
+        )
+        existing_labels = getattr(existing_job.metadata, "labels", None) or {}
+        if (
+            existing_labels.get("job_id") != job_id
+            or existing_labels.get("stage") != stage
+        ):
+            raise RuntimeError(
+                f"K8s job name collision for {job_name}; existing job does not "
+                f"belong to pipeline {job_id} stage {stage}"
+            ) from error
+
     return job_name
 
 

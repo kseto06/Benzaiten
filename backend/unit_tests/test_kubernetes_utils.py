@@ -2,6 +2,8 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from kubernetes.client.rest import ApiException
+
 from backend.scripts.benzaiten_inference.k8s import kubernetes_utils
 
 
@@ -69,13 +71,18 @@ class ClassifyPipelineJobsTests(unittest.TestCase):
 
         self.assertEqual(kubernetes_utils.get_pipeline_jobs_status(jobs), "running")
 
-    def test_failed_job_takes_precedence(self):
+    def test_terminal_failed_job_takes_precedence(self):
         jobs = [
-            _pipeline_job(failed=1),
+            _pipeline_job(failed=1, condition_type="Failed"),
             _pipeline_job(suspend=False, active=1, kueue_managed=True),
         ]
 
         self.assertEqual(kubernetes_utils.get_pipeline_jobs_status(jobs), "failed")
+
+    def test_failed_pod_count_does_not_preempt_active_job_retry(self):
+        jobs = [_pipeline_job(active=1, failed=1)]
+
+        self.assertEqual(kubernetes_utils.get_pipeline_jobs_status(jobs), "running")
 
     def test_completed_jobs_are_completed(self):
         jobs = [
@@ -106,6 +113,22 @@ class _CapturingBatchV1Api:
 
     def create_namespaced_job(self, *, namespace, body):
         self.created_jobs.append((namespace, body))
+
+
+class _ExistingJobBatchV1Api(_CapturingBatchV1Api):
+    def __init__(self, *, job_id, stage):
+        super().__init__()
+        self.existing_job = SimpleNamespace(
+            metadata=SimpleNamespace(labels={"job_id": job_id, "stage": stage})
+        )
+
+    def create_namespaced_job(self, *, namespace, body):
+        super().create_namespaced_job(namespace=namespace, body=body)
+        raise ApiException(status=409, reason="Already Exists")
+
+    def read_namespaced_job(self, *, name, namespace):
+        del name, namespace
+        return self.existing_job
 
 
 class CreateJobsTests(unittest.TestCase):
@@ -199,6 +222,33 @@ class CreateJobsTests(unittest.TestCase):
             job.spec.template.spec.node_selector["cloud.google.com/gke-nodepool"],
             "default-pool",
         )
+        self.assertEqual(job.spec.backoff_limit, 3)
+
+    def test_pipeline_stage_reuses_existing_job_after_orchestrator_restart(self):
+        batch_api = _ExistingJobBatchV1Api(
+            job_id="job-1",
+            stage="source-separation",
+        )
+        with (
+            mock.patch.object(
+                kubernetes_utils,
+                "get_k8s_api_client",
+                return_value=object(),
+            ),
+            mock.patch.object(
+                kubernetes_utils.client,
+                "BatchV1Api",
+                return_value=batch_api,
+            ),
+        ):
+            job_name = kubernetes_utils._create_k8s_pipeline_stage_job(
+                job_id="job-1",
+                stage="source-separation",
+                sh_cmd_module="backend.scripts.test",
+                env_vars=[],
+            )
+
+        self.assertEqual(job_name, "benzaiten-inference-source-separation-job-1")
 
 
 class WaitForJobsTests(unittest.TestCase):
