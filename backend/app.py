@@ -2258,10 +2258,8 @@ def get_inference_job_status(
         with open(res_path, "r") as f:
             result = json.load(f)
 
-        if (
-            result.get("status") != "full inference done"
-            or not (result.get("video_url") or result.get("audio_url"))
-            or not result.get("subtitle_url")
+        if result.get("status") != "full inference done" or not (
+            result.get("video_url") or result.get("audio_url")
         ):
             return None
 
@@ -2270,7 +2268,7 @@ def get_inference_job_status(
         audio_blob_name = _gcs_object_name_from_url(result.get("audio_url"))
         subtitle_blob_name = _gcs_object_name_from_url(result.get("subtitle_url"))
         media_blob_name = video_blob_name or audio_blob_name
-        if media_blob_name is None or subtitle_blob_name is None:
+        if media_blob_name is None:
             return None
 
         _upsert_project_record(
@@ -2285,11 +2283,12 @@ def get_inference_job_status(
             },
         )
 
-        response = {
+        response: Dict[str, str] = {
             "job_id": job_id,
             "status": "completed",
-            "subtitle_url": _signed_gcs_url(bucket, subtitle_blob_name),
         }
+        if subtitle_blob_name:
+            response["subtitle_url"] = _signed_gcs_url(bucket, subtitle_blob_name)
         if video_blob_name:
             response["video_url"] = _signed_gcs_url(bucket, video_blob_name)
         if audio_blob_name:
