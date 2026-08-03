@@ -41,11 +41,12 @@ from backend.gcp_utils.gcs_bucket import (
     upload_input_file_to_gcs,
 )
 from backend.scripts.benzaiten_inference.k8s.kubernetes_utils import (
-    get_k8s_api_client,
+    get_pipeline_jobs_status,
+    create_k8s_editor_render_job,
     create_k8s_inference_job,
     create_k8s_orchestration_job,
-    create_k8s_editor_render_job,
     delete_k8s_editor_render_jobs,
+    get_k8s_api_client,
     wait_for_jobs,
 )
 
@@ -2238,7 +2239,6 @@ def get_inference_job_status(
         dict containing job_id and status message
     """
     from kubernetes import client
-    from kubernetes.client.rest import ApiException
 
     job_id = _validated_job_id(job_id)
     _get_owned_project(job_id, user)
@@ -2341,40 +2341,23 @@ def get_inference_job_status(
 
         api_client = get_k8s_api_client()
         batch_v1 = client.BatchV1Api(api_client=api_client)
-        job_name = f"benzaiten-inference-{job_id}"
+        jobs = batch_v1.list_namespaced_job(
+            namespace=K8S_NAMESPACE,
+            label_selector=f"job_id={job_id}",
+        ).items
+        pipeline_status = get_pipeline_jobs_status(jobs)
 
-        try:
-            jobs = [
-                batch_v1.read_namespaced_job_status(
-                    name=job_name, namespace=K8S_NAMESPACE
-                )
-            ]
-        except ApiException as e:
-            if e.status != 404:
-                raise
-
-            jobs = batch_v1.list_namespaced_job(
-                namespace=K8S_NAMESPACE,
-                label_selector=f"job_id={job_id}",
-            ).items
-
-        if not jobs:
-            return {"job_id": job_id, "status": "queued"}
-
-        if any(job.status.failed and job.status.failed >= 1 for job in jobs):
+        if pipeline_status == "failed":
             return {"job_id": job_id, "status": "failed"}
 
-        if any(job.status.active and job.status.active >= 1 for job in jobs):
-            return {"job_id": job_id, "status": "running"}
-
-        if all(job.status.succeeded and job.status.succeeded >= 1 for job in jobs):
+        if pipeline_status == "completed":
             result_response = completed_result_response()
             if result_response is not None:
                 return result_response
 
             return {"job_id": job_id, "status": "running"}
 
-        return {"job_id": job_id, "status": "queued"}
+        return {"job_id": job_id, "status": pipeline_status}
 
     except Exception as e:
         raise HTTPException(

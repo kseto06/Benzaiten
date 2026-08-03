@@ -29,6 +29,7 @@ INFERENCE_GPU_COUNT = int(
 # kueue
 KUEUE_ENABLED = os.environ.get("KUEUE_ENABLED", "false").lower() == "true"
 KUEUE_NAME = os.environ.get("KUEUE_NAME", "benzaiten-local-queue")
+KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
 
 
 def _ensure_safe_k8s_name(name: str) -> str:
@@ -85,8 +86,67 @@ def _get_kueue_job_labels(labels: Dict[str, str]) -> Dict[str, str]:
 
     return {
         **labels,
-        "kueue.x-k8s.io/queue-name": KUEUE_NAME,
+        KUEUE_QUEUE_LABEL: KUEUE_NAME,
     }
+
+
+def get_pipeline_jobs_status(jobs: List[client.V1Job]) -> str:
+    """
+    Get the status of k8s jobs in the pipeline, without affecting kueue
+
+    Args:
+        jobs: A list of k8s job objects to check the status of
+    Returns:
+        A string representing the status of the jobs:
+        {"queued", "running", "completed", "failed"}
+    """
+
+    if not jobs:
+        return "queued"
+
+    def has_condition(job: client.V1Job, condition_type: str) -> bool:
+        status = getattr(job, "status", None)
+        for condition in getattr(status, "conditions", None) or []:
+            if condition.type == condition_type and condition.status == "True":
+                return True
+        return False
+
+    def has_status_count(job: client.V1Job, field: str) -> bool:
+        status = getattr(job, "status", None)
+        return (getattr(status, field, 0) or 0) >= 1
+
+    if any(
+        has_status_count(job, "failed") or has_condition(job, "Failed") for job in jobs
+    ):
+        return "failed"
+
+    unfinished_jobs = [
+        job
+        for job in jobs
+        if not (has_status_count(job, "succeeded") or has_condition(job, "Complete"))
+    ]
+    if not unfinished_jobs:
+        return "completed"
+
+    unfinished_kueue_jobs = []
+    for job in unfinished_jobs:
+        metadata = getattr(job, "metadata", None)
+        labels = getattr(metadata, "labels", None) or {}
+        if KUEUE_QUEUE_LABEL in labels:
+            unfinished_kueue_jobs.append(job)
+
+    if unfinished_kueue_jobs:
+        if any(
+            getattr(getattr(job, "spec", None), "suspend", None) is not True
+            for job in unfinished_kueue_jobs
+        ):
+            return "running"
+        return "queued"
+
+    if any(has_status_count(job, "active") for job in unfinished_jobs):
+        return "running"
+
+    return "queued"
 
 
 def _env(name: str, value: Optional[str] = None) -> client.V1EnvVar:
