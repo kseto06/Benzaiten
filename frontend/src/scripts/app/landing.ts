@@ -1288,6 +1288,7 @@ function createProgressController(shouldDecrowd: boolean, shouldTranscribe: bool
   const detail = queryElement<HTMLParagraphElement>("#progressDetail");
   let displayed = 4;
   let target = 9;
+  let isQueued = true;
 
   panel.classList.add("is-visible");
   const stages: PipelineStage[] = [
@@ -1318,6 +1319,9 @@ function createProgressController(shouldDecrowd: boolean, shouldTranscribe: bool
   };
 
   const timer = window.setInterval(() => {
+    if (isQueued) {
+      return;
+    }
     if (displayed < target) {
       paint();
     } else if (displayed < 94) {
@@ -1327,6 +1331,7 @@ function createProgressController(shouldDecrowd: boolean, shouldTranscribe: bool
   }, 400);
 
   const update = (objects: GcsObject[], status: JobStatusResponse["status"]): void => {
+    isQueued = status === "queued";
     const names = objects.map(object => object.name);
     const sourceComplete = names.some(name => (
       name.includes("/source_separation/")
@@ -1356,6 +1361,7 @@ function createProgressController(shouldDecrowd: boolean, shouldTranscribe: bool
     renderPipelineStages(stages, activeIndex < 0 ? stages.length - 1 : activeIndex);
 
     if (compositionComplete || status === "completed") {
+      isQueued = false;
       target = 100;
       title.textContent = "Project complete";
       detail.textContent = "Opening the browser editor.";
@@ -1364,6 +1370,11 @@ function createProgressController(shouldDecrowd: boolean, shouldTranscribe: bool
 
     const milestoneFloor = [10, 28, 51, 76, 96][completedCount];
     target = Math.max(target, milestoneFloor);
+    if (isQueued) {
+      title.textContent = "Job queued";
+      detail.textContent = "Waiting for Kueue to admit the next pipeline stage.";
+      return;
+    }
     if (!sourceComplete) {
       title.textContent = "Separating the performance";
       detail.textContent = "Extracting vocals and instrumental audio.";
@@ -1475,7 +1486,7 @@ async function handleRunInference(): Promise<void> {
     window.requestAnimationFrame(() => {
       progressPanel.scrollIntoView({ behavior: "smooth", block: "center" });
     });
-    setLandingStatus(`Job ${startData.job_id} is running.`);
+    setLandingStatus("Job queued...");
     const completed = await pollInferenceJob(startData.job_id, progress);
     if (completed.status === "failed") {
       throw new Error(completed.error || "Inference job failed");
@@ -1513,6 +1524,7 @@ async function pollInferenceJob(
   jobId: string,
   progress: ReturnType<typeof createProgressController>,
 ): Promise<JobStatusResponse> {
+  let lastReportedStatus: JobStatusResponse["status"] = "queued";
   while (true) {
     const [statusResponse, jobObjects] = await Promise.all([
       authFetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}`),
@@ -1524,6 +1536,14 @@ async function pollInferenceJob(
 
     const status = await statusResponse.json() as JobStatusResponse;
     progress.update(jobObjects, status.status);
+    if (status.status !== lastReportedStatus) {
+      if (status.status === "queued") {
+        setLandingStatus("Job queued...");
+      } else if (status.status === "running") {
+        setLandingStatus(`Job ${jobId} is running.`);
+      }
+      lastReportedStatus = status.status;
+    }
     if (status.status === "completed" || status.status === "failed") {
       return status;
     }

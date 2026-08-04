@@ -41,11 +41,12 @@ from backend.gcp_utils.gcs_bucket import (
     upload_input_file_to_gcs,
 )
 from backend.scripts.benzaiten_inference.k8s.kubernetes_utils import (
-    get_k8s_api_client,
+    get_pipeline_jobs_status,
+    create_k8s_editor_render_job,
     create_k8s_inference_job,
     create_k8s_orchestration_job,
-    create_k8s_editor_render_job,
     delete_k8s_editor_render_jobs,
+    get_k8s_api_client,
     wait_for_jobs,
 )
 
@@ -99,6 +100,9 @@ EDITOR_RENDER_USE_K8S = os.environ.get(
 ).lower() in {"1", "true", "yes"}
 EDITOR_RENDER_JOB_TIMEOUT_SECONDS = int(
     os.environ.get("EDITOR_RENDER_JOB_TIMEOUT_SECONDS", "3600")
+)
+EDITOR_RENDER_QUEUE_TIMEOUT_SECONDS = int(
+    os.environ.get("EDITOR_RENDER_QUEUE_TIMEOUT_SECONDS", "900")
 )
 
 
@@ -903,7 +907,8 @@ def _run_editor_render_job(
             wait_for_jobs(
                 [job_name],
                 poll_interval_seconds=5,
-                timeout_seconds=EDITOR_RENDER_JOB_TIMEOUT_SECONDS,
+                execution_timeout_seconds=EDITOR_RENDER_JOB_TIMEOUT_SECONDS,
+                queue_timeout_seconds=EDITOR_RENDER_QUEUE_TIMEOUT_SECONDS,
             )
         except Exception as error:
             if is_ffmpeg_process_cancelled(render_id):
@@ -2238,7 +2243,6 @@ def get_inference_job_status(
         dict containing job_id and status message
     """
     from kubernetes import client
-    from kubernetes.client.rest import ApiException
 
     job_id = _validated_job_id(job_id)
     _get_owned_project(job_id, user)
@@ -2258,10 +2262,8 @@ def get_inference_job_status(
         with open(res_path, "r") as f:
             result = json.load(f)
 
-        if (
-            result.get("status") != "full inference done"
-            or not (result.get("video_url") or result.get("audio_url"))
-            or not result.get("subtitle_url")
+        if result.get("status") != "full inference done" or not (
+            result.get("video_url") or result.get("audio_url")
         ):
             return None
 
@@ -2270,7 +2272,7 @@ def get_inference_job_status(
         audio_blob_name = _gcs_object_name_from_url(result.get("audio_url"))
         subtitle_blob_name = _gcs_object_name_from_url(result.get("subtitle_url"))
         media_blob_name = video_blob_name or audio_blob_name
-        if media_blob_name is None or subtitle_blob_name is None:
+        if media_blob_name is None:
             return None
 
         _upsert_project_record(
@@ -2285,11 +2287,12 @@ def get_inference_job_status(
             },
         )
 
-        response = {
+        response: Dict[str, str] = {
             "job_id": job_id,
             "status": "completed",
-            "subtitle_url": _signed_gcs_url(bucket, subtitle_blob_name),
         }
+        if subtitle_blob_name:
+            response["subtitle_url"] = _signed_gcs_url(bucket, subtitle_blob_name)
         if video_blob_name:
             response["video_url"] = _signed_gcs_url(bucket, video_blob_name)
         if audio_blob_name:
@@ -2341,40 +2344,23 @@ def get_inference_job_status(
 
         api_client = get_k8s_api_client()
         batch_v1 = client.BatchV1Api(api_client=api_client)
-        job_name = f"benzaiten-inference-{job_id}"
+        jobs = batch_v1.list_namespaced_job(
+            namespace=K8S_NAMESPACE,
+            label_selector=f"job_id={job_id}",
+        ).items
+        pipeline_status = get_pipeline_jobs_status(jobs)
 
-        try:
-            jobs = [
-                batch_v1.read_namespaced_job_status(
-                    name=job_name, namespace=K8S_NAMESPACE
-                )
-            ]
-        except ApiException as e:
-            if e.status != 404:
-                raise
-
-            jobs = batch_v1.list_namespaced_job(
-                namespace=K8S_NAMESPACE,
-                label_selector=f"job_id={job_id}",
-            ).items
-
-        if not jobs:
-            return {"job_id": job_id, "status": "queued"}
-
-        if any(job.status.failed and job.status.failed >= 1 for job in jobs):
+        if pipeline_status == "failed":
             return {"job_id": job_id, "status": "failed"}
 
-        if any(job.status.active and job.status.active >= 1 for job in jobs):
-            return {"job_id": job_id, "status": "running"}
-
-        if all(job.status.succeeded and job.status.succeeded >= 1 for job in jobs):
+        if pipeline_status == "completed":
             result_response = completed_result_response()
             if result_response is not None:
                 return result_response
 
             return {"job_id": job_id, "status": "running"}
 
-        return {"job_id": job_id, "status": "queued"}
+        return {"job_id": job_id, "status": pipeline_status}
 
     except Exception as e:
         raise HTTPException(
