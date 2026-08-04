@@ -1,0 +1,46 @@
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: benzaiten-cluster-queue
+
+spec:
+  namespaceSelector: {}
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+  - coveredResources: ["cpu", "memory", "nvidia.com/gpu", "ephemeral-storage"]
+    flavors:
+    # Three e2-highmem-8 nodes (24 vCPU / 192 GB raw capacity) on cpu-inference-pool
+    - name: "cpu-inference-flavor"
+      resources:
+      - name: "cpu"
+        nominalQuota: 21
+      - name: "memory"
+        nominalQuota: 168Gi
+      - name: "nvidia.com/gpu"
+        nominalQuota: 0
+      - name: "ephemeral-storage"
+        nominalQuota: 240Gi
+
+    # One g2-standard-8 node (8 vCPU / 32 GB / 1 L4 raw capacity) on gpu-pool
+    - name: "gpu-inference-flavor"
+      resources:
+      - name: "cpu"
+        nominalQuota: 7
+      - name: "memory"
+        nominalQuota: 28Gi
+      - name: "nvidia.com/gpu"
+        nominalQuota: 1
+      - name: "ephemeral-storage"
+        nominalQuota: 80Gi
+
+    # Two e2-highcpu-8 nodes (16 vCPU / 16 GB raw capacity) on video-pool
+    - name: "video-flavor"
+      resources:
+      - name: "cpu"
+        nominalQuota: 14
+      - name: "memory"
+        nominalQuota: 12Gi
+      - name: "nvidia.com/gpu"
+        nominalQuota: 0
+      - name: "ephemeral-storage"
+        nominalQuota: 160Gi

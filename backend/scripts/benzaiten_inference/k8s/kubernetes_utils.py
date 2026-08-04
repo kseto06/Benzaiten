@@ -26,6 +26,14 @@ INFERENCE_GPU_COUNT = int(
     )
 )
 
+# kueue
+KUEUE_ENABLED = os.environ.get("KUEUE_ENABLED", "false").lower() == "true"
+KUEUE_NAME = os.environ.get("KUEUE_NAME", "benzaiten-local-queue")
+KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
+KUEUE_QUEUE_TIMEOUT_SECONDS = int(
+    os.environ.get("KUEUE_QUEUE_TIMEOUT_SECONDS", str(6 * 60 * 60))
+)
+
 
 def _ensure_safe_k8s_name(name: str) -> str:
     """
@@ -65,6 +73,82 @@ def get_k8s_api_client() -> client.ApiClient:
     # local dev
     config.load_kube_config()
     return client.ApiClient()
+
+
+def _get_kueue_job_labels(labels: Dict[str, str]) -> Dict[str, str]:
+    """
+    Function to add kueue labels to a job's metadata labels
+
+    Args:
+        labels: A dictionary of existing labels for the job
+    Returns:
+        A dictionary of labels with kueue labels added
+    """
+    if not KUEUE_ENABLED:
+        return labels
+
+    return {
+        **labels,
+        KUEUE_QUEUE_LABEL: KUEUE_NAME,
+    }
+
+
+def get_pipeline_jobs_status(jobs: List[client.V1Job]) -> str:
+    """
+    Get the status of k8s jobs in the pipeline, without affecting kueue
+
+    Args:
+        jobs: A list of k8s job objects to check the status of
+    Returns:
+        A string representing the status of the jobs:
+        {"queued", "running", "completed", "failed"}
+    """
+
+    if not jobs:
+        return "queued"
+
+    def has_condition(job: client.V1Job, condition_type: str) -> bool:
+        status = getattr(job, "status", None)
+        for condition in getattr(status, "conditions", None) or []:
+            if condition.type == condition_type and condition.status == "True":
+                return True
+        return False
+
+    def has_status_count(job: client.V1Job, field: str) -> bool:
+        status = getattr(job, "status", None)
+        return (getattr(status, field, 0) or 0) >= 1
+
+    # failed Pod is not necessarily a failed Job, k8s might still be retrying it within backoff limit
+    if any(has_condition(job, "Failed") for job in jobs):
+        return "failed"
+
+    unfinished_jobs = [
+        job
+        for job in jobs
+        if not (has_status_count(job, "succeeded") or has_condition(job, "Complete"))
+    ]
+    if not unfinished_jobs:
+        return "completed"
+
+    unfinished_kueue_jobs = []
+    for job in unfinished_jobs:
+        metadata = getattr(job, "metadata", None)
+        labels = getattr(metadata, "labels", None) or {}
+        if KUEUE_QUEUE_LABEL in labels:
+            unfinished_kueue_jobs.append(job)
+
+    if unfinished_kueue_jobs:
+        if any(
+            getattr(getattr(job, "spec", None), "suspend", None) is not True
+            for job in unfinished_kueue_jobs
+        ):
+            return "running"
+        return "queued"
+
+    if any(has_status_count(job, "active") for job in unfinished_jobs):
+        return "running"
+
+    return "queued"
 
 
 def _env(name: str, value: Optional[str] = None) -> client.V1EnvVar:
@@ -161,7 +245,10 @@ def create_k8s_inference_job(
     )
 
     job_spec = client.V1JobSpec(
-        template=template, backoff_limit=1, ttl_seconds_after_finished=600
+        template=template,
+        backoff_limit=1,
+        ttl_seconds_after_finished=600,
+        suspend=True if KUEUE_ENABLED else None,
     )
 
     output_video_filename = f"{Path(filename).stem}.mp4"
@@ -170,10 +257,12 @@ def create_k8s_inference_job(
         kind="Job",
         metadata=client.V1ObjectMeta(
             name=job_name,
-            labels={
-                "app": "benzaiten-inference-job",
-                "job_id": job_id,
-            },
+            labels=_get_kueue_job_labels(
+                {
+                    "app": "benzaiten-inference-job",
+                    "job_id": job_id,
+                }
+            ),
             annotations={
                 "benzaiten/output_video_filename": output_video_filename,
                 "benzaiten/output_subtitle_filename": "vocals.vtt",
@@ -243,6 +332,9 @@ def create_k8s_orchestration_job(
         _env("SHOULD_ROMANIZE", str(should_romanize).lower()),
         _env("LANGUAGE", language),
         _env("TARGET_LANGUAGE", target_language),
+        _env("KUEUE_ENABLED", "true" if KUEUE_ENABLED else "false"),
+        _env("KUEUE_NAME", KUEUE_NAME),
+        _env("KUEUE_QUEUE_TIMEOUT_SECONDS", str(KUEUE_QUEUE_TIMEOUT_SECONDS)),
     ]
 
     container = client.V1Container(
@@ -283,7 +375,7 @@ def create_k8s_orchestration_job(
 
     job_spec = client.V1JobSpec(
         template=template,
-        backoff_limit=0,
+        backoff_limit=3,
         ttl_seconds_after_finished=600,
     )
 
@@ -385,6 +477,7 @@ def _create_k8s_pipeline_stage_job(
         template=template,
         backoff_limit=backoff_limit,
         ttl_seconds_after_finished=ttl_seconds_after_finished,
+        suspend=True if KUEUE_ENABLED else None,
     )
 
     job = client.V1Job(
@@ -392,17 +485,38 @@ def _create_k8s_pipeline_stage_job(
         kind="Job",
         metadata=client.V1ObjectMeta(
             name=job_name,
-            labels={
-                "app": "benzaiten-inference-job",
-                "job_id": job_id,
-                "stage": stage,
-            },
+            labels=_get_kueue_job_labels(
+                {
+                    "app": "benzaiten-inference-job",
+                    "job_id": job_id,
+                    "stage": stage,
+                }
+            ),
             annotations=annotations or {},
         ),
         spec=job_spec,
     )
 
-    batch_v1.create_namespaced_job(namespace=K8S_NAMESPACE, body=job)
+    try:
+        batch_v1.create_namespaced_job(namespace=K8S_NAMESPACE, body=job)
+    except ApiException as error:
+        if error.status != 409:
+            raise
+
+        existing_job = batch_v1.read_namespaced_job(
+            name=job_name,
+            namespace=K8S_NAMESPACE,
+        )
+        existing_labels = getattr(existing_job.metadata, "labels", None) or {}
+        if (
+            existing_labels.get("job_id") != job_id
+            or existing_labels.get("stage") != stage
+        ):
+            raise RuntimeError(
+                f"K8s job name collision for {job_name}; existing job does not "
+                f"belong to pipeline {job_id} stage {stage}"
+            ) from error
+
     return job_name
 
 
@@ -706,7 +820,7 @@ def create_k8s_editor_render_job(
                 "job_id": job_id,
                 "render_id": render_id,
                 "stage": "editor-render",
-            }
+            },
         ),
         spec=pod_spec,
     )
@@ -715,6 +829,7 @@ def create_k8s_editor_render_job(
         template=template,
         backoff_limit=0,
         ttl_seconds_after_finished=600,
+        suspend=True if KUEUE_ENABLED else None,
     )
 
     job = client.V1Job(
@@ -722,12 +837,14 @@ def create_k8s_editor_render_job(
         kind="Job",
         metadata=client.V1ObjectMeta(
             name=job_name,
-            labels={
-                "app": "benzaiten-editor-render-job",
-                "job_id": job_id,
-                "render_id": render_id,
-                "stage": "editor-render",
-            },
+            labels=_get_kueue_job_labels(
+                {
+                    "app": "benzaiten-editor-render-job",
+                    "job_id": job_id,
+                    "render_id": render_id,
+                    "stage": "editor-render",
+                }
+            ),
         ),
         spec=job_spec,
     )
@@ -779,32 +896,44 @@ def wait_for_jobs(
     job_names: List[str],
     namespace: str = K8S_NAMESPACE,
     poll_interval_seconds: int = 30,
-    timeout_seconds: int = 60 * 60,
+    execution_timeout_seconds: int = 60 * 60,
+    queue_timeout_seconds: int = KUEUE_QUEUE_TIMEOUT_SECONDS,
 ) -> None:
     """
-    Function to wait for a list of K8s jobs to complete, with a timeout.
+    Wait for K8s jobs while timing only admitted, unsuspended execution.
 
     Args:
         job_names: List of K8s job names to wait for.
         namespace: The Kubernetes namespace where the jobs are running.
         poll_interval_seconds: How often to check the status of the jobs.
-        timeout_seconds: Maximum time to wait for the jobs to complete before raising a TimeoutError.
+        execution_timeout_seconds: Maximum admitted execution time for each job.
+        queue_timeout_seconds: Maximum suspended Kueue wait time for each job.
     """
     api_client = get_k8s_api_client()
     batch_v1 = client.BatchV1Api(api_client=api_client)
 
     remaining_jobs = set(job_names)
-    start_time = time.monotonic()
+    initial_check_time = time.monotonic()
+    job_execution_elapsed_seconds = {job_name: 0.0 for job_name in job_names}
+    job_queue_elapsed_seconds = {job_name: 0.0 for job_name in job_names}
+    job_was_executing = {job_name: False for job_name in job_names}
+    job_was_queued = {job_name: False for job_name in job_names}
+    job_last_checked_at = {job_name: initial_check_time for job_name in job_names}
 
     while remaining_jobs:
-        if time.monotonic() - start_time > timeout_seconds:
-            raise TimeoutError(
-                f"Timeout while waiting for jobs: {sorted(remaining_jobs)}"
-            )
-
+        current_check_time = time.monotonic()
         finished_jobs = set()
 
         for job_name in remaining_jobs:
+            elapsed_since_last_check = (
+                current_check_time - job_last_checked_at[job_name]
+            )
+            if job_was_executing[job_name]:
+                job_execution_elapsed_seconds[job_name] += elapsed_since_last_check
+            if job_was_queued[job_name]:
+                job_queue_elapsed_seconds[job_name] += elapsed_since_last_check
+            job_last_checked_at[job_name] = current_check_time
+
             try:
                 job = batch_v1.read_namespaced_job_status(
                     name=job_name,
@@ -825,6 +954,28 @@ def wait_for_jobs(
 
                 if condition.type == "Failed" and condition.status == "True":
                     raise RuntimeError(f"K8s job {job_name} failed: {status}")
+
+            if job_name in finished_jobs:
+                continue
+
+            job_spec = getattr(job, "spec", None)
+            job_is_queued = (
+                job_spec is not None and getattr(job_spec, "suspend", None) is True
+            )
+            job_was_queued[job_name] = job_is_queued
+            job_was_executing[job_name] = not job_is_queued
+
+            if job_queue_elapsed_seconds[job_name] > queue_timeout_seconds:
+                raise TimeoutError(
+                    f"K8s job {job_name} exceeded "
+                    f"{queue_timeout_seconds:g} seconds of suspended Kueue wait time"
+                )
+
+            if job_execution_elapsed_seconds[job_name] > execution_timeout_seconds:
+                raise TimeoutError(
+                    f"K8s job {job_name} exceeded "
+                    f"{execution_timeout_seconds:g} seconds of admitted execution time"
+                )
 
         remaining_jobs -= finished_jobs
 

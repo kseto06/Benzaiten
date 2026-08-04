@@ -8,7 +8,7 @@ on:
       code_ref:
         description: "Branch, tag, or commit SHA containing the app code to build and test"
         required: true
-        default: "model-orchestration"
+        default: "main"
       test_ref:
         description: "Branch, tag, or commit SHA containing the pipeline test scripts/fixtures"
         required: true

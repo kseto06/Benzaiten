@@ -69,6 +69,16 @@ spec:
                 configMapKeyRef:
                   name: benzaiten-inference-config
                   key: INFERENCE_GPU_COUNT
+            - name: KUEUE_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: benzaiten-inference-config
+                  key: KUEUE_ENABLED
+            - name: KUEUE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: benzaiten-inference-config
+                  key: KUEUE_NAME
 
           resources:
             requests:

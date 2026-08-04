@@ -191,6 +191,15 @@ jobs:
       run: |
         bash backend/scripts/benzaiten_inference/deploy/restart_deployment.sh
 
+    - name: Verify Kueue queue configuration
+      run: |
+        kubectl rollout status deployment/kueue-controller-manager \
+          --namespace kueue-system \
+          --timeout=180s
+        kubectl get clusterqueue benzaiten-cluster-queue
+        kubectl get localqueue benzaiten-local-queue \
+          --namespace "${{ env.NAMESPACE }}"
+
     - name: Verify backend service and show external URL
       run: |
         set -euo pipefail
