@@ -302,7 +302,7 @@ jobs:
         set -euo pipefail
 
         if [[ -z "${CLOUDFLARE_API_TOKEN}" ]]; then
-          echo "::error::CLOUDFLARE_API_TOKEN repository secret is missing"
+          echo "::error::CLOUDFLARE_API_KEY repository secret is missing (used as CLOUDFLARE_API_TOKEN)"
           exit 1
         fi
 
