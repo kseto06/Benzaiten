@@ -279,15 +279,15 @@ jobs:
 
     - name: Deploy Cloudflare Worker proxy
       env:
-        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
         CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         GKE_ORIGIN: ${{ steps.backend_url.outputs.backend_url }}
       working-directory: backend/scripts/service
       run: |
         set -euo pipefail
 
-        if [[ -z "${CLOUDFLARE_API_TOKEN}" ]]; then
-          echo "::error::CLOUDFLARE_API_TOKEN repository secret is missing"
+        if [[ -z "${CLOUDFLARE_API_KEY}" ]]; then
+          echo "::error::CLOUDFLARE_API_KEY repository secret is missing"
           exit 1
         fi
 
