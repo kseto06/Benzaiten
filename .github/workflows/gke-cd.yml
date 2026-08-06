@@ -103,6 +103,9 @@ jobs:
         version: "latest"
         install_components: "gke-gcloud-auth-plugin"
 
+    - name: Configure GCS browser CORS
+      run: bash backend/cors.sh
+
     - name: Configure Docker auth on gcloud
       run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
 
