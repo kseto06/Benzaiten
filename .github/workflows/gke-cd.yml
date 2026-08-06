@@ -74,6 +74,7 @@ jobs:
       SERVICE_NAME: benzaiten-inference-service
       NAMESPACE: default
       GCP_SERVICE_ACCOUNT: github-actions-sa@project-0c6e9a84-c914-4d2f-ace.iam.gserviceaccount.com
+      CLOUDFLARE_WORKER_URL: https://benzaiten.kaden-seto06.workers.dev
     
     steps:
     - name: Checkout code ref
@@ -101,6 +102,9 @@ jobs:
         project_id: ${{ env.PROJECT_ID }}
         version: "latest"
         install_components: "gke-gcloud-auth-plugin"
+
+    - name: Configure GCS browser CORS
+      run: bash backend/cors.sh
 
     - name: Configure Docker auth on gcloud
       run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
@@ -201,6 +205,9 @@ jobs:
           --namespace "${{ env.NAMESPACE }}"
 
     - name: Verify backend service and show external URL
+      id: backend_url
+      env:
+        CONFIGURED_GKE_ORIGIN_URL: ${{ vars.GKE_ORIGIN_URL }}
       run: |
         set -euo pipefail
 
@@ -252,7 +259,17 @@ jobs:
           exit 1
         fi
 
-        BACKEND_URL="http://${EXTERNAL_ADDRESS}"
+        if [[ -n "${CONFIGURED_GKE_ORIGIN_URL}" ]]; then
+          BACKEND_URL="${CONFIGURED_GKE_ORIGIN_URL%/}"
+        elif [[ "${EXTERNAL_ADDRESS}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          # Cloudflare Workers cannot fetch an IP literal. sslip.io provides a
+          # DNS name for the dynamic LoadBalancer IP and keeps this automatic
+          # until a first-party GKE_ORIGIN_URL is configured.
+          BACKEND_URL="http://${EXTERNAL_ADDRESS}.sslip.io"
+          echo "::warning::Using sslip.io for the Worker origin. Configure the GKE_ORIGIN_URL repository variable with a first-party HTTPS origin for production."
+        else
+          BACKEND_URL="http://${EXTERNAL_ADDRESS}"
+        fi
         echo "::notice title=Benzaiten backend URL::${BACKEND_URL}"
         {
           echo "## Benzaiten GKE deployment"
@@ -266,6 +283,7 @@ jobs:
           echo '```'
         } >> "${GITHUB_STEP_SUMMARY}"
 
+        echo "backend_url=${BACKEND_URL}" >> "${GITHUB_OUTPUT}"
         curl --fail --silent --show-error \
           --retry 12 \
           --retry-delay 5 \
@@ -273,3 +291,71 @@ jobs:
           --connect-timeout 5 \
           --max-time 10 \
           "${BACKEND_URL}/"
+
+    - name: Deploy Cloudflare Worker proxy
+      env:
+        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_KEY }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        GKE_ORIGIN: ${{ steps.backend_url.outputs.backend_url }}
+      working-directory: backend/scripts/service
+      run: |
+        set -euo pipefail
+
+        if [[ -z "${CLOUDFLARE_API_TOKEN}" ]]; then
+          echo "::error::CLOUDFLARE_API_KEY repository secret is missing (used as CLOUDFLARE_API_TOKEN)"
+          exit 1
+        fi
+
+        if [[ -z "${CLOUDFLARE_ACCOUNT_ID}" ]]; then
+          echo "::error::CLOUDFLARE_ACCOUNT_ID repository secret is missing"
+          exit 1
+        fi
+
+        if [[ -z "${GKE_ORIGIN}" ]]; then
+          echo "::error::The GKE backend URL step did not produce an origin"
+          exit 1
+        fi
+
+        # The LoadBalancer address is public deployment configuration, so it can
+        # be deployed as a Worker variable instead of a secret binding.
+        npx --yes wrangler@4 deploy \
+          --var "GKE_ORIGIN:${GKE_ORIGIN}"
+
+    - name: Verify Cloudflare Worker proxy
+      env:
+        WORKER_URL: ${{ env.CLOUDFLARE_WORKER_URL }}
+      run: |
+        set -euo pipefail
+
+        RESPONSE_HEADERS="$(mktemp)"
+        RESPONSE_BODY="$(mktemp)"
+        trap 'rm -f "${RESPONSE_HEADERS}" "${RESPONSE_BODY}"' EXIT
+
+        if ! curl --fail --silent --show-error \
+          --dump-header "${RESPONSE_HEADERS}" \
+          --output "${RESPONSE_BODY}" \
+          --retry 12 \
+          --retry-delay 5 \
+          --connect-timeout 5 \
+          --max-time 20 \
+          --header "Origin: https://kseto06.github.io" \
+          "${WORKER_URL}/health/check_gke_ready"; then
+          echo "::error::Cloudflare Worker proxy verification failed"
+          cat "${RESPONSE_HEADERS}"
+          cat "${RESPONSE_BODY}"
+          exit 1
+        fi
+
+        if ! grep --ignore-case --quiet \
+          '^access-control-allow-origin: https://kseto06.github.io' \
+          "${RESPONSE_HEADERS}"; then
+          echo "::error::Cloudflare Worker response is missing the expected CORS origin"
+          cat "${RESPONSE_HEADERS}"
+          exit 1
+        fi
+
+        echo "::notice title=Benzaiten production API URL::${WORKER_URL}"
+        {
+          echo
+          echo "Cloudflare Worker API URL: ${WORKER_URL}"
+        } >> "${GITHUB_STEP_SUMMARY}"
