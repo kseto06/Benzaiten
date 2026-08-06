@@ -45,7 +45,7 @@ export default {
     if (!env.GKE_ORIGIN) {
       return Response.json(
         { error: "GKE_ORIGIN is not configured" },
-        { status: 500 },
+        { status: 500, headers: getCorsHeaders(ALLOWED_ORIGIN) },
       );
     }
 
