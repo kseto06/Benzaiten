@@ -203,6 +203,8 @@ jobs:
 
     - name: Verify backend service and show external URL
       id: backend_url
+      env:
+        CONFIGURED_GKE_ORIGIN_URL: ${{ vars.GKE_ORIGIN_URL }}
       run: |
         set -euo pipefail
 
@@ -254,7 +256,17 @@ jobs:
           exit 1
         fi
 
-        BACKEND_URL="http://${EXTERNAL_ADDRESS}"
+        if [[ -n "${CONFIGURED_GKE_ORIGIN_URL}" ]]; then
+          BACKEND_URL="${CONFIGURED_GKE_ORIGIN_URL%/}"
+        elif [[ "${EXTERNAL_ADDRESS}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          # Cloudflare Workers cannot fetch an IP literal. sslip.io provides a
+          # DNS name for the dynamic LoadBalancer IP and keeps this automatic
+          # until a first-party GKE_ORIGIN_URL is configured.
+          BACKEND_URL="http://${EXTERNAL_ADDRESS}.sslip.io"
+          echo "::warning::Using sslip.io for the Worker origin. Configure the GKE_ORIGIN_URL repository variable with a first-party HTTPS origin for production."
+        else
+          BACKEND_URL="http://${EXTERNAL_ADDRESS}"
+        fi
         echo "::notice title=Benzaiten backend URL::${BACKEND_URL}"
         {
           echo "## Benzaiten GKE deployment"
@@ -313,18 +325,23 @@ jobs:
         set -euo pipefail
 
         RESPONSE_HEADERS="$(mktemp)"
-        trap 'rm -f "${RESPONSE_HEADERS}"' EXIT
+        RESPONSE_BODY="$(mktemp)"
+        trap 'rm -f "${RESPONSE_HEADERS}" "${RESPONSE_BODY}"' EXIT
 
-        curl --fail --silent --show-error \
+        if ! curl --fail --silent --show-error \
           --dump-header "${RESPONSE_HEADERS}" \
-          --output /dev/null \
+          --output "${RESPONSE_BODY}" \
           --retry 12 \
           --retry-delay 5 \
-          --retry-all-errors \
           --connect-timeout 5 \
           --max-time 20 \
           --header "Origin: https://kseto06.github.io" \
-          "${WORKER_URL}/health/check_gke_ready"
+          "${WORKER_URL}/health/check_gke_ready"; then
+          echo "::error::Cloudflare Worker proxy verification failed"
+          cat "${RESPONSE_HEADERS}"
+          cat "${RESPONSE_BODY}"
+          exit 1
+        fi
 
         if ! grep --ignore-case --quiet \
           '^access-control-allow-origin: https://kseto06.github.io' \
