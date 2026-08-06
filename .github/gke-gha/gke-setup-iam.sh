@@ -28,6 +28,5 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:${
 
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${GITHUB_ACTIONS_SA}" --role="roles/artifactregistry.repoAdmin"
 
-# CD reconciles the browser CORS policy on the output bucket. Object Admin can
-# manage media objects but does not include storage.buckets.update.
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${GITHUB_ACTIONS_SA}" --role="roles/storage.admin"
+# CD reconciles the browser CORS policy on the output bucket
+ gcloud storage buckets add-iam-policy-binding "gs://benzaiten-outputs" --member="serviceAccount:${GITHUB_ACTIONS_SA}" --role="roles/storage.admin"
