@@ -1,3 +1,8 @@
+/**
+ * This file implements a Cloudflare Worker that acts as a reverse proxy to the GKE backend,
+ * allowing frontend to make cross-origin requests to the backend without running into CORS issues
+ */
+
 const ALLOWED_ORIGIN = "https://kseto06.github.io";
 
 const ALLOWED_METHODS =
@@ -29,7 +34,7 @@ export default {
       });
     }
 
-    // Handle browser CORS preflight.
+    // Handle browser CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -97,9 +102,9 @@ export default {
         responseHeaders.set(name, value);
       }
 
-      // Keep backend redirects on the HTTPS Worker origin. Otherwise a FastAPI
-      // slash redirect can expose the HTTP LoadBalancer URL to the browser and
-      // be blocked as mixed content.
+      // keep backend redirects on the HTTPS Worker origin. 
+      // otherwise a FastAPI slash redirect can expose the HTTP LoadBalancer URL 
+      // to the browser and be blocked as mixed content.
       const location = responseHeaders.get("Location");
       if (location) {
         const redirectUrl = new URL(location, env.GKE_ORIGIN);
