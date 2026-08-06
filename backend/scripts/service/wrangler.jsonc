@@ -1,0 +1,6 @@
+{
+  "name": "benzaiten",
+  "main": "cloudflare_worker.js",
+  "compatibility_date": "2026-08-05",
+  "workers_dev": true
+}
