@@ -8,7 +8,7 @@
 
 ## Benzaiten Web App Demo
 
-<video src="docs/benzaiten_demo.mp4"></video>
+<video url="https://github.com/user-attachments/assets/07efc896-8e02-43dc-a7b0-e3f55eeeab38"><video>
 
 ## Project Elements
 
