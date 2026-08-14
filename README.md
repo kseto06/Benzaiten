@@ -8,7 +8,7 @@
 
 ## Benzaiten Web App Demo
 
-![Demo](docs/benzaiten_demo.mp4)
+![Demo](docs/benzaiten_demo_compressed.mp4)
 
 ## Project Elements
 
